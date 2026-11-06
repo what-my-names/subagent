@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.whatsmynames.subagent",
+  "version": "v1.0.0",
+  "author": [
+    "时空指令"
+  ],
+  "main": "main.js",
+  "name": "subagent",
+  "display_name": {
+    "zh": "子代理",
+    "en": "Subagent"
+  },
+  "description": {
+    "zh": "自建模型通道的子代理：自己发请求、自己执行宿主工具、白名单硬拒绝、写前备份可撤回。",
+    "en": "Own-model subagent with hard tool whitelist and undoable writes."
+  },
+  "category": "TOOL",
+  "subpackages": [
+    {
+      "id": "subagent",
+      "entry": "packages/subagent.js",
+      "enabled_by_default": true,
+      "display_name": {
+        "zh": "子代理",
+        "en": "Subagent"
+      },
+      "description": {
+        "zh": "子代理派生、查询、回收",
+        "en": "Spawn, query, collect subagents"
+      }
+    }
+  ],
+  "api_version": "1.0.1",
+  "resources": [
+    {
+      "key": "subagent_panel_html",
+      "path": "ui/web/panel.html",
+      "mime": "text/html"
+    },
+    {
+      "key": "subagent_panel_css",
+      "path": "ui/web/panel.css",
+      "mime": "text/css"
+    },
+    {
+      "key": "subagent_panel_js",
+      "path": "ui/web/panel.js",
+      "mime": "application/javascript"
+    }
+  ]
+}

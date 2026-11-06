@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link href="./panel.css" rel="stylesheet">
+<!-- 公式由内置渲染器处理，不加载任何外部资源：避免 CDN 不可达时白屏/卡顿 -->
+
+</head>
+<body>
+<div id="app">
+
+  <!-- SVG 图标库（use 引用） -->
+  <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+    <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44A2.5 2.5 0 0 1 4.5 18a2.5 2.5 0 0 1-2.55-3A2.5 2.5 0 0 1 3 9.5a2.5 2.5 0 0 1 2.04-4.31A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44A2.5 2.5 0 0 0 19.5 18a2.5 2.5 0 0 0 2.55-3A2.5 2.5 0 0 0 21 9.5a2.5 2.5 0 0 0-2.04-4.31A2.5 2.5 0 0 0 14.5 2z"/></symbol>
+    <symbol id="i-arrow-sub" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></symbol>
+    <symbol id="i-corner" viewBox="0 0 24 24"><path d="M6 4v9a3 3 0 0 0 3 3h9"/><path d="M14 12l4 4-4 4"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 4h4M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></symbol>
+  </svg>
+  <svg width="0" height="0" style="position:absolute;opacity:0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="gHero" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#4a8dff"/><stop offset="100%" stop-color="#39c5cf"/>
+      </linearGradient>
+    </defs>
+  </svg>
+  <!-- 欢迎页（首启 1.2s 动画 + 后台加载最近任务，二者就绪后自动进入主页） -->
+  <div id="page-welcome" class="page">
+    <div class="homescroll" style="flex:1;display:flex;align-items:center;justify-content:center">
+      <div class="hero welcome">
+        <div class="hero-mark"><svg viewBox="0 0 24 24"><path d="M12 2.6l2.6 5.3 5.9.85-4.3 4.2 1 5.85L12 15.9l-5.2 2.9 1-5.85-4.3-4.2 5.9-.85z"/></svg></div>
+        <div class="hero-title" data-t="子代理">子代理</div>
+        <div class="hero-sub">正在加载最近任务…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 主页：首屏（顶部搜索栏 + 图标 + 一句话，下滑出现最近任务） -->
+  <div id="page-home" class="page" style="display:none">
+
+    <div class="searchbar topbar">
+      <svg class="sb-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="homeSearch" placeholder="搜索子代理任务…">
+      <button class="sb-add" data-act="goList" title="查看全部任务">
+        <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+    <div class="homescroll" id="homescroll">
+      <div class="hero">
+        <div class="hero-mark">
+          <svg viewBox="0 0 24 24"><path d="M12 2.6l2.6 5.3 5.9.85-4.3 4.2 1 5.85L12 15.9l-5.2 2.9 1-5.85-4.3-4.2 5.9-.85z"/></svg>
+        </div>
+        <div class="hero-title" data-t="子代理">子代理</div>
+        <div class="hero-sub">派一个会自己动手的子代理，回来只交结论</div>
+      </div>
+      <div class="recent-head">
+        <span>最近任务</span>
+        <span class="recent-tip">长按任务可删除</span>
+        <button class="recent-more" data-act="goList">全部</button>
+      </div>
+      <div id="homeRecent" class="home-list recent"></div>
+    </div>
+  </div>
+
+  <!-- 任务列表页 -->
+  <div id="page-list" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="goHome" title="返回"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title">全部任务</div>
+      <div class="bar-actions">
+        <button class="icon-btn" id="multiBtn" data-act="enterMulti" title="批量删除"><svg><use href="#i-trash"/></svg></button>
+        <button class="icon-btn" data-act="openInboxBtn" title="收件箱"><svg><use href="#i-inbox"/></svg></button>
+        <button class="icon-btn" data-act="goCfg" title="配置"><svg><use href="#i-gear"/></svg></button>
+        <button class="icon-btn pri" data-act="goNew" title="新建"><svg><use href="#i-plus"/></svg></button>
+      </div>
+    </header>
+    <!-- 批量操作条：进入多选后出现 -->
+    <div class="multibar" id="multiBar" style="display:none">
+      <span id="multiCount">已选 0 项</span>
+      <div class="multibar-acts">
+        <button class="btn" data-act="exitMulti">取消</button>
+        <button class="btn danger" id="multiDel" data-act="deleteSelected">删除</button>
+      </div>
+    </div>
+    <div class="searchbar inline">
+      <svg class="sb-ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="listSearch" placeholder="筛选任务标题或状态…">
+    </div>
+    <div id="homeList" class="home-list"></div>
+  </div>
+
+
+  <!-- 收件箱：邮件列表（用户定，2026-11-05）—— 不再用通用弹窗 -->
+  <div id="page-inbox" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="goHome" title="返回"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title">收件箱</div>
+      <div class="bar-actions">
+        <button class="icon-btn" data-act="inboxClearAll" title="全部已读"><svg><use href="#i-check"/></svg></button>
+      </div>
+    </header>
+    <div id="inboxList" class="mail-list"></div>
+  </div>
+  <!-- 邮件阅读页：Markdown 全文渲染 -->
+  <div id="page-mail" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="backToInbox" title="返回列表"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title" id="mailTitle">结论</div>
+      <div class="bar-actions"></div>
+    </header>
+    <div id="mailBody" class="mail-body md-body"></div>
+  </div>
+  <!-- 新建页 -->
+  <div id="page-new" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="backList"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title">新建子代理</div>
+      <div class="bar-actions"></div>
+    </header>
+    <div class="form">
+      <label class="lb">任务描述</label>
+      <div class="taskwrap">
+        <textarea id="inTask" rows="3" placeholder="要子代理做什么…"></textarea>
+        <button class="expandbtn" data-act="editFull" title="全屏编辑">
+          <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+      </div>
+
+      <!-- 权限卡片 -->
+      <div class="ctxcard" id="btnPerm" data-act="togglePerm">
+        <div class="ctxcard-l">
+          <svg class="ctxico"><use href="#i-wrench"/></svg>
+          <div>
+            <div class="ctxcard-t" id="vPerm">工具与目录</div>
+            <div class="ctxcard-d" id="vPermSub">不限制工具 · 未选目录</div>
+          </div>
+        </div>
+        <svg class="chv"><use href="#i-chev-r"/></svg>
+      </div>
+      <div class="ctxpanel" id="permBox" style="display:none">
+        <!-- 三个控件改成纵向独占一行，不再两两挤在同一排 -->
+        <div class="fld">
+          <label class="lb">允许工具</label>
+          <button class="btn half" data-act="openTools">选择工具 <span id="vTools">不限制</span></button>
+        </div>
+        <div class="fld">
+          <label class="lb">工作目录</label>
+          <button class="btn half" data-act="pickWs">选择目录 <span id="vWs">未选择</span></button>
+        </div>
+        <div class="fld">
+          <button class="btn" data-act="usePrivateWs">使用私有工作区</button>
+        </div>
+        <div class="hint">不选工具 = 全部允许（只读工具可直接跑，写类仍需目录）。目录既是工作区，也是写入范围。</div>
+        <!-- 目录真实值：由「目录」按钮的浏览器写入，不直接暴露输入框 -->
+        <input id="inWs" type="hidden">
+      </div>
+
+      <!-- 运行参数卡片 -->
+      <div class="ctxcard" id="cardRun" data-act="toggleRun">
+        <div class="ctxcard-l">
+          <svg class="ctxico"><use href="#i-gear"/></svg>
+          <div>
+            <div class="ctxcard-t" id="vRun">运行参数</div>
+            <div class="ctxcard-d" id="vRunSub">20 步 · 90 秒 · 深度不限 · Medium</div>
+          </div>
+        </div>
+        <svg class="chv"><use href="#i-chev-r"/></svg>
+      </div>
+      <div class="ctxpanel" id="runBox" style="display:none">
+        <div class="row3">
+          <div class="fld"><label class="lb">步数上限</label><input id="inSteps" value="20" inputmode="numeric"></div>
+          <div class="fld"><label class="lb">单步超时ms</label><input id="inTimeout" value="90000" inputmode="numeric"></div>
+          <div class="fld"><label class="lb">最大深度</label><input id="inDepth" value="0" inputmode="numeric" placeholder="0"></div>
+        </div>
+        <div class="hint">最大深度：子代理最多连续派生几层下级子代理。0 = 不限制；设为 N 后第 N 层以下无法再派活，防止无限套娃。</div>
+        <!-- 思考等级：滑块 + 填充进度，0=Off 3=High -->
+        <div class="fld">
+          <label class="lb">思考等级 <span id="vThink" class="thinknow">Medium</span></label>
+          <div class="sliderwrap">
+            <div class="sliderfill" id="thinkFill" style="width:33.3%"></div>
+            <input id="inThink" type="range" min="0" max="3" step="1" value="1" class="slider">
+          </div>
+          <div class="slines"><span>Off</span><span>Low</span><span>Medium</span><span>High</span></div>
+        </div>
+      </div>
+
+      <button class="btn pri big" data-act="doCreate">创建子代理</button>
+      <div class="hint">未配置密钥时任务无法推进。密钥在配置页填写。</div>
+    </div>
+  </div>
+
+<!-- 全屏编辑页：任务描述写长了在这里写，输入即保存，左上角退出 -->
+  <div id="page-full" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="closeFull"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title">任务描述 · 全屏编辑</div>
+      <div class="bar-actions"><span class="fulltip" id="fullTip">自动保存</span></div>
+    </header>
+    <textarea id="inTaskFull" class="fulltext" placeholder="要子代理做什么…字数多就在这里写"></textarea>
+  </div>
+
+  <!-- 详情页 -->
+  <div id="page-detail" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="backList"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title" id="dtTitle">…</div>
+      <div class="bar-actions">
+        <button class="icon-btn danger" id="dtDel" data-act="deleteCur" title="删除任务"><svg><use href="#i-trash"/></svg></button>
+        <button class="icon-btn" id="dtClose" data-act="closeCur" title="关闭任务"><svg><use href="#i-x"/></svg></button>
+      </div>
+    </header>
+    <div class="statusline" id="dtStatus"></div>
+    <!-- 底部悬浮操作：右下角两个圆点（推进=箭头 / 停止=叉），不再占顶部一整条 -->
+    <div class="dtfab" id="dtBar">
+      <button class="dtfab-btn" id="btnRun" data-act="runCur" title="继续推进"><svg><use href="#i-send"/></svg></button>
+      <button class="dtfab-btn stop" id="btnStop" data-act="stopCur" title="停止"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <!-- 运行中提示：灰色长椭圆，固定在消息区顶部，输出完自动消失 -->
+    <div class="dtlive" id="dtLive" style="display:none">
+      <span class="dtdot"></span><span id="dtLiveTxt">生成中…</span>
+    </div>
+    <div id="dtChat" class="dt-chat"></div>
+    <!-- 思考块占满屏时的一键收起入口 -->
+    <button class="thinkfloat" id="thinkFloat" data-act="collapseThink" style="display:none">
+      <svg viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg><span>收起思考过程</span>
+    </button>
+    <!-- 追问入口已移除：子代理回完结论即终止，追问由主代理调 subagent_resume 完成 -->
+    <div class="inputbar" id="dtCompose" style="display:none">
+      <input id="dtInput" placeholder="继续给子代理发消息…">
+      <button class="icon-btn pri" data-act="sendMsg"><svg><use href="#i-send"/></svg></button>
+    </div>
+  </div>
+
+  <!-- 消息/步骤详情抽屉 -->
+  <div id="sheet-mask"></div>
+  <div id="sheet">
+    <div class="sheet-head">
+      <div id="sheetTitle">消息信息</div>
+      <button class="icon-btn" data-act="sheetClose"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div id="sheetBody"></div>
+  </div>
+
+  <!-- 配置页 -->
+  <div id="page-cfg" class="page" style="display:none">
+    <header class="bar">
+      <button class="icon-btn" data-act="backList"><svg><use href="#i-back"/></svg></button>
+      <div class="bar-title">配置</div>
+      <div class="bar-actions"></div>
+    </header>
+    <div class="form">
+      <!-- 顶部状态卡：一眼看完当前状态 -->
+      <div class="cfg-card">
+        <div class="cfg-row"><span class="cfg-lb">密钥</span><span class="cfg-val" id="cfgKey">未配置</span></div>
+        <div class="cfg-row"><span class="cfg-lb">连通性</span><span class="cfg-val" id="cfgConn">未测试</span></div>
+        <div class="cfg-row"><span class="cfg-lb">模型能力</span><span class="cfg-val" id="cfgCaps">点下面「测试连通性」</span></div>
+      </div>
+      <div id="probeLayers"></div>
+
+      <!-- API 设置：四项一张卡一张，仿宿主样式 -->
+      <div class="sec-head">
+        <svg class="sec-ico"><use href="#i-gear"/></svg>
+        <span>API 设置</span>
+      </div>
+
+      <div class="cfg-block" data-act="pickProv">
+        <div class="cb-lb">API 提供商</div>
+        <div class="cb-sub">点击选择 API 提供商</div>
+        <div class="cb-val"><span id="cfgProv">未设置</span>
+          <svg class="cb-chev"><use href="#i-chev-d"/></svg>
+        </div>
+      </div>
+
+      <div class="cfg-block">
+        <div class="cb-lb">API 端点</div>
+        <div class="cb-sub">填到根就行，例如 api.deepseek.com</div>
+        <div class="cb-row">
+          <input id="inEp" placeholder="https://api.deepseek.com">
+          <button class="cb-ico" data-act="pickEp" title="选择协议后缀">
+            <svg><use href="#i-chev-d"/></svg>
+          </button>
+        </div>
+        <div class="ep-pre" id="epPre">将自动补全为 —</div>
+      </div>
+
+      <div class="cfg-block">
+        <div class="cb-lb">API 密钥</div>
+        <div class="cb-sub">点开即显明文；填完自动保存，失焦显示已配置状态</div>
+        <div class="cb-row">
+          <input id="inKey" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false">
+          <button class="cb-ico" id="btnEye" data-act="toggleKey" title="显示密钥">
+            <svg><use href="#i-eye"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="cfg-block">
+        <div class="cb-lb">模型名称</div>
+        <div class="cb-sub" id="cbModelSub">从列表里选一个，或直接手填</div>
+        <div class="cb-row">
+          <input id="inModel" placeholder="model name">
+          <button class="cb-ico" data-act="pickModel" title="从模型列表选择">
+            <svg><use href="#i-list"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="cfg-tip" id="cfgTip" data-act="doProbe" style="display:none">
+        <svg><use href="#i-check"/></svg>
+        <span id="cfgTipTxt">端点、密钥、模型都填好了，点这里测试连通性</span>
+        <span class="ct-go">测试</span>
+      </div>
+
+      <button class="btn pri big" id="btnSaveCfg" data-act="doSaveCfg">保存全部设置</button>
+      <button class="btn" data-act="doProbe">测试连通性</button>
+      <div class="hint">端点 / 模型改动后点「保存全部设置」</div>
+    </div>
+  </div>
+
+<!-- 遮罩：弹窗与确认框共用 -->
+  <div id="mask"></div>
+
+  <!-- 通用弹窗（选择器用：带搜索与勾选） -->
+  <div id="dlg">
+    <div class="dlg-head">
+      <div id="dlgTitle">标题</div>
+      <button class="icon-btn" data-act="dlgCancel"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <input id="dlgSearch" placeholder="搜索…">
+    <div id="dlgBody"></div>
+    <div id="dlgFoot"></div>
+  </div>
+
+  <!-- 确认弹窗（只用于「删除」这类是非确认，不带搜索、不带勾选） -->
+  <div id="cfm">
+    <div class="cfm-head">
+      <div id="cfmTitle">确认</div>
+    </div>
+    <div class="cfm-body" id="cfmBody"></div>
+    <div class="cfm-foot">
+      <button class="btn" data-act="cfmNo">取消</button>
+      <button class="btn danger" data-act="cfmYes">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 堆叠式通知容器：
+     新消息插到最上层，已有条目自动下滑；每条独立计时，互不覆盖。
+     对齐宿主右侧聊天栏的弹出观感。 -->
+<div id="toastStack" aria-live="polite"></div>
+<script src="./panel.js"></script>
+</body>
+</html>

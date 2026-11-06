@@ -1,0 +1,3028 @@
+/* panel.js — 子代理面板（对话时间线） */
+(function () {
+'use strict';
+
+  /* ── 生命周期守卫 ──
+     页面被销毁（宿主切走 / 关闭 WebView）后，JsEngine 就没了，
+     此时任何定时器再回调 SBNative 都会抛「JsEngine already destroyed」。
+     这里包装定时器 + 挂销毁钩子，页面一死全部停手。 */
+  var ALIVE = true, _timers = [], _ivals = [];
+  var _rawST = window.setTimeout, _rawSI = window.setInterval;
+  window.setTimeout = function (fn, ms) {
+    var id = _rawST.call(window, function () {
+      if (!ALIVE) return;
+      try { fn(); } catch (e) {}
+    }, ms);
+    _timers.push(id);
+    return id;
+  };
+  window.setInterval = function (fn, ms) {
+    var id = _rawSI.call(window, function () {
+      if (!ALIVE) { try { clearInterval(id); } catch (e) {} return; }
+      try { fn(); } catch (e) {}
+    }, ms);
+    _ivals.push(id);
+    return id;
+  };
+  function shutdown() {
+    if (!ALIVE) return;
+    ALIVE = false;
+    for (var i = 0; i < _ivals.length; i++) { try { clearInterval(_ivals[i]); } catch (e) {} }
+    for (var j = 0; j < _timers.length; j++) { try { clearTimeout(_timers[j]); } catch (e) {} }
+    _ivals.length = 0; _timers.length = 0;
+    try { S.advancing = false; } catch (e) {}
+  }
+  function on(ev, fn) {
+    try { if (window.addEventListener) window.addEventListener(ev, fn); } catch (e) {}
+  }
+on('pagehide', shutdown);
+  on('beforeunload', shutdown);
+  on('unload', shutdown);
+
+  /* ── 可视高度同步 ──
+     Android WebView 里 100vh 不随键盘变化，键盘收起后常留一条空白。
+     用 visualViewport 实时把高度写进 --vh，布局立刻跟着还原。 */
+  function syncViewport() {
+    var vv = window.visualViewport;
+    var h = vv ? vv.height : (window.innerHeight || 0);
+    if (!h) return;
+    try { document.documentElement.style.setProperty('--vh', h + 'px'); } catch (e) {}
+    /* 键盘收起后再补一帧，处理部分机型延迟上报 */
+    setTimeout(function () {
+      var v2 = window.visualViewport;
+      var h2 = v2 ? v2.height : (window.innerHeight || 0);
+      if (h2) { try { document.documentElement.style.setProperty('--vh', h2 + 'px'); } catch (e2) {} }
+    }, 120);
+  }
+  on('resize', syncViewport);
+  on('orientationchange', syncViewport);
+  if (window.visualViewport && window.visualViewport.addEventListener) {
+    window.visualViewport.addEventListener('resize', syncViewport);
+    window.visualViewport.addEventListener('scroll', syncViewport);
+  }
+
+  window.onerror = function (msg, src, line, col) {
+    try {
+      var b = document.getElementById('booterr');
+      if (!b) { b = document.createElement('div'); b.id = 'booterr'; b.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#e06c5a;color:#fff;font:11px monospace;padding:6px 8px;max-height:40%;overflow:auto;white-space:pre-wrap;word-break:break-all'); if (document.body) document.body.appendChild(b); }
+      b.textContent = '[ERR] ' + msg + ' @' + line + ':' + col + '\n' + (b.textContent.split('\n')[1] || '');
+    } catch (e) {}
+  };
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? '' : s).split('&').join('&' + 'amp;').split('<').join('&' + 'lt;').split('>').join('&' + 'gt;').split('\x22').join('&' + 'quot;'); }
+  /* 反向还原 esc（&amp; 必须最后还原，否则 &amp;lt; 会被拆错） */
+  function unesc(s) {
+    var AMP = '\x26', LT = '\x26lt;', GT = '\x26gt;', QT = '\x26quot;';
+    return String(s == null ? '' : s)
+      .split(LT).join('<').split(GT).join('>').split(QT).join('\x22').split(AMP).join('&');
+  }
+  /* ── 数学公式渲染 ──
+   两套引擎：
+   1) KaTeX（可选）：页面里若存在 window.katex 就用它，效果最好
+   2) 内置轻量渲染器（默认）：不依赖网络，覆盖数学证明常用子集，
+      绝不会因为 CDN 挂掉而把公式显示成一堆反斜杠。
+   识别三种写法：$$ 包裹 / $ 包裹 / 裸 LaTeX（比如 \frac{a}{b}，模型常这么写）*/
+
+/* 单字符/命令 → HTML 片段 */
+var TEX_SYM = {
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', varepsilon: 'ε',
+  zeta: 'ζ', eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ',
+  nu: 'ν', xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ',
+  phi: 'φ', varphi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π',
+  Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+  times: '×', div: '÷', cdot: '·', pm: '±', mp: '∓', ast: '∗',
+  le: '≤', leq: '≤', ge: '≥', geq: '≥', ne: '≠', neq: '≠',
+  approx: '≈', equiv: '≡', sim: '∼', simeq: '≃', cong: '≅', propto: '∝',
+  ll: '≪', gg: '≫', lt: '<', gt: '>',
+  infty: '∞', partial: '∂', nabla: '∇', ell: 'ℓ', hbar: 'ℏ',
+  to: '→', rightarrow: '→', leftarrow: '←', Rightarrow: '⇒', Leftarrow: '⇐',
+  leftrightarrow: '↔', Leftrightarrow: '⇔', mapsto: '↦', implies: '⟹', iff: '⟺',
+  uparrow: '↑', downarrow: '↓', longrightarrow: '⟶',
+  in: '∈', notin: '∉', ni: '∋', subset: '⊂', subseteq: '⊆', supset: '⊃',
+  supseteq: '⊇', cup: '∪', cap: '∩', setminus: '∖', emptyset: '∅', varnothing: '∅',
+  forall: '∀', exists: '∃', neg: '¬', land: '∧', lor: '∨',
+  sum: '∑', prod: '∏', int: '∫', oint: '∮',
+  cdots: '⋯', ldots: '…', dots: '…', vdots: '⋮', ddots: '⋱',
+  therefore: '∴', because: '∵', angle: '∠', perp: '⊥', parallel: '∥',
+  circ: '∘', prime: '′', degree: '°',
+  lfloor: '⌊', rfloor: '⌋', lceil: '⌈', rceil: '⌉', langle: '⟨', rangle: '⟩',
+  quad: '\u2003', qquad: '\u2003\u2003', ' ': '\u00a0', ',': '\u2009', ';': '\u2005',
+  '{': '{', '}': '}', '%': '%', '#': '#', '&': '&', '_': '_',
+  '|': '|', backslash: '∖', star: '⋆', bullet: '•', oplus: '⊕', otimes: '⊗'
+};
+/* 需要特殊排版的命令（上下标、分数、根号等），在解析器里单独处理 */
+var TEX_FONT = {
+  mathbb: 'font-family:"Times New Roman",serif;font-weight:600;',
+  mathbf: 'font-weight:700;', mathit: 'font-style:italic;',
+  mathrm: 'font-style:normal;', text: '', operatorname: '', mathscr: 'font-style:italic;'
+};
+var TEX_BIGOP = { sum: 1, prod: 1, int: 1, oint: 1, lim: 1, max: 1, min: 1, sup: 1, inf: 1 };
+
+function texEsc(s) { return esc(s); }
+
+/* 递归下降：把一段 TeX 转成 HTML。ctx 里带 i 指针与源串 */
+function texParse(src) {
+  var i = 0, n = src.length;
+  /* 读一个「原子」：命令、{组}、单字符 */
+  function readAtom() {
+    skipSpace();
+    if (i >= n) return { html: '', big: false };
+    var c = src.charAt(i);
+    if (c === '{') {
+      i++;
+      var inner = readGroup();
+      return { html: inner, big: false };
+    }
+    if (c === '\\') {
+      i++;
+      var name = '';
+      while (i < n && /[a-zA-Z]/.test(src.charAt(i))) { name += src.charAt(i); i++; }
+      if (!name) { /* \{ \} \% 这类单符号命令 */
+        var sym0 = src.charAt(i); i++;
+        return { html: texEsc(TEX_SYM[sym0] || sym0), big: false };
+      }
+      return readCommand(name);
+    }
+    i++;
+    if (c === '^' || c === '_') { i--; return { html: '', big: false }; }
+    if (c === ' ') return { html: '\u00a0', big: false };
+    return { html: texEsc(c), big: false };
+  }
+  function readGroup() {
+    var depth = 1, start = i;
+    while (i < n && depth > 0) {
+      var c = src.charAt(i);
+      if (c === '\\') { i += 2; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (!depth) break; }
+      i++;
+    }
+    var raw = src.slice(start, i);
+    i++;   /* 吃掉 } */
+    return texParse(raw);
+  }
+  function skipSpace() { while (i < n && src.charAt(i) === ' ') i++; }
+  /* 上下标：^ 与 _ 后面统一跟一个原子 */
+  function readScript() {
+    var sup = '', sub = '';
+    for (var guard = 0; guard < 2; guard++) {
+      skipSpace();
+      var c = src.charAt(i);
+      if (c === '^') { i++; sup = readAtom().html; }
+      else if (c === '_') { i++; sub = readAtom().html; }
+      else break;
+    }
+    if (!sup && !sub) return '';
+    if (sup && sub) return '<span class="t-ss"><span class="t-su">' + sub + '</span><span class="t-sd">' + sup + '</span></span>';
+    if (sup) return '<sup class="t-sup">' + sup + '</sup>';
+    return '<sub class="t-sub">' + sub + '</sub>';
+  }
+  function readCommand(name) {
+    /* 字体命令：后面跟一个组，整组套字体 */
+    if (TEX_FONT.hasOwnProperty(name)) {
+      var g = readAtom().html;
+      var st = TEX_FONT[name];
+      return { html: st ? '<span style="' + st + '">' + g + '</span>' : g, big: false };
+    }
+    if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
+      var a = readAtom().html, b = readAtom().html;
+      return { html: '<span class="t-frac"><span class="t-num">' + a + '</span><span class="t-den">' + b + '</span></span>', big: false };
+    }
+    if (name === 'binom') {
+      var a2 = readAtom().html, b2 = readAtom().html;
+      return { html: '<span class="t-bin"><span>' + a2 + '</span><span>' + b2 + '</span></span>', big: false };
+    }
+    if (name === 'sqrt') {
+      var idx = '';
+      skipSpace();
+      if (src.charAt(i) === '[') {
+        var close = src.indexOf(']', i);
+        if (close > 0) { idx = texParse(src.slice(i + 1, close)); i = close + 1; }
+      }
+      var body = readAtom().html;
+      return { html: '<span class="t-sqrt">' + (idx ? '<span class="t-rad">' + idx + '</span>' : '') + '<span class="t-radsym">√</span><span class="t-radbody">' + body + '</span></span>', big: false };
+    }
+    if (name === 'left' || name === 'right' || name === 'big' || name === 'Big' || name === 'bigl' || name === 'bigr') {
+      skipSpace();
+      var d = src.charAt(i);
+      if (d) { i++; }
+      var map0 = { '.': '', '(': '(', ')': ')', '[': '[', ']': ']', '|': '|' };
+      var ch = map0.hasOwnProperty(d) ? map0[d] : (TEX_SYM[d] || d);
+      return { html: texEsc(ch), big: false };
+    }
+    if (name === 'begin') {
+      /* 环境：align/aligned/gather → 多行对齐；cases → 左花括号；matrix 系 → 矩阵；
+         array → 通用表格。共同点：按 \\\\ 分行、按 & 分列。
+         以前这里直接 readAtom() 吞掉环境名，整段内容被丢弃 —— 这是 LaTeX「显示不全」的根因。 */
+      var envName = '';
+      skipSpace();
+      if (src.charAt(i) === '{') {
+        var closeE = src.indexOf('}', i);
+        if (closeE > 0) { envName = src.slice(i + 1, closeE).trim(); i = closeE + 1; }
+      }
+      /* 收集到匹配的 \\end{同名} */
+      var depth = 1, startE = i, endE = -1;
+      while (i < n) {
+        var nx = src.indexOf('\\begin', i);
+        var ex = src.indexOf('\\end', i);
+        if (ex < 0) break;
+        if (nx >= 0 && nx < ex) { depth++; i = nx + 6; continue; }
+        /* 检查 \\end{envName} 是否同名 */
+        var braceA = src.indexOf('{', ex);
+        var braceB = braceA > 0 ? src.indexOf('}', braceA) : -1;
+        var nm = braceB > 0 ? src.slice(braceA + 1, braceB).trim() : '';
+        if (nm === envName) {
+          depth--;
+          if (depth === 0) { endE = ex; i = braceB + 1; break; }
+        }
+        i = ex + 4;
+      }
+      if (endE < 0) { endE = n; i = n; }
+      var innerSrc = src.slice(startE, endE);
+      /* 按 \\ 切行，按 & 切列 */
+      var rows = innerSrc.split(/\\\\/);
+      var outRows = [];
+      for (var ri = 0; ri < rows.length; ri++) {
+        var rowTxt = rows[ri];
+        if (!rowTxt || !rowTxt.trim()) continue;
+        var cols = rowTxt.split('&');
+        var cells = [];
+        for (var ci = 0; ci < cols.length; ci++) {
+          cells.push('<span class="t-tcell">' + texParse(cols[ci]) + '</span>');
+        }
+        outRows.push(cells.join(''));
+      }
+      var bodyHtml = outRows.join('<span class="t-tnl"></span>');
+      var isMatrix = /^(matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|array)$/.test(envName);
+      var isCases = /^(cases|dcases)$/.test(envName);
+      if (isCases) {
+        return { html: '<span class="t-cases"><span class="t-cbrace">{</span><span class="t-cbody">' + bodyHtml + '</span></span>', big: false };
+      }
+      if (isMatrix) {
+        var l = envName === 'pmatrix' ? '(' : (envName === 'bmatrix' ? '[' : (envName === 'vmatrix' ? '|' : ''));
+        var r = envName === 'pmatrix' ? ')' : (envName === 'bmatrix' ? ']' : (envName === 'vmatrix' ? '|' : ''));
+        return { html: '<span class="t-mat">' + (l ? '<span class="t-mbr">' + l + '</span>' : '')
+          + '<span class="t-mbody">' + bodyHtml + '</span>' + (r ? '<span class="t-mbr">' + r + '</span>' : '') + '</span>', big: false };
+      }
+      /* align / aligned / gather / split / eqnarray：多行块。
+         big:false —— 环境是整块，不能再套 t-bigop 放大字号。 */
+      return { html: '<span class="t-align">' + bodyHtml + '</span>', big: false };
+    }
+    if (name === 'end') {
+      /* 单独的 \\end（已由 begin 消费掉成对的情况）：吞掉环境名即可 */
+      readAtom();
+      return { html: '', big: false };
+    }
+    if (name === 'color') { readAtom(); return { html: '', big: false }; }
+    if (name === 'tag' || name === 'label') {
+      var t = readAtom().html;
+      return { html: '<span class="t-tag">(' + t + ')</span>', big: false };
+    }
+    if (name === 'overline' || name === 'bar') {
+      return { html: '<span class="t-ovl">' + readAtom().html + '</span>', big: false };
+    }
+    if (name === 'underline') {
+      return { html: '<span class="t-udl">' + readAtom().html + '</span>', big: false };
+    }
+    if (name === 'hat' || name === 'vec' || name === 'tilde' || name === 'dot') {
+      var mark = (name === 'vec') ? '→' : (name === 'hat') ? '^' : (name === 'tilde') ? '~' : '·';
+      return { html: '<span class="t-acc"><span>' + readAtom().html + '</span><span class="t-accm">' + mark + '</span></span>', big: false };
+    }
+    if (TEX_SYM.hasOwnProperty(name)) {
+      return { html: texEsc(TEX_SYM[name]), big: !!TEX_BIGOP[name] };
+    }
+    /* 不认识的命令：原样显示命令名，不吞内容 */
+    return { html: '<span class="t-unk">\\' + texEsc(name) + '</span>', big: false };
+  }
+  var out = '', pendingBig = null;
+  while (i < n) {
+    skipSpace();
+    if (i >= n) break;
+    var c0 = src.charAt(i);
+    /* 上下标直接跟在原子后，这里单独收 */
+    if (c0 === '^' || c0 === '_') { out += readScript(); continue; }
+    var atom = readAtom();
+    if (!atom.html) continue;
+    if (atom.big) { pendingBig = atom.html; out += '<span class="t-bigop">' + atom.html + '</span>'; }
+    else out += atom.html;
+    if (i < n) {
+      var c1 = src.charAt(i);
+      if (c1 === '^' || c1 === '_') {
+        var sc = readScript();
+        /* 大运算符的上下限做成上下叠放 */
+        if (pendingBig) { out = out.replace(/<span class="t-bigop">[\s\S]*?<\/span>$/, '<span class="t-bigop">' + pendingBig + '<span class="t-limits">' + sc + '</span></span>'); }
+        else out += sc;
+      }
+    }
+    pendingBig = null;
+  }
+  return out;
+  }
+/* 公式入口：tex 是已 esc 的串。优先 KaTeX，没有就用内置渲染器 */
+function mathHtml(texEsc, display) {
+  var raw = unesc(texEsc);
+  var k = (typeof window !== 'undefined') ? window.katex : null;
+  if (k && typeof k.renderToString === 'function') {
+    try {
+      return k.renderToString(raw, { displayMode: !!display, throwOnError: false, strict: 'ignore' });
+    } catch (e) { /* 落到内置渲染器 */ }
+  }
+  var inner;
+  try { inner = texParse(raw); } catch (e2) { inner = texEsc(raw); }
+  return '<span class="t-math' + (display ? ' t-blk' : '') + '">' + inner + '</span>';
+}
+  /* 轻量 markdown 渲染：先转义再做结构，防 XSS。
+     支持：围栏代码块、行内代码、粗体、斜体、标题、无序/有序列表、
+           引用、分割线、链接、表格（简单两列以上）。 */
+  function md(src) {
+    var s = esc(src);
+    var blocks = [];
+    /* 1. 先抽出围栏代码块，避免里面的符号被后续规则误伤 */
+    s = s.replace(/```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g, function (_, lang, code) {
+      var i = blocks.length;
+      blocks.push('<pre class="md-code"><code>' + code.replace(/\n$/, '') + '</code></pre>');
+      return '\u0000B' + i + '\u0000';
+    });
+    /* 2. 行内代码同样先抽出来 */
+    var inls = [];
+    s = s.replace(/`([^`\n]+)`/g, function (_, c) {
+      var i = inls.length;
+      inls.push('<code class="md-ic">' + c + '</code>');
+      return '\u0000I' + i + '\u0000';
+    });
+    /* 2.5 数学公式：先抽成占位，渲染后交给 KaTeX。
+       块级 $$...$$ 优先，避免被行内规则吃掉；
+       行内 $...$ 要求两侧不是 \ 且不跨行，减少误伤正文里的美元符号。 */
+    var maths = [];
+    s = s.replace(/\$\$([\s\S]+?)\$\$/g, function (_, tex) {
+      var i = maths.length;
+      maths.push({ tex: tex.trim(), display: true });
+      return '\u0000M' + i + '\u0000';
+    });
+    s = s.replace(/(^|[^\\$])\$([^$\n]+?)\$/g, function (_, pre, tex) {
+      var i = maths.length;
+      maths.push({ tex: tex.trim(), display: false });
+      return pre + '\u0000M' + i + '\u0000';
+    });
+    /* 2.6 裸 LaTeX：模型经常直接写 \frac{a}{b}、a^{2}+b^{2} 而不加 $ 包裹。
+       识别策略必须保守，只吃「确定是公式」的片段，避免把正文里的反斜杠当公式：
+       - \( ... \) 与 \[ ... \] 明确定界符
+       - 含 \命令 的一段（到括号/逗号/中文/行尾为止）
+       - 纯上下标表达式 a^{2}、x_{1}
+       普通英文和中文正文不受影响。 */
+    s = s.replace(/\\\(([\s\S]+?)\\\)/g, function (_, tex) {
+      var i = maths.length; maths.push({ tex: tex.trim(), display: false });
+      return '\u0000M' + i + '\u0000';
+    });
+    s = s.replace(/\\\[([\s\S]+?)\\\]/g, function (_, tex) {
+      var i = maths.length; maths.push({ tex: tex.trim(), display: true });
+      return '\u0000M' + i + '\u0000';
+    });
+    /* 裸反斜杠命令串：以 \命令 开头，一直吃到明显的正文边界 */
+    s = s.replace(/(^|[^\\\w])((?:\\[a-zA-Z]+(?:\{[^{}\n]*\}|\[[^\]\n]*\])*[\s{}^_0-9a-zA-Z+\-*/=<>()|.,:'!]*)+)/g, function (m, pre, body) {
+      if (!/\\[a-zA-Z]{2,}/.test(body)) return m;          /* 不像公式，放过 */
+      if ((body.match(/\\[a-zA-Z]+/g) || []).length > 60) return m;   /* 太长多半误判 */
+      if (/[\u4e00-\u9fa5]/.test(body)) return m;          /* 混中文，放过 */
+      var t = body.replace(/[\s.,:'!]+$/, '');             /* 收尾标点还回去 */
+      var tail = body.slice(t.length);
+      var i = maths.length;
+      maths.push({ tex: t, display: false });
+      return pre + '\u0000M' + i + '\u0000' + tail;
+    });
+    /* 纯上下标：a^{2}、x_i、b^2（没有反斜杠也要认） */
+    s = s.replace(/(^|[^\w\\])([xyabkmnpqrstuvwzABKMNPQRSTUVWZ][a-zA-Z0-9]*\s*(?:[\^_]\s*(?:\{[^{}\n]{1,12}\}|[a-zA-Z0-9]{1,3}))+)/g, function (m, pre, body) {
+      var i = maths.length;
+      maths.push({ tex: body.trim(), display: false });
+      return pre + '\u0000M' + i + '\u0000';
+    });
+    /* 3. 按行处理块级结构 */
+    var lines = s.split('\n');
+    var out = [], listBuf = null, tblBuf = null;
+    function flushList() {
+      if (!listBuf) return;
+      out.push('<' + listBuf.tag + '>' + listBuf.items.join('') + '</' + listBuf.tag + '>');
+      listBuf = null;
+    }
+    function flushTable() {
+      if (!tblBuf) return;
+      out.push('<table class="md-tbl"><thead><tr>' + tblBuf.head + '</tr></thead><tbody>' + tblBuf.rows.join('') + '</tbody></table>');
+      tblBuf = null;
+    }
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i];
+      /* 表格：| a | b |  下一行是 |---|---| */
+      if (/^\s*\|.*\|\s*$/.test(ln) && lines[i + 1] && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+        flushList();
+        var cells = ln.trim().replace(/^\||\|$/g, '').split('|');
+        var head = cells.map(function (c) { return '<th>' + c.trim() + '</th>'; }).join('');
+        tblBuf = { head: head, rows: [] };
+        i++;   // 跳过分隔行
+        /* 继续吃后续表格行 */
+        while (lines[i + 1] && /^\s*\|.*\|\s*$/.test(lines[i + 1])) {
+          i++;
+          var cs = lines[i].trim().replace(/^\||\|$/g, '').split('|');
+          tblBuf.rows.push('<tr>' + cs.map(function (c) { return '<td>' + c.trim() + '</td>'; }).join('') + '</tr>');
+        }
+        flushTable();
+        continue;
+      }
+      if (/^\s*[-*+]\s+/.test(ln)) {
+        flushTable();
+        if (!listBuf || listBuf.tag !== 'ul') { flushList(); listBuf = { tag: 'ul', items: [] }; }
+        listBuf.items.push('<li>' + ln.replace(/^\s*[-*+]\s+/, '') + '</li>');
+        continue;
+      }
+      if (/^\s*\d+\.\s+/.test(ln)) {
+        flushTable();
+        if (!listBuf || listBuf.tag !== 'ol') { flushList(); listBuf = { tag: 'ol', items: [] }; }
+        listBuf.items.push('<li>' + ln.replace(/^\s*\d+\.\s+/, '') + '</li>');
+        continue;
+      }
+      flushList(); flushTable();
+      var m;
+      if ((m = /^\s*(#{1,6})\s+(.*)$/.exec(ln))) {
+        var lv = Math.min(m[1].length + 2, 6);   // h1/h2/h3 起步降两级，避免气泡里字号过大
+        out.push('<h' + lv + ' class="md-h">' + m[2] + '</h' + lv + '>');
+      } else if (/^\s*(---|\*\*\*|___)\s*$/.test(ln)) {
+        out.push('<hr class="md-hr">');
+      } else if ((m = /^\s*&gt;\s?(.*)$/.exec(ln))) {
+        out.push('<blockquote class="md-q">' + m[1] + '</blockquote>');
+      } else if (/^\s*$/.test(ln)) {
+        out.push('<div class="md-gap"></div>');
+      } else {
+        out.push('<div class="md-p">' + ln + '</div>');
+      }
+    }
+    flushList(); flushTable();
+    var html = out.join('');
+    /* 4. 行内样式：粗体 → 斜体 → 删除线 → 链接 */
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    html = html.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    html = html.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      '<a class="md-a" href="$2" target="_blank" rel="noopener">$1</a>');
+    /* 5. 放回代码块与行内代码 */
+    html = html.replace(/\u0000I(\d+)\u0000/g, function (_, n) { return inls[Number(n)] || ''; });
+    html = html.replace(/\u0000B(\d+)\u0000/g, function (_, n) { return blocks[Number(n)] || ''; });
+    /* 6. 最后回填数学公式：此时其它规则都已跑完，公式里的 * _ \ 不会被误当成 markdown */
+    if (maths.length) {
+      html = html.replace(/\u0000M(\d+)\u0000/g, function (_, n) {
+        var it = maths[Number(n)];
+        if (!it) return '';
+        return '<span class="md-math' + (it.display ? ' blk' : '') + '">' + mathHtml(it.tex, it.display) + '</span>';
+      });
+    }
+    return html;
+  }
+  var LIST_TTL = 8000;
+  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, page: 'welcome', probed: false };
+  var WRITE_RE = /(create_file|edit_file|delete_file|move_file|copy_file|write)/;
+  var HIGH = /(delete_file|move_file|terminal|shell)/;
+  var FALLBACK = [
+    ['read_file', '读文件', 0], ['read_file_part', '读文件片段', 0], ['list_files', '列目录', 0],
+    ['file_info', '文件信息', 0], ['file_exists', '文件存在', 0], ['file_grep', '文件搜索', 0], ['find_files', '找文件', 0],
+    ['create_file', '新建文件', 1], ['edit_file', '编辑文件', 1], ['delete_file', '删除文件', 1], ['move_file', '移动文件', 1], ['copy_file', '复制文件', 1]
+  ];
+  var ST_CN = { queued: '待开始', running: '运行中', done: '已完成', failed: '失败', closed: '已关闭', cancelled: '已停止' };
+  var THINK_CN = { off: '关', low: '低', medium: '中', high: '高' };
+  /* 思考等级的英文标签：面板上显示英文，和后端档位名一致，也更好看 */
+  var THINK_EN = { off: 'Off', low: 'Low', medium: 'Medium', high: 'High' };
+  function stCn(s) { return ST_CN[s] || (s || '-'); }
+
+/* ── 堆叠式通知 ──
+   对齐宿主右侧聊天栏：多条同时存在，新的压在最上面，旧的被挤下去。
+   上一版是单节点 #toast，textContent 直接覆盖 —— 连报两条时前一条被吃掉，
+   用户只能看到「闪一下」，这就是「报错太快截不到」的真正原因。
+   现在每条独立节点、独立计时，互不干扰。 */
+var TST_MAX = 4;
+var TST_LIFE = { info: 3000, ok: 2600, warn: 4000, err: 6500 };
+var TST_SVG = {
+  info: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.6v.6"/></svg>',
+  ok: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/></svg>',
+  warn: '<svg class="tst-ico" viewBox="0 0 24 24"><path d="M12 3.4L21 19.4H3z"/><path d="M12 9.6v4.6M12 17.2v.5"/></svg>',
+  err: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8"/></svg>'
+};
+/* 同级别、同文案的重复消息不叠加，只把已有那条刷新计时（避免连点时刷屏） */
+var TST_NODES = [];
+
+function toast(msg, level) {
+  var txt = String(msg == null ? '' : msg);
+  if (!txt) return;
+  var lv = (level === 'ok' || level === 'warn' || level === 'err') ? level : 'info';
+  var box = $('toastStack');
+  if (!box) return;
+
+  /* 去重：完全相同的文案仍在屏上时，不新增，只重置它的寿命 */
+  for (var i = 0; i < TST_NODES.length; i++) {
+    var nd = TST_NODES[i];
+    if (nd && nd.el && nd.txt === txt && !nd.dead) {
+      try { clearTimeout(nd.timer); } catch (eT) {}
+      nd.timer = setTimeout(function () { killToast(nd); }, TST_LIFE[lv]);
+      return;
+    }
+  }
+
+  var el = document.createElement('div');
+  el.className = 'tst' + (lv === 'info' ? '' : ' ' + lv);
+  el.setAttribute('data-lv', lv);
+  el.innerHTML = (TST_SVG[lv] || TST_SVG.info) + '<div class="tst-tx">' + esc(txt) + '</div>';
+
+  var rec = { el: el, txt: txt, lv: lv, timer: null, dead: false };
+
+  /* 点击语义只保留给错误条目：点一下展开全文、再点收回。
+     其他级别点一下没有动作（划一下才是关闭）。
+     注意这里不再用 addEventListener('click')：指针事件已被滑动逻辑接管，
+     用 onTap 回调区分「点击」与「滑动」，避免两者打架。 */
+  var onTapFn = null;
+  if (lv === 'err') {
+    onTapFn = function () {
+      el.classList.toggle('open');
+      try { clearTimeout(rec.timer); } catch (eT) {}
+      if (el.classList.contains('open')) rec.timer = setTimeout(function () { killToast(rec); }, 12000);
+      else rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE.err);
+    };
+  }
+
+  /* 手势区分：位移小于这个值算「点击」，大于算「滑动」 */
+  var TST_TAP_SLOP = 8;
+  /* 横向滑过这个距离就判定关闭（不要求特定方向，左右都行） */
+  var TST_SWIPE_MIN = 46;
+
+  /* 给一条通知挂上「划一下关闭」。
+     用户原话：划一下就能关，划哪里都行。
+     所以不做方向限制、也不要求从边缘起手 —— 整条任意位置都能拖，
+     只按位移距离判定，左右滑都可以。 */
+/* 通知条交互（2026-11-06 重写，用户定）：
+     自由拖动 —— 不锁轴，x/y 都跟手；松手时三种结局：
+     a) 位移很小 → 判点击（err 条目点开全文）
+     b) 位移中等 → 弹回原位
+     c) 位移超限 → 顺着拖动方向飞出屏幕并消失
+     全程只动 transform/opacity，不触发布局。
+     手感的两个关键点：
+     1) pointermove 里先判方向再 preventDefault —— 竖直方向放行给页面滚动，
+        否则通知条会抢走所有竖向滑动，整页感觉「阻塞」；
+     2) 飞出时不能先 reset 再 killToast —— 那会让元素先弹回原位再飞，
+        必须把当前位移原样交给 killToast 接力。 */
+  function bindSwipeClose(el, rec, onTap) {
+    var startX = 0, startY = 0, curX = 0, curY = 0;
+    var tracking = false, decided = false, horiz = false;
+    var pid = null;
+
+    function reset(spring) {
+      tracking = false; decided = false; pid = null;
+      if (spring) {
+        /* 回弹：放开直接截断，用 transition 弹回去 */
+        el.classList.remove('drag');
+        el.style.transition = 'transform .24s cubic-bezier(.2,.9,.3,1), opacity .2s';
+        el.style.transform = 'translate3d(0,0,0)';
+        el.style.opacity = '';
+        setTimeout(function () {
+          if (!rec.dead) { el.style.transition = ''; el.style.transform = ''; }
+        }, 260);
+      } else {
+        el.classList.remove('drag');
+        el.style.transition = '';
+        el.style.transform = '';
+        el.style.opacity = '';
+      }
+      curX = 0; curY = 0;
+    }
+
+    el.addEventListener('pointerdown', function (e) {
+      if (rec.dead) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      tracking = true; decided = false; horiz = false;
+      pid = e.pointerId;
+      startX = e.clientX; startY = e.clientY; curX = 0; curY = 0;
+      /* 按下即清掉 transition 与动画，拖动全程跟手 */
+      el.style.transition = '';
+      el.style.animation = 'none';
+      el.classList.add('drag');
+      try { el.setPointerCapture(pid); } catch (eC) {}
+    });
+
+    el.addEventListener('pointermove', function (e) {
+      if (!tracking || rec.dead) return;
+      curX = e.clientX - startX;
+      curY = e.clientY - startY;
+      var ax = Math.abs(curX), ay = Math.abs(curY);
+      /* 第一次超过 6px 时定方向：横向接管，纵向还给页面滚动 */
+      if (!decided && (ax > 6 || ay > 6)) {
+        decided = true;
+        horiz = ax >= ay;
+      }
+      if (decided && !horiz) {
+        /* 竖向手势：交还给页面，不吞掉滚动 */
+        tracking = false;
+        reset(true);
+        return;
+      }
+      /* 全方向跟手（仅横向判定接管后才走到这里） */
+      el.style.transform = 'translate3d(' + curX + 'px,' + curY + 'px,0)';
+      var dist = Math.sqrt(curX * curX + curY * curY);
+      el.style.opacity = String(Math.max(0.25, 1 - dist / 260));
+      if (horiz) { try { e.preventDefault(); } catch (eP) {} }
+    });
+
+    function finish(e) {
+      if (!tracking || rec.dead) return;
+      var movedX = Math.abs(curX), movedY = Math.abs(curY);
+      var dist = Math.sqrt(curX * curX + curY * curY);
+      try { if (pid != null) el.releasePointerCapture(pid); } catch (eR) {}
+      /* 超限：顺着拖动方向飞出。
+         关键：这里不能 reset()，必须把「当前手指位置」原样交给 killToast 接力，
+         由它从该位置继续推到屏外 —— 否则元素会先弹回原位再飞出去（闪一下）。 */
+      if (dist >= TST_SWIPE_MIN) {
+        var dir;
+        if (movedX >= movedY) dir = curX < 0 ? 'left' : 'right';
+        else dir = curY < 0 ? 'up' : 'down';
+        tracking = false; decided = false; pid = null;
+        killToast(rec, dir, curX, curY);
+        return;
+      }
+      /* 没超限：位移极小算点击，否则弹回 */
+      if (movedX < TST_TAP_SLOP && movedY < TST_TAP_SLOP) {
+        reset();
+        if (onTap) onTap();
+        return;
+      }
+      reset(true);
+    }
+    el.addEventListener('pointerup', finish);
+    el.addEventListener('pointercancel', function () { reset(true); });
+  }
+
+  /* 新的追加到末尾：容器在右下角，最新一条离底部最近，方便拇指划掉 */
+  box.appendChild(el);
+  TST_NODES.push(rec);
+  bindSwipeClose(el, rec, onTapFn);
+
+  /* 超出上限：最旧的那条（数组第一个）立刻淡出 */
+  while (TST_NODES.length > TST_MAX) {
+    killToast(TST_NODES[0]);
+  }
+
+  rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE[lv]);
+}
+
+/* 淡出后移除节点；动画只跑 transform/opacity，不触发重绘。
+   dir / fromX / fromY 可选：手动拖飞时传入，从手指松开的位置接着推到屏外，
+   手感连续不跳变；自动消失不传，走默认的从右侧滑出。 */
+function killToast(rec, dir, fromX, fromY) {
+  if (!rec || rec.dead) return;
+  rec.dead = true;
+  try { clearTimeout(rec.timer); } catch (eT) {}
+  var el = rec.el;
+  for (var i = 0; i < TST_NODES.length; i++) {
+    if (TST_NODES[i] === rec) { TST_NODES.splice(i, 1); break; }
+  }
+  if (!el || !el.parentNode) return;
+  if (dir) {
+    /* 先把元素固定在手指松开的位置（无过渡），再解禁过渡推到屏外。
+       注意：此时 el.style.animation 可能还是 'none'（pointerdown 里设的），
+       必须显式清掉，否则 keyframes 与 transition 抢同一个 transform 属性。 */
+    el.classList.remove('drag');
+    var sx = Number(fromX || 0), sy = Number(fromY || 0);
+    el.style.animation = 'none';
+    el.style.transition = 'none';
+    el.style.transform = 'translate3d(' + sx + 'px,' + sy + 'px,0)';
+    /* 四方向：横飞出 130%，竖飞出 160%（上下留出通知条偏移） */
+    var tx = '0%', ty = '0%';
+    if (dir === 'left') tx = '-130%';
+    else if (dir === 'right') tx = '130%';
+    else if (dir === 'up') ty = '-160%';
+    else if (dir === 'down') ty = '160%';
+    var raf = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame : function (f) { return setTimeout(f, 16); };
+    raf(function () {
+      /* 双 rAF：确保上面那帧的 transform 已被浏览器接受，
+         否则 transition 会从「初始值」起算，看起来就是闪回 */
+      raf(function () {
+        if (!el.parentNode) return;
+        el.style.transition = 'transform .22s cubic-bezier(.3,0,.8,.4), opacity .22s ease-out';
+        el.style.transform = 'translate3d(' + tx + ',' + ty + ',0)';
+        el.style.opacity = '0';
+      });
+    });
+  } else {
+    el.classList.add('out');
+  }
+  setTimeout(function () {
+    try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e2) {}
+  }, dir ? 320 : 260);
+}
+
+/* 兼容旧调用点：err() 语义是「出问题了」，走 err 级；setMsg 保持原行为 */
+function err(m) { toast(m, 'err'); }
+var setMsg = err;
+/* 成功 / 提醒两条便捷入口 */
+function okMsg(m) { toast(m, 'ok'); }
+function warnMsg(m) { toast(m, 'warn'); }
+  /* 触感反馈：能震就震，震不了静默 */
+  function hf() { try { if (navigator && typeof navigator.vibrate === 'function') navigator.vibrate(8); } catch (e) {} }
+
+  /* ── 桥调用 ── */
+  /* 桥是同步阻塞接口，直接调用会卡住 WebView 主线程导致界面不重绘。
+     统一延迟到下一帧再发，保证点击后界面立刻有反馈。 */
+  function call(tool, params, kind, onOk) {
+    var id = ++S.seq;
+    if (kind) S.lastId[kind] = id;
+    var fire0 = function () { callRaw(tool, params, kind, id, onOk); };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () { requestAnimationFrame(fire0); });
+    } else {
+      setTimeout(fire0, 16);
+    }
+  }
+  function callRaw(tool, params, kind, id, onOk) {
+    /* 页面已销毁：直接放弃，不发桥调用（否则报 JsEngine already destroyed） */
+    if (!ALIVE) return;
+    try {
+      if (window.SBNative && typeof SBNative.call === 'function') {
+        var ret = SBNative.call(JSON.stringify({ tool: tool, params: params || {}, kind: kind || '', id: id }));
+        var fire = function (v) {
+          if (!ALIVE) return;
+          if (kind && S.lastId[kind] > id) return;
+          var r = null; try { r = JSON.parse(v); } catch (eP) {}
+          if (!r) { err('返回解析失败'); return; }
+          /* silent：页面销毁期的桥调用，不打扰用户 */
+          if (r.silent) return;
+          if (r.success === false) { err(r.message || '工具返回失败'); }
+          if (onOk) onOk(r, r.data || r); else window.__sbResult(v, kind, id);
+        };
+        if (ret && typeof ret.then === 'function') ret.then(fire, function (eE) {
+          if (!ALIVE) return;
+          onBridgeDrop(kind, eE);
+        });
+        else if (typeof ret === 'string' && ret) fire(ret);
+        else err('桥无返回 tool=' + tool);
+      } else err('桥未注入');
+    } catch (e) {
+      if (!ALIVE) return;
+      onBridgeDrop(kind, e);
+    }
+  }
+  /* 桥超时（20 秒硬上限）不代表后端停了：实测后端会继续跑完并把结果落盘。
+     所以这里不弹错误、不把 advancing 置假，交给 trace 轮询接管。 */
+  function onBridgeDrop(kind, e) {
+    var m = String(e && e.message ? e.message : e);
+    if (/timed? ?out|timeout/i.test(m)) {
+      S.bridgeDropped = (S.bridgeDropped || 0) + 1;
+      /* advance 桥断了：清掉 in-flight 标记，让轮询在读到 idle 后自动补推下一步 */
+      if (kind === 'advance') S.advT = 0;
+      setLive('桥已超时，后端仍在运行，等结果…');
+      return;
+    }
+    if (kind === 'advance') S.advT = 0;
+    err('桥调用失败：' + m);
+  }
+  window.__sbResult = function (json, kind, id) {
+    var r; try { r = JSON.parse(json); } catch (e) { return; }
+    var d = r.data || r;
+    if (kind === 'list') return renderList(d.items || r.items || d, true);
+    if (kind === 'tools') { d.loaded = true; S.tools = d; if (S.dlg) renderDlg($('dlgSearch').value || ''); return; }
+    /* kind === 'chats' 分支已随「附带主对话上下文」功能一并移除：
+       页面不再有对话选择入口，也就没有调用方会发 subagent_chats。 */
+    if (kind === 'cfg') return renderCfg(d);
+    if (kind === 'profiles') { return; }
+    if (kind === 'inbox') return renderInbox(d);
+    if (kind === 'inboxClear') { okMsg('已清空'); openInbox(); return; }
+    if (kind === 'closeTask') { return; }
+    if (kind === 'resume') {
+      if (r && r.success === false) { err(r.message || '恢复失败'); return; }
+      S.curStatus = 'running';
+      toast((r && r.message) || '已恢复，开始生成', 'ok');
+      /* 恢复后优先走流式（真逐字）；不通会自动降级到后端推进 */
+      if (S.cur) setTimeout(function () {
+        if (!ALIVE) return;
+        startRun(S.cur);
+      }, 160);
+      return;
+    }
+    if (kind === 'cancel') {
+      S.advancing = false;
+      okMsg((r && r.message) || '已请求停止');
+      if (S.cur) {
+        /* 停止后立刻拉一次 trace：把已经产出的思考、正文、工具块都留在页面上，
+           不能让用户觉得「点了停止，内容就没了」 */
+        call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+        /* 取消是异步生效的（后端下一步才认标记），再过一会儿补拉一次终态 */
+        setTimeout(function () {
+          if (S.cur && ALIVE) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+        }, 900);
+      }
+      refreshList(false);
+      return;
+    }
+    if (kind === 'spawn') {
+      if (d.task) {
+        S.formDirty = false;
+        S.curStatus = String(d.task.status || 'queued');
+        refreshList(true);
+        openTask(d.task.id);
+        setLive('已创建，正在启动…');
+        okMsg('任务已创建，正在推进…');
+        /* 建完立刻走流式（真逐字）；任何不通都自动降级到后端推进，
+           所以任务绝不会卡在 queued —— 这条保底就是上一轮删流式时缺的那块。 */
+        setTimeout(function () {
+          if (!ALIVE) return;
+          startRun(d.task.id);
+        }, 120);
+      }
+      else err(r.message || '创建失败');
+      return;
+    }
+    if (kind === 'advance') {
+      S.advancing = false;
+      var at2 = (d && d.task) || {};
+      var st2 = String(at2.status || '');
+      if (st2) S.curStatus = st2;
+      if (r && r.success === false) err(r.message || '推进失败');
+      /* 拉最新明细回填（真源） */
+      if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+      /* 只有 queued/running 才继续推；done/failed/cancelled 一律停手，
+         绝不在这里调 resume，否则会把刚跑完的任务重置回 queued */
+      if (st2 === 'queued' || st2 === 'running') {
+        startPoll();
+        /* 一次 advance 只跑一步；还有下一步就排一个短延迟续推。
+           用 S.advT 统一管理这个定时器，切换任务/停止时能一次清干净 */
+        try { clearTimeout(S.advT); } catch (e) {}
+        S.advT = setTimeout(function () {
+          if (!S.cur || S.page !== 'detail') return;
+          advanceTask(S.cur, 1);
+        }, 700);
+      } else if (st2 === 'done') {
+        stopPoll();
+        okMsg('任务已完成');
+        refreshList(true);
+      } else if (st2 === 'failed') {
+        stopPoll();
+        err(at2.error || '任务失败');
+        refreshList(true);
+      } else if (st2 === 'cancelled') {
+        stopPoll();
+        okMsg('任务已停止');
+        refreshList(true);
+      }
+      return;
+    }
+    if (kind === 'steer') { okMsg('已发送'); setTimeout(function () { if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40 }, 'trace'); }, 1200); return; }
+    if (kind === 'trace' && d.turns) return renderTrace(d);
+    if (kind === 'modelsRefreshed') {
+      var mm = d.models || {};
+      if (mm.ok === false) { err(mm.error || '拉取模型列表失败'); return; }
+      fillModels(mm.models || [], !!mm.cached, mm.at || 0);
+      if (mm.count) okMsg(mm.cached ? ('已载入 ' + mm.count + ' 个模型（缓存）') : ('已拉取 ' + mm.count + ' 个模型'));
+      return;
+    }
+    if (kind === 'probe') {
+      renderProbe(d);
+      var pr = (d && d.probe) || {};
+      var m = pr.models;
+      if (pr.verdict) { if (pr.connected === true) okMsg(pr.verdict); else err(pr.verdict); }
+      /* 探测顺带把模型列表拿回来，缓存进内存供下拉用 */
+      if (m && m.models && m.models.length) fillModels(m.models, false, 0);
+      return;
+    }
+    if (kind === 'privateWs') {
+      var ws = (d && d.workspace) || '';
+      if (ws) {
+        $('inWs').value = ws;
+        /* 工作目录文案要同步，否则按钮右边还写着「未选择」，看起来像没生效 */
+        if ($('vWs')) $('vWs').textContent = '私有';
+        okMsg('私有工作区已就绪');
+      } else err('私有工作区创建失败');
+      return;
+    }
+    if (kind === 'ls') return renderBrowse(d);
+    if (kind === 'checkpath') {
+      if (d.checked && !d.exists) { err('路径不存在：' + d.path); return; }
+      if (d.workspace_guess) $('inWs').value = d.workspace_guess;
+      doCreate();
+      return;
+    }
+    if (kind === 'cfgset') {
+      /* 失败分支已在 callRaw 里 err 过，这里必须拦住，否则会误报「已保存」
+         并把 formDirty 清掉，让用户的输入被旧值覆盖 */
+      if (r && r.success === false) return;
+      okMsg('已保存'); S.formDirty = false;
+      call('subagent:subagent_config', { action: 'status' }, 'cfg');
+      return;
+    }
+    /* 密钥写入后：不清空输入框、不重载表单，避免把用户正在填的端点/模型覆盖回旧值 */
+    if (kind === 'cfgkey') {
+      S.keySaving = false;
+      if (r && r.success === false) { err(r.message || '写入失败'); return; }
+      okMsg('密钥已保存');
+      S.keyOk = true;
+      S.keyFilled = true;
+      if ($('cfgKey')) { $('cfgKey').textContent = '已配置'; $('cfgKey').className = 'cfg-val ok'; }
+      syncCfgTip();
+      return;
+    }
+  };
+
+  /* ── 主页：会话列表 ── */
+  /* 列表只在必要时向工具层要一次；TTL 内直接复用缓存，避免每次进/退都重读全部任务文件 */
+  function refreshList(force) {
+    var now = Date.now();
+    if (!force && S.listAt && (now - S.listAt) < LIST_TTL) return;
+    if (S.listBusy) return;
+    S.listBusy = true;
+    /* 桥无返回时解锁，避免永久卡死。定时器必须存引用：
+       1) 成功返回后要清掉，否则它会误把 listAt 重置为 0（缓存永远失效）
+       2) 页面销毁后不能再触发 */
+    try { clearTimeout(S.listUnlockT); } catch (e) {}
+    S.listUnlockT = setTimeout(function () {
+      S.listUnlockT = null;
+      if (!ALIVE) return;
+      if (S.listBusy) { S.listBusy = false; }
+    }, 5000);
+    call('subagent:subagent_list', {}, 'list');
+  }
+  function renderList(list, fromTool) {
+    S.items = list || [];
+    if (fromTool) { S.listAt = Date.now(); S.listBusy = false; try { clearTimeout(S.listUnlockT); S.listUnlockT = null; } catch (eLU) {} }
+    /* 欢迎页：列表返回即记为已加载；动画完毕后进入主页 */
+    if (fromTool && S.page === 'welcome') { S.initLoaded = true; if (S.initAnim) show('home'); }
+    var box = $('homeList');
+    var rbox = $('homeRecent');
+    var boxUse = box && S.page === 'list' ? box : null;   // 列表页容器
+    var target = boxUse || rbox;                          // 首屏只画最近任务
+    if (!target) return;
+    var kw = ($('listSearch') ? String($('listSearch').value || '').trim().toLowerCase() : '');
+    var src = S.items;
+    if (kw) {
+      src = [];
+      for (var q = 0; q < S.items.length; q++) {
+        var it0 = S.items[q];
+        var hay = ((it0.title || '') + ' ' + (it0.id || '') + ' ' + stCn(it0.status) + ' ' + (it0.last_text || '')).toLowerCase();
+        if (hay.indexOf(kw) >= 0) src.push(it0);
+      }
+    }
+    var limited = (target === rbox) ? src.slice(0, 6) : src;   // 首屏只显示最近 6 条
+    if (!limited.length) { target.innerHTML = '<div class="empty small">' + (kw ? '没有匹配的任务。' : '还没有任务，点右下 ＋ 新建一个。') + '</div>'; return; }
+    var h = '';
+    for (var i = 0; i < limited.length; i++) {
+      var it = limited[i], ui = (it.origin === 'ui');
+      var picked = !!(S.multi && S.selIds && S.selIds[it.id]);
+      /* 多选模式下整行点击 = 勾选，不进详情；勾选框只在多选时出现 */
+      h += '<div class="chat-row' + (S.multi ? ' multi' : '') + (picked ? ' picked' : '') + '" data-act="' + (S.multi ? 'toggleSel' : 'open') + '" data-val="' + esc(it.id) + '">'
+        + (S.multi ? '<span class="selbox">' + (picked ? '<svg><use href="#i-check"/></svg>' : '') + '</span>' : '')
+        + '<div class="cr-avatar ' + (it.status === 'failed' ? 'f' : (it.status === 'running' ? 'r' : 'o')) + '">' + esc(String(it.title || it.id || '·').slice(0, 1)) + '</div>'
+        + '<div class="cr-main"><div class="cr-top"><span class="cr-title">' + esc(it.title || it.id) + '</span><span class="cr-time">' + esc((it.last_at || it.created_at || '').slice(5, 16)) + '</span></div>'
+        + '<div class="cr-sub"><span class="cr-status ' + it.status + '">' + stCn(it.status) + '</span>'
+        + (it.last_text || it.result_preview ? '<span class="cr-pv">' + esc(String(it.last_text || it.result_preview).slice(0, 50)) + '</span>' : '')
+        + '</div></div>'
+        + (S.multi ? '' : '<span class="cr-go"><svg><use href="#i-chev-r"/></svg></span>') + '</div>';
+    }
+    target.innerHTML = h;
+    syncMultiBar();
+  }
+
+  /* ── 详情页：对话时间线 ── */
+  function openTask(id) {
+    S.cur = id; show('detail');
+    var hit = null;
+    for (var i = 0; i < S.items.length; i++) { if (S.items[i].id === id) { hit = S.items[i]; break; } }
+    /* 标题优先用任务描述；编号只是内部标识，不放到最上面给人看 */
+    var ti = hit ? String(hit.title || '') : '';
+    $('dtTitle').textContent = ti || '任务详情';
+    $('dtStatus').textContent = hit ? stCn(hit.status) : '加载中…';
+    if (ti) $('dtStatus').title = id;   // 编号挂在状态行 tooltip 上，需要时可查
+    /* 刚创建的任务列表还没刷新回来时，别把已经设好的 queued/running 覆盖成空 */
+    S.curStatus = hit ? String(hit.status || '') : String(S.curStatus || '');
+    /* 有缓存先秒显，同时在后台刷新 */
+    if (S.traceCache && S.traceCache[id]) {
+      fillTrace(S.traceCache[id], true);
+    } else if ($('dtChat')) {
+      $('dtChat').innerHTML = '<div class="scanline"></div>';
+    }
+    syncDtBar();
+    call('subagent:subagent_trace', { id: id, limit: 40, compact: true }, 'trace');
+    /* 运行中/排队中的任务必须重启轮询：从主页、列表、收件箱切回来时
+       pollOnce 早已因 page 不是 detail 而退出，不重启就永远停在拉取那一刻 */
+    var stNow = String(S.curStatus || '');
+    if (stNow === 'running' || stNow === 'queued') startPoll();
+  }
+  /* 操作条：根据状态决定显示「继续推进」还是「停止」 */
+  function syncDtBar() {
+    var st = String(S.curStatus || '');
+    var running = (st === 'running');
+    var queued = (st === 'queued');
+    var ended = (st === 'done' || st === 'closed');
+    /* 结束（done/closed）就彻底收尾：不显示推进、不显示停止、不显示输入框。
+       子代理产出结论即任务终止；追问由主代理调用 subagent_resume 完成。 */
+    var canRun = !ended && !S.advancing && (st === 'queued' || st === 'failed' || st === 'cancelled');
+    if ($('btnRun')) $('btnRun').style.display = canRun ? '' : 'none';
+    if ($('btnStop')) $('btnStop').style.display = (running || queued) ? '' : 'none';
+    /* 输入框：用户可手发消息的入口整个移除，追问走主代理 */
+    if ($('dtCompose')) $('dtCompose').style.display = 'none';
+    if (running || queued) setLive(phaseText(st));
+    else setLive('');
+    if ($('dtBar')) $('dtBar').style.display = (canRun || running || queued) ? '' : 'none';
+    /* 状态行同步刷新：运行中立刻显示「运行中」，不会停在「待开始」 */
+    syncDtStatusText(st);
+  }
+  /* 状态行文案：标题栏下方那一行，和按钮状态保持一致 */
+  function syncDtStatusText(st) {
+    var el = $('dtStatus'); if (!el) return;
+    var bits = [stCn(st || S.curStatus || '')];
+    var d = S.trace || null;
+    if (d && (d.step || d.max_steps)) bits.push('第 ' + (d.step || 0) + '/' + (d.max_steps || '?') + ' 步');
+    if (S.advancing && (st === 'running' || st === 'queued')) bits.push(phaseText(st));
+    el.textContent = bits.join(' · ');
+  }
+  /* 阶段文案：后端每步都会写 phase，轮询拿到的就是真实进度 */
+  function phaseText(st) {
+    if (st === 'queued') return '已创建，准备开始…';
+    var ph = String(S.curPhase || 'idle');
+    if (ph === 'llm') return '模型生成中…';
+    if (ph === 'tool') return '正在执行 ' + (S.curToolNow || '工具') + '…';
+    if (ph === 'idle') return S.advancing ? '模型生成中…' : '等待下一步…';
+    return '运行中…';
+  }
+/* 统一运行入口：优先流式，流式不通自动降级到后端推进。
+     所有「开始跑」的地方都必须走这里，不要直接调 advanceTask ——
+     直接调会绕过流式；只走流式又会因端点限制卡死。走这里两头都有保底。 */
+  function startRun(id) {
+    id = String(id || S.cur || '');
+    if (!id) { err('没有选中的任务'); return; }
+    /* 已经在流式中就不重复起 */
+    if (STREAM.busy) return;
+    streamChat({ taskId: id });
+  }
+
+  /* 手动点「继续推进」：优先流式，不通则降级后端推进 */
+   function runCur() {
+     if (!S.cur) { err('没有选中的任务'); return; }
+     var st = String(S.curStatus || '');
+     if (st === 'running') { err('任务正在运行'); return; }
+     if (S.streaming) { err('正在生成中'); return; }
+     /* 先把任务拉回可推进的状态（后端只改状态，不跑模型），再开跑 */
+     var start = function () {
+       startRun(S.cur);
+     };
+     if (st === 'cancelled' || st === 'failed' || st === 'done' || st === 'queued') {
+       call('subagent:subagent_resume', { id: S.cur }, 'resume', function () {
+         start();
+       });
+     } else {
+       start();
+     }
+   }
+  /* 实时提示条：告诉用户在等模型，不是在卡死 */
+  function setLive(txt) {
+    if (!$('dtLive')) return;
+    if (txt) {
+      $('dtLive').style.display = '';
+      if ($('dtLiveTxt')) $('dtLiveTxt').textContent = txt;
+    } else {
+      $('dtLive').style.display = 'none';
+    }
+  }
+  /* 停止：给任务打取消标记，下一轮 advance 会把它置为 cancelled */
+  function stopCur() {
+    if (!S.cur) return;
+    /* 一次性清干净：续推定时器、轮询、流式都要停，否则取消后又被推起来 */
+    try { clearTimeout(S.advT); } catch (e) {}
+    S.advT = null;
+    stopPoll();
+    abortStream();
+    S.advancing = false;
+    okMsg('已请求停止');
+    call('subagent:subagent_cancel', { id: S.cur }, 'cancel');
+  }
+var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
+  var SVG_OK = '<svg class="okmark" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg>';
+  var SVG_CORNER = '<svg class="corner" viewBox="0 0 24 24"><path d="M6 4v9a3 3 0 0 0 3 3h9"/><path d="M14 12l4 4-4 4"/></svg>';
+  var SVG_BAD = '<svg class="okmark bad" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+  function fmtMs(ms) {
+    var n = Number(ms || 0);
+    if (!n) return '-';
+    if (n < 1000) return n + ' ms';
+    return (n / 1000).toFixed(n < 10000 ? 2 : 1) + ' s';
+  }
+  function fmtTime(t) {
+    var n = Number(t || 0);
+    if (!n) return '-';
+    var d = new Date(n);
+    function p(x) { return x < 10 ? '0' + x : '' + x; }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function fmtJson(s) {
+    var v = String(s == null ? '' : s);
+    if (!v) return '';
+    try { return JSON.stringify(JSON.parse(v), null, 2); } catch (e) { return v; }
+  }
+  function briefJson(s, n) {
+    var v = String(s == null ? '' : s);
+    if (!v) return '';
+    var line = v.replace(/\s+/g, ' ');
+    if (line.length > (n || 60)) line = line.slice(0, n || 60) + '…';
+    return line;
+  }
+
+  /* 折叠行 + 展开体 */
+  function foldRow(cls, text, bodyHtml, idx) {
+    return '<div class="fold ' + cls + '" data-act="fold"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg><div class="fold-tx">' + text + '</div></div>'
+      + '<div class="fold-body" data-fold-body="' + idx + '">' + bodyHtml + '</div>';
+  }
+  function kv(k, v) { return '<div class="kv"><b>' + esc(k) + '</b><span>' + esc(v) + '</span></div>'; }
+
+  /* 两态切换：0 收起 / 1 展开全部（不截断）。
+   参数：tb 为 .thinkbox 元素，st 为目标档位 0/1。
+   整个卡片任意位置都可点，滚动由整页承担，不再有内层滚动区 */
+  function setThinkState(tb, st) {
+    if (!tb) return;
+    var n = (st === 1) ? 1 : 0;
+    tb.setAttribute('data-state', String(n));
+    var tip = tb.querySelector('.thk-tip');
+    if (tip) tip.textContent = (n === 0) ? '展开' : '已展开';
+    syncThinkFloat();
+  }
+  /* 悬浮按钮在有展开的思考块时显示，方便滑到深处一键收回 */
+  function syncThinkFloat() {
+    var host = $('dtChat');
+    if (!host) return;
+    var box = $('thinkFloat');
+    if (!box) return;
+    var any1 = host.querySelector ? host.querySelector('.thinkbox[data-state="1"]') : null;
+    box.style.display = any1 ? '' : 'none';
+  }
+  /* 收起所有展开的思考块（悬浮按钮入口） */
+  function collapseThinkAll() {
+    var host = $('dtChat');
+    if (!host || !host.querySelectorAll) return;
+    var boxes = host.querySelectorAll('.thinkbox[data-state="1"]');
+    for (var i = 0; i < boxes.length; i++) setThinkState(boxes[i], 0);
+  }
+  /* 渲染后：刷新悬浮按钮显隐 */
+  function syncThinkScroll() {
+    try { syncThinkFloat(); } catch (e) {}
+  }
+  /* 工具调用 + 紧随其后的返回，合成一个可点击块；点开是弹窗，不是二级展开 */
+  function toolBlock(tc, res) {
+    var okk = !res || (res.ok !== false);
+    var brief = briefJson(tc.args, 46);
+    var meta = res ? (esc(res.chars || 0) + ' 字符 · ' + fmtMs(res.elapsed_ms)) : '执行中…';
+    return '<div class="tblock' + (okk ? '' : ' bad') + '" data-act="toolDlg" data-val="' + esc(tc.id || tc.name) + '">'
+      + '<div class="tb-head">'
+      + '<span class="tb-name">' + esc(tc.name) + '</span>'
+      + (brief ? '<span class="tb-args">' + esc(brief) + '</span>' : '')
+      + '</div>'
+      + '<div class="tb-res">'
+      + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M6 3v8a3 3 0 0 0 3 3h9"/><path d="M14 10l4 4-4 4"/></svg>'
+      + (okk ? SVG_OK : SVG_BAD)
+      + '<span class="tb-meta">' + meta + '</span>'
+      + '</div></div>';
+  }
+
+  var FOLD_SEQ = 0;
+  function renderTrace(d) {
+    S.cur = d.id || S.cur;
+    S.trace = d;
+    S.curStatus = String(d.status || '');
+    S.curPhase = String(d.phase || 'idle');
+    S.curToolNow = String(d.tool_now || '');
+    /* 缓存一份，二次进入秒显 */
+    if (!S.traceCache) S.traceCache = {};
+    if (d.id) S.traceCache[d.id] = d;
+    fillTrace(d, false);
+    syncDtBar();
+    /* 轮询读到终态就停手：避免 advance 回包和轮询各推一次造成重复推进 */
+    var st = String(d.status || '');
+    if (st === 'done' || st === 'failed' || st === 'cancelled' || st === 'closed') {
+      stopPoll();
+      S.advancing = false;
+    }
+  }
+  function fillTrace(d, fromCache) {
+    FOLD_SEQ = 0;
+    /* 标题：优先任务描述；没有就显示「任务详情」，绝不把编号顶在最上面 */
+    var ti = String(d.title || '').trim();
+    $('dtTitle').textContent = ti || '任务详情';
+    $('dtStatus').title = d.id || '';
+    /* 状态行：状态 · 步数 · 时间，编号只在 tooltip 里 */
+    var bits = [stCn(d.status)];
+    if (d.step || d.max_steps) bits.push('第 ' + (d.step || 0) + '/' + (d.max_steps || '?') + ' 步');
+    if (d.updated_at) bits.push(d.updated_at.slice(5, 16));
+    if (fromCache) bits.push('缓存');
+    $('dtStatus').textContent = bits.join(' · ');
+    var turns = d.turns || [], h = '';
+    /* 先把 tool 结果按 tool_call_id 建索引，保证返回紧跟调用 */
+    var resById = {}, resQueue = [];
+    for (var r0 = 0; r0 < turns.length; r0++) {
+      if (turns[r0].role === 'tool') {
+        resQueue.push(turns[r0]);
+        var cid = String(turns[r0].calls_id || '');
+        if (cid) resById[cid] = turns[r0];
+      }
+    }
+    var usedRes = {};
+
+    for (var i = 0; i < turns.length; i++) {
+      var m = turns[i];
+      if (m.role === 'assistant') {
+        if (m.reasoning) {
+          /* 思考三档：0=小滚动区自动跟随 1=中高展开停自动滚动 2=全部展开 */
+          var tid = ++FOLD_SEQ;
+          var rl = String(m.reasoning).length;
+          h += '<div class="thinkbox" data-think="' + tid + '" data-state="0">'
+            + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+            + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
+            + '<span class="thk-len">' + rl + ' 字</span></div>'
+            + '<div class="thk-body" data-thk-body="' + tid + '">' + esc(m.reasoning) + '</div>'
+            + '</div>';
+        }
+        var t = m.tool_calls || [];
+        for (var j = 0; j < t.length; j++) {
+          var tc = t[j];
+          var res = resById[String(tc.id || '')];
+          if (!res) {
+            /* 兼容老数据：没有 id 就按顺序配对第一个还没用过的返回 */
+            for (var q = 0; q < resQueue.length; q++) {
+              if (!usedRes[q]) { res = resQueue[q]; usedRes[q] = 1; break; }
+            }
+          } else {
+            for (var q2 = 0; q2 < resQueue.length; q2++) if (resQueue[q2] === res) usedRes[q2] = 1;
+          }
+          S._toolMap = S._toolMap || {};
+          S._toolMap[String(tc.id || tc.name)] = { call: tc, res: res || null };
+          h += toolBlock(tc, res);
+        }
+        if (m.content) h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(m.content) + '</div></div>';
+      } else if (m.role === 'tool') {
+        /* 已被调用块吸收的不再单独渲染 */
+        var idx = resQueue.indexOf(m);
+        if (idx >= 0 && usedRes[idx]) continue;
+        var okk2 = (m.ok !== false);
+        h += '<div class="tblock' + (okk2 ? '' : ' bad') + '" data-act="toolDlg" data-val="' + esc(m.name || 'tool') + '">'
+          + '<div class="tb-head"><span class="tb-name">' + esc(m.name || 'tool') + '</span></div>'
+          + '<div class="tb-res">' + SVG_CORNER + (okk2 ? SVG_OK : SVG_BAD)
+          + '<span class="tb-meta">' + esc(m.chars || 0) + ' 字符 · ' + fmtMs(m.elapsed_ms) + '</span></div></div>';
+        S._toolMap = S._toolMap || {};
+        S._toolMap[String(m.name || 'tool')] = { call: null, res: m };
+      } else if (m.role === 'user') {
+        h += '<div class="bubble mine"><div class="b-body">' + esc(m.content) + '</div></div>';
+      }
+    }
+    $('dtChat').innerHTML = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
+    /* 思考块默认 0 档，渲染后统一滚到底跟随最新输出 */
+    syncThinkScroll();
+    var u = d.usage || {};
+    var st = '<span class="chip ' + (d.status || '') + '">' + stCn(d.status) + '</span><span class="chip">step ' + esc(d.step) + '</span><span class="chip" title="累计输入+输出 token">' + ((u.in || 0) + (u.out || 0)) + ' tok</span>';
+    $('dtStatus').innerHTML = st;
+    $('dtClose').style.display = (d.status === 'queued' || d.status === 'running' || d.status === 'failed') ? '' : 'none';
+    S.dStatus = d.status;
+    S.dFailed = (d.status === 'failed');
+  }
+
+  /* ══ 非流式推进说明 ══
+    早期版本让页面 fetch 直连模型端点做 SSE 流式。放弃它的原因（实测）：
+    1) 页面 origin 是 https://localhost，端点若是 http 会被混合内容策略直接拦；
+    2) 端点 https 但没回 access-control-allow-origin 时同样被 CORS 拦。
+    这两条一旦命中，请求根本没发出去，任务就永远停在 queued，模型一次都不会被调用
+    —— 这正是「1+1 要思考好久」的真相：它不是慢，是从来没跑。
+    现在统一走后端 subagent_advance：模型调用、工具执行、逐步落盘全在后端完成，
+    页面只用 trace 轮询显示。牺牲逐字效果，换来确定能跑起来。 */
+
+  /* 停止生成：清掉续推定定时器与轮询，并给任务打取消标记 */
+  function abortStream() {
+    try { clearTimeout(S.advT); } catch (e) {}
+    S.advT = null;
+    S.streaming = false;
+    S.advancing = false;
+    setLive('');
+  }
+
+  function sendMsg() {
+    var inp = $('dtInput'); var v = (inp.value || '').trim(); if (!v) return;
+    if (!S.cur) { err('先选一个任务'); return; }
+    if (S.dFailed) { err('任务已失败，无法继续对话'); return; }
+    inp.value = '';
+    call('subagent:subagent_steer', { id: S.cur, message: v }, 'steer');
+  }
+
+  /* ── 详情抽屉（消息信息：模型/时间/耗时/用量） ── */
+  function cell(k, v, wide, mono) {
+    return '<div class="mi-cell' + (wide ? ' wide' : '') + '"><div class="mi-k">' + esc(k) + '</div><div class="mi-v' + (mono ? ' mono' : '') + '">' + esc(v == null || v === '' ? '-' : v) + '</div></div>';
+  }
+  function openSheet(title, html) {
+    $('sheetTitle').textContent = title;
+    $('sheetBody').innerHTML = html;
+    $('sheet-mask').classList.add('on');
+    $('sheet').classList.add('on');
+  }
+  function closeSheet() { $('sheet-mask').classList.remove('on'); $('sheet').classList.remove('on'); }
+
+  /* 工具调用弹窗：一次点开就看到参数 + 完整返回，不做二级展开 */
+  function openToolDlg(key) {
+    var rec = (S._toolMap || {})[String(key || '')];
+    if (!rec) { err('找不到该调用记录'); return; }
+    var c = rec.call || {}, r = rec.res || null;
+    var g = '';
+    g += '<div class="mi-grid">'
+      + cell('工具', c.name || (r && r.name) || '-', false, true)
+      + cell('状态', r ? (r.ok === false ? '失败' : '成功') : '无返回', false, false)
+      + cell('耗时', fmtMs(r && r.elapsed_ms), false, true)
+      + cell('返回字符', String((r && r.chars) || 0), false, true)
+      + '</div>';
+    if (c.args) g += '<div class="mi-sec">参数</div><div class="mi-block">' + esc(fmtJson(c.args)) + '</div>';
+    if (r && r.result) g += '<div class="mi-sec">返回</div><div class="mi-block">' + esc(r.result) + '</div>';
+    if (!r) g += '<div class="mi-sec">返回</div><div class="mi-block">（尚无返回）</div>';
+    openSheet((c.name || (r && r.name) || '工具') + ' 调用', g);
+  }
+
+  function openMeta(val) {
+    var m = /^step:(\d+)$/.exec(String(val || ''));
+    if (!m) return;
+    var idx = parseInt(m[1], 10);
+    var d = S.trace || {}, turns = d.turns || [], turn = turns[idx];
+    if (!turn) { err('找不到该步骤'); return; }
+    var u = turn.usage || {};
+    var tokTxt = u.in || u.out ? (u.in + ' / ' + u.out) : '-';
+    var g = '<div class="mi-grid">'
+      + cell('角色', turn.role === 'assistant' ? 'AI' : (turn.role === 'tool' ? '工具' : '用户'), false, false)
+      + cell('模型', u.model || (S.cfgModel || '-'), false, true)
+      + cell('发送时间', fmtTime(turn.at || d.last_at || 0), false, true)
+      + cell('耗时', fmtMs(turn.elapsed_ms), false, true)
+      + cell('Token（入/出）', tokTxt, false, true)
+      + cell('字符数', String(turn.chars || 0), false, true)
+      + (turn.finish_reason ? cell('结束原因', turn.finish_reason, true, true) : '')
+      + '</div>';
+
+    if (turn.role === 'tool') {
+      g += '<div class="mi-sec">工具</div>' + cell('名称', turn.name, true, true);
+      if (turn.args) g += '<div class="mi-sec">参数</div><div class="mi-block">' + esc(fmtJson(turn.args)) + '</div>';
+      g += '<div class="mi-sec">返回</div><div class="mi-block">' + esc(turn.result || '(空)') + '</div>';
+    } else {
+      if (turn.reasoning) g += '<div class="mi-sec">思考过程</div><div class="mi-block">' + esc(turn.reasoning) + '</div>';
+      if (turn.content) g += '<div class="mi-sec">正文</div><div class="mi-block">' + esc(turn.content) + '</div>';
+      var tcs = turn.tool_calls || [];
+      for (var i = 0; i < tcs.length; i++) {
+        g += '<div class="mi-sec">工具调用 · ' + esc(tcs[i].name) + '</div><div class="mi-block">' + esc(fmtJson(tcs[i].args)) + '</div>';
+      }
+    }
+    openSheet('步骤信息', g);
+  }
+
+  /* ── 关闭（把任务标记为已关闭，不消失）/ 删除（彻底删掉） ── */
+  var DEL_Q = [], DEL_BUSY = false;
+  function runDelQueue() {
+    if (DEL_BUSY || !DEL_Q.length) return;
+    DEL_BUSY = true;
+    var job = DEL_Q.shift();
+    var done = function () { DEL_BUSY = false; setTimeout(runDelQueue, 0); };
+    try {
+      callRaw(job.tool, job.params, '', ++S.seq, function (r) {
+        if (r && r.success === false) { err(r.message || '操作失败'); dropRollback(job); }
+        else if (job.tool === 'subagent:subagent_delete') dropRow(job.params.id);
+        else if (job.tool === 'subagent:subagent_close') markClosed(job.params.id);
+        done();
+      });
+    } catch (e) { done(); }
+  }
+  /* 关闭：只把状态改成「已关闭」，行留在列表里（这才是叉号该干的事） */
+  function markClosed(id) {
+    for (var i = 0; i < S.items.length; i++) {
+      if (S.items[i].id === id) { S.items[i].status = 'closed'; break; }
+    }
+    renderList(S.items);
+  }
+  function dropRow(id) {
+    var keep = [];
+    for (var i = 0; i < S.items.length; i++) { if (S.items[i].id !== id) keep.push(S.items[i]); }
+    S.items = keep;
+    renderList(S.items);
+  }
+  function dropRollback() { refreshList(true); }   // 失败时回拉一次真实状态
+  /* 叉号 = 关闭任务（不删） */
+  function closeTask(id) {
+    markClosed(id);                       // 界面立刻变「已关闭」
+    hf();
+    okMsg('已关闭');
+    DEL_Q.push({ tool: 'subagent:subagent_close', params: { id: id, confirm: true, delete_product: false } });
+    runDelQueue();
+  }
+  /* 详情页 / 列表长按 = 彻底删除，用是/否确认框，不再复用带搜索的选择器弹窗 */
+  function deleteTask(id) {
+    var it = null;
+    for (var i = 0; i < S.items.length; i++) { if (S.items[i].id === id) { it = S.items[i]; break; } }
+    openCfm('删除任务', (it ? (it.title || it.id) : id) + '\n连同产物目录与快照一起删，不可恢复。', function () {
+      dropRow(id);                        // 秒删：DOM 立刻没了
+      if (S.cur === id) { S.cur = null; show('list'); renderList(S.items); }
+      okMsg('已删除');
+      DEL_Q.push({ tool: 'subagent:subagent_delete', params: { id: id, confirm: true } });
+      runDelQueue();
+    });
+  }
+  /* 列表页批量删除：进入选择模式后勾选多个，一次确认全部删掉 */
+  function enterMulti() {
+    S.multi = true;
+    S.selIds = {};
+    syncMultiBar();
+    renderList(S.items);
+  }
+  function exitMulti() {
+    S.multi = false;
+    S.selIds = {};
+    syncMultiBar();
+    renderList(S.items);
+  }
+  function toggleSel(id) {
+    if (!S.selIds) S.selIds = {};
+    if (S.selIds[id]) delete S.selIds[id]; else S.selIds[id] = 1;
+    syncMultiBar();
+    renderList(S.items);
+  }
+  function selCount() {
+    var n = 0;
+    if (S.selIds) for (var k in S.selIds) if (Object.prototype.hasOwnProperty.call(S.selIds, k)) n++;
+    return n;
+  }
+  function syncMultiBar() {
+    if ($('multiBar')) $('multiBar').style.display = S.multi ? '' : 'none';
+    if ($('multiCount')) $('multiCount').textContent = '已选 ' + selCount() + ' 项';
+    if ($('multiDel')) $('multiDel').disabled = (selCount() === 0);
+    if ($('multiBtn')) $('multiBtn').style.display = (S.multi || !S.items || !S.items.length) ? 'none' : '';
+  }
+  /* 批量删除：一次确认，逐个入队（后端按队列串行删，前端 DOM 秒删） */
+  function deleteSelected() {
+    var ids = [];
+    if (S.selIds) for (var k in S.selIds) if (Object.prototype.hasOwnProperty.call(S.selIds, k)) ids.push(k);
+    if (!ids.length) { err('还没选任务'); return; }
+    openCfm('删除 ' + ids.length + ' 个任务', '连同各自产物目录与快照一起删，不可恢复。', function () {
+      for (var i = 0; i < ids.length; i++) {
+        dropRow(ids[i]);
+        DEL_Q.push({ tool: 'subagent:subagent_delete', params: { id: ids[i], confirm: true } });
+      }
+      okMsg('已删除 ' + ids.length + ' 个');
+      if (S.cur && S.selIds && S.selIds[S.cur]) { S.cur = null; }
+      exitMulti();
+      runDelQueue();
+    });
+  }
+
+  /* ── 新建页 ── */
+  function show(id) { var p = ['welcome', 'home', 'list', 'new', 'full', 'detail', 'cfg', 'inbox', 'mail']; for (var i = 0; i < p.length; i++) { var el = $('page-' + p[i]); if (el) el.style.display = (p[i] === id) ? '' : 'none'; } S.page = id; if (id === 'home' || id === 'list') renderList(S.items); }
+  function goList() { show('list'); refreshList(false); if ($('listSearch')) $('listSearch').value = ''; renderList(S.items); }
+  function goHome() {
+    /* 不清 S.cur：任务可能还在后端跑，清掉会让轮询与「继续推进」都失去目标。
+       详情页的返回列表才真正切换上下文（goList / backList）。 */
+    stopPoll();
+    show('home');
+  }
+
+ /* 首次进入：欢迎页 + 后台刷新最近任务；1.2s 后与列表就绪二者都满足再进主页 */
+ /* 可见性恢复：从主对话返回时若当前页不可见，兜底显示主页并刷新最近列表（防黑屏） */
+document.addEventListener('visibilitychange', function () {
+  try {
+    if (document.visibilityState === 'visible') {
+      var pid = S && S.page ? 'page-' + S.page : null;
+      var el = pid ? $(pid) : null;
+      if (!el || el.style.display === 'none') show('home');
+      refreshList(false);
+    }
+  } catch (e) {}
+});
+
+  /* ── 弹窗 ── */
+  function openDlg(title, groups, multi, onOk, showSearch) {
+    S.dlg = { groups: groups, multi: multi, onOk: onOk, search: showSearch !== false };
+    $('dlgTitle').textContent = title;
+    $('dlgSearch').value = '';
+    $('dlgSearch').placeholder = '搜索…';
+    $('dlgSearch').style.display = (showSearch === false) ? 'none' : '';
+    /* 底部按钮按场景给：多选给「确定/取消」，其余给「取消」 */
+    if ($('dlgFoot')) {
+      $('dlgFoot').innerHTML = multi
+        ? '<button class="btn" data-act="dlgCancel">取消</button><button class="btn pri" data-act="dlgOk">确定</button>'
+        : '<button class="btn" data-act="dlgCancel">取消</button>';
+    }
+    renderDlg('');
+    $('mask').classList.add('on'); $('dlg').classList.add('on');
+  }
+  function closeDlg() { $('mask').classList.remove('on'); $('dlg').classList.remove('on'); S.dlg = null; }
+  /* 是/否确认框：删除这类不可逆操作专用，不带搜索、不带勾选 */
+  function openCfm(title, body, onYes) {
+    S.cfmYes = onYes || null;
+    if ($('cfmTitle')) $('cfmTitle').textContent = String(title || '确认');
+    if ($('cfmBody')) $('cfmBody').textContent = String(body || '');
+    if ($('mask')) $('mask').classList.add('on');
+    if ($('cfm')) $('cfm').classList.add('on');
+  }
+  function closeCfm() {
+    S.cfmYes = null;
+    if ($('mask')) $('mask').classList.remove('on');
+    if ($('cfm')) $('cfm').classList.remove('on');
+  }
+  function renderDlg(q) {
+    if (!S.dlg) return;
+    q = (q || '').toLowerCase();
+    var h = '';
+    for (var g = 0; g < S.dlg.groups.length; g++) {
+      var grp = S.dlg.groups[g], items = grp.items || [], rows = '';
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (it.val === '__loading') { rows += '<div class="dlg-hint">' + esc(it.label) + '</div>'; continue; }
+        if (q && (it.label + ' ' + (it.desc || '')).toLowerCase().indexOf(q) < 0) continue;
+        var on = (S.dlg.multi ? (S.sel.indexOf(it.val) >= 0) : !!it.on);
+        var tick = on ? '<span class="' + (S.dlg.multi ? 'dlg-check' : 'm-pick') + '"><svg><use href="#i-check"/></svg></span>' : (S.dlg.multi ? '' : '<span class="m-pick"></span>');
+        rows += '<div class="dlg-row' + (on ? ' on' : '') + '" data-act="dlgPick" data-val="' + esc(it.val) + '"><div><div class="dlg-lb">' + esc(it.label) + (it.hi ? ' <span class="dlg-hi">高危</span>' : '') + '</div><div class="dlg-ds">' + esc(it.desc || '') + '</div></div>' + tick + '</div>';
+      }
+      if (rows) h += '<div class="dlg-sec">' + esc(grp.title || '') + '</div>' + rows;
+    }
+    $('dlgBody').innerHTML = h || '<div class="dlg-hint">没有匹配项</div>';
+  }
+  function toolGroups() {
+    var bi = [], pk = [], t = S.tools || {};
+    var arr = (t.builtin && t.builtin.length) ? t.builtin : null;
+    if (arr) { for (var i = 0; i < arr.length; i++) { var b = arr[i]; bi.push({ val: b.name, label: b.label || b.name, hi: HIGH.test(b.name), desc: b.name + (b.write ? ' · 写类' : ' · 只读') }); } }
+    else if (!t.loaded) bi.push({ val: '__loading', label: '正在读取工具清单…', desc: '' });
+    else { for (var k = 0; k < FALLBACK.length; k++) { var f = FALLBACK[k]; bi.push({ val: f[0], label: f[1], hi: HIGH.test(f[0]), desc: f[0] + (f[2] ? ' · 写类' : ' · 只读') }); } }
+    var pa = t.packages || [];
+    for (var j = 0; j < pa.length; j++) { var p = pa[j]; pk.push({ val: p.pattern, label: p.display || p.name, desc: p.pattern + ' · ' + (p.tools || 0) + ' 工具' }); }
+    return [{ title: '宿主内置', items: bi }, { title: '外部包', items: pk }];
+  }
+
+  /* ── 新建表单逻辑 ── */
+  function createTask() {
+    var task = ($('inTask').value || '').trim();
+    if (!task) { err('请填写任务描述'); return; }
+    /* 工具不再必选：空数组 = 不限制。只读工具能直接跑，
+       写类工具仍会被后端按目录做边界校验，所以放开是安全的。 */
+    var need = false;
+    for (var i = 0; i < S.sel.length; i++) if (WRITE_RE.test(S.sel[i].toLowerCase())) need = true;
+    if (need && !($('inWs').value || '').trim()) { err('含写类工具，必须选择目录'); return; }
+    if (need) { call('subagent:subagent_check_path', { path: ($('inWs').value || '').trim() }, 'checkpath'); return; }
+    doCreate();
+  }
+  function doCreate() {
+    if (S.keyOk === false) { err('还没写入 API 密钥——到配置页填 Key'); return; }
+    var taskText = ($('inTask').value || '').trim();
+    if (!taskText) { err('请填写任务描述'); return; }
+    /* 记住本次填写，下次进新建页自动回填 */
+    saveNewForm();
+    var p = {
+      task: taskText, allowed_tools: S.sel.join(','),
+      workspace: ($('inWs').value || '').trim() || undefined,
+      max_steps: parseInt($('inSteps').value || '20', 10),
+      timeout_ms: parseInt($('inTimeout').value || '90000', 10),
+      thinking_level: S.think, max_depth: parseInt($('inDepth').value || '0', 10) || 0, origin: 'ui'
+    };
+/* 附带主对话上下文已移除：不再传 context_mode / parent_chat_id，
+       子代理只看任务描述本身，避免把主对话内容带进独立通道。 */
+    /* 不用 sync：sync 会把桥阻塞几十秒，WebView 会卡成假死。
+       改成「建任务 → 立刻进详情并自动推进」，推进由详情页的轮询驱动。 */
+    call('subagent:subagent_spawn', p, 'spawn');
+  }
+
+  /* ── 新建页设置记忆 ──
+     把用户填过的内容存到 localStorage，下次进新建页回填。
+     key 只存非敏感项；任务描述默认也回填（用户可一键清空）。 */
+  var NEWFORM_KEY = 'sb.newform.v1';
+  function saveNewForm() {
+    try {
+      /* 用户明确要求：保留上一次设置，但不保留任务描述。
+         所以 task 故意不写进 localStorage。 */
+      var o = {
+        ws: ($('inWs').value || ''),
+        steps: ($('inSteps').value || ''),
+        timeout: ($('inTimeout').value || ''),
+        depth: ($('inDepth').value || ''),
+        think: S.think,
+        sel: S.sel || []
+      };
+      localStorage.setItem(NEWFORM_KEY, JSON.stringify(o));
+    } catch (e) {}
+  }
+  function loadNewForm() {
+    var o = null;
+    try { o = JSON.parse(localStorage.getItem(NEWFORM_KEY) || 'null'); } catch (e) { o = null; }
+    if (!o) return;
+    try {
+      if ($('inWs') && o.ws) { $('inWs').value = o.ws; var vw = $('vWs'); if (vw) vw.textContent = o.ws; }
+      if ($('inSteps') && o.steps) $('inSteps').value = o.steps;
+      if ($('inTimeout') && o.timeout) $('inTimeout').value = o.timeout;
+      if ($('inDepth') && o.depth !== undefined) $('inDepth').value = o.depth;
+      if (o.think && THINK_CN[o.think]) setThinkSlider(o.think);
+      if (o.sel && o.sel.length) { S.sel = o.sel.slice(); syncSelLabel(); }
+      syncDepthFromSlider();
+    } catch (e) {}
+  }
+  function syncSelLabel() {
+    var v = $('vTools');
+    if (v) v.textContent = (S.sel && S.sel.length) ? (S.sel.length + ' 个') : '不限制';
+    syncCardSubs();
+  }
+  /* 全屏编辑：任务描述写长了在这里写。输入即存到内存草稿，不用点保存。
+     退出时把内容写回新建页的 #inTask，保持两边同源。 */
+  function openFullEdit() {
+    var src = $('inTask'), dst = $('inTaskFull');
+    if (dst && src) { dst.value = src.value || ''; }
+    closeSheet();
+    show('full');
+    if (dst) {
+      setTimeout(function () { try { dst.focus(); } catch (e) {} }, 80);
+    }
+    if ($('fullTip')) $('fullTip').textContent = '自动保存';
+  }
+  function closeFullEdit() {
+    var dst = $('inTaskFull'), src = $('inTask');
+    if (dst && src) src.value = dst.value || '';
+    syncTaskDraft();
+    show('new');
+  }
+  /* 任务描述草稿：输入即存，但只在「本次未创建」时回填。
+     用户明确要求「保留上一次设置，但不保留任务描述」，
+     所以 task 只存在会话内存 S.taskDraft，不进 localStorage。 */
+  function syncTaskDraft() {
+    var v = '';
+    if ($('inTask')) v = $('inTask').value || '';
+    else if ($('inTaskFull')) v = $('inTaskFull').value || '';
+    S.taskDraft = v;
+    var tip = $('fullTip');
+    if (tip) tip.textContent = '已自动保存';
+  }
+  /* 卡片折叠：点卡片展开/收起下面的面板，箭头跟着转 */
+  function togglePanel(boxId, cardId) {
+    var box = $(boxId), card = $(cardId);
+    if (!box) return;
+    var open = box.style.display === 'none';
+    box.style.display = open ? '' : 'none';
+    if (card) card.classList.toggle('open', open);
+  }
+  /* 权限卡 / 运行参数卡的副标题：把当前值摘要出来，不用展开也能看见 */
+  function syncCardSubs() {
+    var t = $('vTools'), w = $('vWs'), ps = $('vPermSub');
+    if (ps && t && w) ps.textContent = (t.textContent || '不限制') + ' · ' + (w.textContent || '未选目录');
+    var st = $('inSteps'), to = $('inTimeout'), dp = $('inDepth'), rs = $('vRunSub');
+    if (rs && st) {
+      var d = parseInt((dp && dp.value) || '0', 10) || 0;
+      rs.textContent = (st.value || '20') + ' 步 · ' + ((to && to.value) || '90') + ' 秒 · '
+        + (d ? ('深度 ' + d) : '深度不限') + ' · ' + (THINK_EN[S.think] || 'Medium');
+    }
+  }
+  /* ══ 流式双通道 ══
+   问题本质（实测 2026-11-04）：
+     面板页面 origin 固定为 https://localhost（宿主写死，改不了）。
+     · https 端点：官方/三方都回 access-control-allow-origin，fetch 可直连，拿真 SSE。
+     · http  端点（局域网自建）：页面是 https，浏览器按 mixed content 把请求掐死，
+       请求根本不发出去 —— 这条改代码绕不过，只能换通道。
+   但后端 Tools.Net.http 不受 mixed content 约束（已实测能通局域网并拿到 text/event-stream），
+   所以 http 端点走后端中继：后端拿整包 SSE → 解析成 chunks → 前端按块回放。
+   两条路都保留，谁用谁的。任何一条失败都静默降级到 advanceTask，绝不让任务卡住。
+   为什么绕开桥做真流式：桥是同步阻塞 + 20 秒硬超时，拿不到流。 */
+  /* 端点选路策略（实测 2026-11-05）：
+     页面 origin 是 http://localhost，理论上 http/https 端点都能直连。
+     但很多自建端点（new-api/one-api 类）不回 access-control-allow-origin，
+     前端跨域 fetch 照样被 CORS 拦 —— 所以不能只看协议。
+     策略：一律先试直连（direct），fetch 失败自动落中继（relay），
+     中继再失败落 advanceTask。三层保底，用户零配置。 */
+  var STREAM = { key: '', ctx: null, busy: false, abort: null, fellBack: false, relay: false };
+
+  /* 端点协议决定走哪条路。
+     页面 origin 已经是 http://localhost（见 web_panel.ui.js baseUrl 注释），
+     http 页面拉 https 与 http 端点都不受 mixed content 限制 → 全部走前端直连拿真流式。
+     中继只在前端 fetch 失败时由 sinkToAdvance 兜底，不再按协议预判。 */
+  function streamMode(endpoint) {
+    return /^http:|^https:/i.test(String(endpoint || '')) ? 'direct' : 'direct';
+  }
+
+  /* 取直连参数 + 密钥（各一次，缓存到内存） */
+  function loadStreamEnv(taskId, done) {
+    if (STREAM.key && STREAM.ctx) { done(null); return; }
+    call('subagent:subagent_stream_ctx', { id: taskId || S.cur || '' }, 'streamCtx', function (r1) {
+      var d1 = (r1 && r1.data) || {};
+      if (!d1.endpoint) { done(new Error('未配置端点')); return; }
+      call('subagent:subagent_stream_key', {}, 'streamKey', function (r2) {
+        var d2 = (r2 && r2.data) || {};
+        if (!d2.key) { done(new Error('未配置密钥')); return; }
+        STREAM.ctx = d1;
+        STREAM.key = d2.key;
+        done(null);
+      });
+    });
+  }
+
+  /* 把 messages 数组转成端点要的格式（这里已经是 OpenAI chat 格式） */
+  function buildStreamBody(messages, ctx, opts) {
+    var body = {
+      model: ctx.model,
+      messages: messages,
+      stream: true,
+      stream_options: { include_usage: true }
+    };
+    if (ctx.tool_schema && ctx.tool_schema.length) {
+      body.tools = ctx.tool_schema;
+      body.tool_choice = 'auto';
+    }
+    if (ctx.thinking) { for (var k in ctx.thinking) if (Object.prototype.hasOwnProperty.call(ctx.thinking, k)) body[k] = ctx.thinking[k]; }
+    if (ctx.extra_body) { for (var k2 in ctx.extra_body) if (Object.prototype.hasOwnProperty.call(ctx.extra_body, k2)) body[k2] = ctx.extra_body[k2]; }
+    if (opts && opts.model) body.model = opts.model;
+    return body;
+  }
+
+  /* 把 fetch 层的失败翻译成用户能听懂、能动手的结论。
+     `Failed to fetch` 有且只有两种成因（HTTP 报错不会走到这里，那条会带状态码）：
+     1) mixed content —— 页面是 https://localhost，端点若是 http:// 会被浏览器直接拦，
+        请求根本没发出去；
+     2) CORS —— 端点 https，但服务端没回 access-control-allow-origin。
+     区分两者的唯一依据是端点协议，所以这里直接看 URL 协议。 */
+  function explainFetchErr(url, e) {
+    var msg = String((e && e.message) || e || '');
+    if (!/failed to fetch|networkerror|load failed/i.test(msg)) return msg;
+    var u = String(url || '');
+    var isHttp = /^http:\/\//i.test(u);
+    var host = '';
+    try { host = u.replace(/^https?:\/\//i, '').split('/')[0]; } catch (eH) { host = ''; }
+    if (isHttp) {
+      return '端点 ' + host + ' 走的是 http，而面板本身是 https 页面，浏览器按混合内容策略直接拦截。';
+    }
+    return '端点 ' + host + ' 没有返回跨域许可（CORS），浏览器拦下了请求。'
+      + '这不是密钥或模型的问题：需要在服务端加上 access-control-allow-origin，或改用支持跨域的网关。';
+  }
+
+  /* 把 SSE 原文解析成累积结果；onDelta 存在时逐块回调（用于回放） */
+  function parseSSE(text, onDelta) {
+    var acc = { content: '', reasoning: '', byIdx: {}, finishReason: '', usage: {} };
+    var lines = String(text || '').split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i].replace(/\r$/, '');
+      if (!ln || ln.charAt(0) === ':') continue;
+      if (ln.indexOf('data:') !== 0) continue;
+      var payload = ln.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      var j = null;
+      try { j = JSON.parse(payload); } catch (e) { continue; }
+      if (j.usage) acc.usage = j.usage;
+      var ch = (j.choices && j.choices[0]) || null;
+      if (!ch) continue;
+      var d = ch.delta || {};
+      var c = String(d.content || '');
+      var r = String(d.reasoning_content || d.reasoning || '');
+      if (c) acc.content += c;
+      if (r) acc.reasoning += r;
+      /* 工具调用是分片下发的：按 index 累积 name 与 arguments 字符串 */
+      var dtc = d.tool_calls || [];
+      for (var t = 0; t < dtc.length; t++) {
+        var one = dtc[t] || {};
+        var ix = Number(one.index == null ? 0 : one.index);
+        if (!acc.byIdx[ix]) acc.byIdx[ix] = { id: '', name: '', argsText: '' };
+        var slot = acc.byIdx[ix];
+        if (one.id) slot.id = String(one.id);
+        var fn = one.function || {};
+        if (fn.name) slot.name += String(fn.name);
+        if (fn.arguments) slot.argsText += String(fn.arguments);
+      }
+      if (ch.finish_reason) acc.finishReason = String(ch.finish_reason);
+      if (onDelta && (c || r)) onDelta({ content: c, reasoning: r });
+    }
+    var tcs = [];
+    for (var key in acc.byIdx) {
+      if (!Object.prototype.hasOwnProperty.call(acc.byIdx, key)) continue;
+      var s = acc.byIdx[key];
+      var args = {};
+      try { args = JSON.parse(s.argsText || '{}'); } catch (e) { args = { __unparsed: s.argsText }; }
+      tcs.push({ id: s.id || ('call_' + key), name: s.name, args: args });
+    }
+    return {
+      content: acc.content,
+      reasoning: acc.reasoning,
+      toolCalls: tcs,
+      finishReason: acc.finishReason || (tcs.length ? 'tool_calls' : 'stop'),
+      usage: acc.usage
+    };
+  }
+
+  /* ── 通道 A：前端 fetch 直连（https 端点） ── */
+  function streamOnceDirect(messages, onDelta) {
+    var ctx = STREAM.ctx;
+    var url = ctx.endpoint;
+    var headers = {};
+    for (var hk in (ctx.headers || {})) if (Object.prototype.hasOwnProperty.call(ctx.headers, hk)) headers[hk] = ctx.headers[hk];
+    /* 自定义头里可能有别的认证方式；默认用 Bearer */
+    var hasAuth = false;
+    for (var hk2 in headers) if (/^authorization$/i.test(hk2)) hasAuth = true;
+    if (!hasAuth) headers['Authorization'] = 'Bearer ' + STREAM.key;
+
+    var body = buildStreamBody(messages, ctx);
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    STREAM.abort = ctrl;
+
+    return fetch(url, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(body),
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (res) {
+        if (!res.ok) {
+          return res.text().then(function (t) {
+            throw new Error('HTTP ' + res.status + '：' + String(t || '').slice(0, 300));
+          });
+        }
+        var reader = null;
+        try { reader = res.body && res.body.getReader ? res.body.getReader() : null; } catch (eR) { reader = null; }
+        /* 拿不到 reader：整包读回来按 SSE 解析，仍逐条回调 */
+        if (!reader) {
+          return res.text().then(function (raw) {
+            var out = parseSSE(raw, onDelta);
+            if (!out.content && !out.reasoning && !out.toolCalls.length) {
+              throw new Error('响应既不是 SSE 也不是 JSON：' + String(raw || '').slice(0, 200));
+            }
+            return out;
+          });
+        }
+        var dec = new TextDecoder('utf-8');
+        var buf = '';
+        var acc = { content: '', reasoning: '', byIdx: {}, finishReason: '', usage: {} };
+        function applyChunk(j, cb) {
+          if (j.usage) acc.usage = j.usage;
+          var ch = (j.choices && j.choices[0]) || null;
+          if (!ch) return;
+          var d = ch.delta || {};
+          var c = String(d.content || '');
+          var r = String(d.reasoning_content || d.reasoning || '');
+          if (c) acc.content += c;
+          if (r) acc.reasoning += r;
+          var dtc = d.tool_calls || [];
+          for (var i = 0; i < dtc.length; i++) {
+            var one = dtc[i] || {};
+            var ix = Number(one.index == null ? 0 : one.index);
+            if (!acc.byIdx[ix]) acc.byIdx[ix] = { id: '', name: '', argsText: '' };
+            var slot = acc.byIdx[ix];
+            if (one.id) slot.id = String(one.id);
+            var fn = one.function || {};
+            if (fn.name) slot.name += String(fn.name);
+            if (fn.arguments) slot.argsText += String(fn.arguments);
+          }
+          if (ch.finish_reason) acc.finishReason = String(ch.finish_reason);
+          if (cb) cb({ content: c, reasoning: r });
+        }
+        function finish() {
+          var tcs = [];
+          for (var key in acc.byIdx) {
+            if (!Object.prototype.hasOwnProperty.call(acc.byIdx, key)) continue;
+            var s = acc.byIdx[key];
+            var args = {};
+            try { args = JSON.parse(s.argsText || '{}'); } catch (e) { args = { __unparsed: s.argsText }; }
+            tcs.push({ id: s.id || ('call_' + key), name: s.name, args: args });
+          }
+          return {
+            content: acc.content,
+            reasoning: acc.reasoning,
+            toolCalls: tcs,
+            finishReason: acc.finishReason || (tcs.length ? 'tool_calls' : 'stop'),
+            usage: acc.usage
+          };
+        }
+        function feed(chunk) {
+          buf += chunk;
+          var idx;
+          while ((idx = buf.indexOf('\n')) >= 0) {
+            var line = buf.slice(0, idx).replace(/\r$/, '');
+            buf = buf.slice(idx + 1);
+            if (!line || line.charAt(0) === ':') continue;
+            if (line.indexOf('data:') !== 0) continue;
+            var payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            var j = null;
+            try { j = JSON.parse(payload); } catch (e) { continue; }
+            applyChunk(j, onDelta);
+          }
+        }
+        function pump() {
+          return reader.read().then(function (r) {
+            if (r.done) {
+              if (buf) feed('\n');
+              return finish();
+            }
+            /* 每块立刻渲染：流式的「逐字」来自这里，不是靠定时器攒批 */
+            feed(dec.decode(r.value, { stream: true }));
+            return pump();
+          });
+        }
+        return pump();
+      }).then(function (r) {
+        STREAM.abort = null;
+        return r;
+      }, function (e) {
+        STREAM.abort = null;
+        throw e;
+      });
+  }
+
+  /* ── 通道 B：后端中继（http 局域网端点） ──
+     后端 Tools.Net.http 不受 mixed content 约束，能拿到整包 SSE。
+     拿回来按块回放，观感接近真流式；reasoning / content 分开回放。 */
+  function streamOnceRelay(messages, onDelta) {
+    var ctx = STREAM.ctx;
+    var body = buildStreamBody(messages, ctx);
+    return new Promise(function (resolve, reject) {
+      call('subagent:subagent_stream_relay', { id: S.cur || '', body: body }, 'streamRelay', function (r) {
+        var d = (r && r.data) || {};
+        if (r && r.success === false) { reject(new Error(String(r.message || '中继失败'))); return; }
+        if (!d || (!d.content && !d.reasoning && !(d.toolCalls || []).length)) {
+          reject(new Error('中继未返回内容'));
+          return;
+        }
+        var chunks = d.chunks || [];
+        if (!onDelta || !chunks.length) { resolve(d); return; }
+        /* 按块回放：总时长不好预估，用固定间隔，块多就慢一点、块少就快一点 */
+        var gap = chunks.length > 120 ? 8 : (chunks.length > 40 ? 12 : 16);
+        var i = 0;
+        function tick() {
+          if (!ALIVE) { resolve(d); return; }
+          if (i >= chunks.length) { resolve(d); return; }
+          var c = chunks[i++] || {};
+          if (c.content || c.reasoning) onDelta({ content: c.content || '', reasoning: c.reasoning || '' });
+          setTimeout(tick, gap);
+        }
+        tick();
+      });
+    });
+  }
+
+  /* 统一入口：先直连；CORS/网络失败自动落中继，中继失败交给上层降级 advanceTask */
+  function streamOnce(messages, onDelta) {
+    return streamOnceDirect(messages, onDelta).then(null, function (eDirect) {
+      /* 直连失败（CORS 拦/网络不通）→ 换后端中继，不让用户看见报错 */
+      if (STREAM.ctx && STREAM.ctx.endpoint) STREAM.relay = true;
+      return streamOnceRelay(messages, onDelta).then(function (r) { return r; }, function (eRelay) {
+        throw eDirect && /abort/i.test(String(eDirect.message || eDirect)) ? eDirect : eRelay;
+      });
+    });
+  }
+
+  /* ── 流式主循环 ──
+     严格串行：模型 → 若返回 tool_calls → 逐个执行（等回包）→ 把结果塞回 messages → 再问模型。
+     一步都不抢跑。页面负责显示，工具执行仍在后端。 */
+  function streamChat(opts) {
+    opts = opts || {};
+    if (STREAM.busy) { err('上一轮还在生成'); return; }
+    var id = String(opts.taskId || S.cur || '');
+    if (!id) { err('没有选中的任务'); return; }
+    STREAM.busy = true;
+    S.streaming = true;
+    setLive('连接中…');
+    /* 占位气泡：后续 delta 直接往里追加，不重建整棵 DOM */
+    var host = $('dtChat');
+    if (!host) { STREAM.busy = false; S.streaming = false; return; }
+    var holder = document.createElement('div');
+    holder.className = 'streambox';
+    holder.innerHTML = '<div class="sb-think" style="display:none"></div>'
+      + '<div class="sb-body md-body"></div>';
+    host.appendChild(holder);
+    var thinkEl = holder.querySelector('.sb-think');
+    var bodyEl = holder.querySelector('.sb-body');
+    var thinkBuf = '', bodyBuf = '';
+
+    /* 逐帧渲染：每块 delta 到达后下一帧就刷，不再攒 60ms 批。
+       长文本靠 md() 只在正文变化时重算，滚动用 rAF 合并，避免每块都触发重排。 */
+    var paintPending = false;
+    function paint(force) {
+      if (force) { paintPending = false; doPaint(); return; }
+      if (paintPending) return;
+      paintPending = true;
+      var raf = (typeof requestAnimationFrame === 'function')
+        ? requestAnimationFrame
+        : function (f) { return setTimeout(f, 16); };
+      raf(function () { paintPending = false; doPaint(); });
+    }
+    function doPaint() {
+      if (thinkBuf) { thinkEl.style.display = ''; thinkEl.textContent = thinkBuf; }
+      if (bodyBuf) bodyEl.innerHTML = md(bodyBuf);
+      var c = $('dtChat');
+      if (c) c.scrollTop = c.scrollHeight;
+    }
+
+    loadStreamEnv(id, function (e0) {
+      if (e0) {
+        /* 环境取不到（无端点/无密钥）→ 降级后端推进，不报死 */
+        sinkToAdvance(id, holder, String(e0.message || e0));
+        return;
+      }
+      /* 从后端拿任务的消息历史作为起点 */
+      call('subagent:subagent_trace', { id: id, limit: 60, compact: false }, 'trace', function (r) {
+        var d = (r && r.data) || {};
+        var turns = d.turns || [];
+        var msgs = [];
+        for (var i = 0; i < turns.length; i++) {
+          var m = turns[i] || {};
+          var role = String(m.role || '');
+          if (role === 'system') {
+            /* system 是子代理的全部指令来源（任务/工具/输出格式），绝不能丢 */
+            msgs.push({ role: 'system', content: String(m.content || '') });
+            continue;
+          }
+          if (role === 'assistant') {
+            var a = { role: 'assistant', content: String(m.content || '') };
+            if (m.reasoning) a.reasoning_content = String(m.reasoning);
+            if (m.tool_calls && m.tool_calls.length) {
+              a.tool_calls = m.tool_calls.map(function (tc) {
+                return {
+                  id: String(tc.id || ''), type: 'function',
+                  function: { name: String(tc.name || ''), arguments: String(tc.args || '{}') }
+                };
+              });
+            }
+            msgs.push(a);
+          } else if (role === 'tool') {
+            msgs.push({ role: 'tool', tool_call_id: String(m.calls_id || ''), content: String(m.result || '') });
+          } else if (role === 'user') {
+            msgs.push({ role: 'user', content: String(m.content || '') });
+          }
+        }
+        runRound(msgs, 0);
+      });
+    });
+
+    function runRound(msgs, depth) {
+      if (!ALIVE) { STREAM.busy = false; S.streaming = false; return; }
+      if (depth > 8) {
+        STREAM.busy = false; S.streaming = false;
+        err('工具调用层数过多，已停止');
+        setLive('');
+        return;
+      }
+      thinkBuf = ''; bodyBuf = '';
+      setLive(depth === 0 ? '模型生成中…' : '继续推理…');
+      streamOnce(msgs, function (delta) {
+        if (!ALIVE) return;
+        if (delta.reasoning) thinkBuf += delta.reasoning;
+        if (delta.content) bodyBuf += delta.content;
+        paint(false);
+      }).then(function (out) {
+        paint(true);
+        if (!ALIVE) return;
+        /* 没有工具调用 → 这一轮就是答案，落盘并收尾 */
+        if (!out.toolCalls || !out.toolCalls.length) {
+          STREAM.busy = false; S.streaming = false;
+          S.advancing = false;
+          setLive('');
+          /* 内容为空但只有思考：明确告知，不静默返回空 */
+          if (!out.content && out.reasoning) {
+            err('模型只输出了思考、没有正文（可把思考等级调低或提高 max_tokens）');
+          }
+          /* 先把前端状态置成已完成，别等后端回包才更新——否则会一直停在「待开始」 */
+          S.curStatus = 'done';
+          if (S.cur) {
+            for (var qi = 0; qi < S.items.length; qi++) {
+              if (S.items[qi].id === S.cur) { S.items[qi].status = 'done'; break; }
+            }
+          }
+          /* 立刻在页面上补最终内容（思考在前、正文在后），不靠等 trace */
+          if (out.reasoning) {
+            var tb2 = document.createElement('div');
+            tb2.className = 'thinkbox';
+            tb2.setAttribute('data-state', '0');
+            tb2.innerHTML = '<div class="thk-head">' + SVG_CHEV
+              + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
+              + '<span class="thk-len">' + out.reasoning.length + ' 字</span></div>'
+              + '<div class="thk-body">' + esc(out.reasoning) + '</div>';
+            host.appendChild(tb2);
+          }
+          if (out.content) {
+            var fin = document.createElement('div');
+            fin.className = 'bubble ai';
+            fin.innerHTML = '<div class="b-body md-body">' + md(out.content) + '</div>';
+            host.appendChild(fin);
+          }
+          /* 把自己这个临时流式块清掉，避免和落盘内容重复显示 */
+          holder.remove();
+          syncDtBar();
+          /* 落盘：刷新页面后内容仍在；页面只管显示，持久化交给后端 */
+          var saved = { role: 'assistant', content: out.content || '' };
+          if (out.reasoning) saved.reasoning = out.reasoning;
+          call('subagent:subagent_save_turn', { id: id, turns: [saved], done: true }, 'saveTurn', function () {
+            if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+          });
+          refreshList(false);
+          return;
+        }
+        /* 有工具调用：先把这一轮的助手消息入 messages，再逐个执行 */
+        var asst = { role: 'assistant', content: out.content || '' };
+        if (out.reasoning) asst.reasoning_content = out.reasoning;
+        asst.tool_calls = out.toolCalls.map(function (tc) {
+          return { id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args || '{}') } };
+        });
+        msgs.push(asst);
+        var queue = out.toolCalls.slice();
+        var idx = 0;
+        function nextTool() {
+          if (!ALIVE) { STREAM.busy = false; S.streaming = false; return; }
+          if (idx >= queue.length) { runRound(msgs, depth + 1); return; }
+          var tc = queue[idx++];
+          setLive('正在执行 ' + tc.name + '…');
+          /* 串行铁律：调一个、等一个、再下一个 */
+          call('subagent:subagent_tool_once', {
+            id: id, tool: tc.name, args: tc.args || {}
+          }, 'toolOnce', function (rr) {
+            var dd = (rr && rr.data) || {};
+            var content = dd.ok ? String(dd.result || '') : ('ERROR: ' + String(dd.error || '工具失败'));
+            msgs.push({ role: 'tool', tool_call_id: tc.id, content: content });
+            /* 工具结果立刻显示在时间线里，用户能看到进展 */
+            var tb = document.createElement('div');
+            tb.className = 'tblock' + (dd.ok ? '' : ' bad');
+            tb.setAttribute('data-act', 'toolDlg');
+            tb.setAttribute('data-val', String(tc.name));
+            tb.innerHTML = '<div class="tb-head"><span class="tb-name">' + esc(tc.name) + '</span></div>'
+              + '<div class="tb-res">' + SVG_CORNER + (dd.ok ? SVG_OK : SVG_BAD)
+              + '<span class="tb-meta">' + esc(String(content.length)) + ' 字符</span></div>';
+            S._toolMap = S._toolMap || {};
+            S._toolMap[String(tc.name)] = { call: { name: tc.name, args: JSON.stringify(tc.args || {}) }, res: { ok: dd.ok, result: content, chars: content.length } };
+            host.appendChild(tb);
+            nextTool();
+          });
+        }
+        nextTool();
+      }).then(null, function (e1) {
+        if (!ALIVE) return;
+        var m1 = String((e1 && e1.message) || e1);
+        if (/abort/i.test(m1)) {
+          STREAM.busy = false; S.streaming = false;
+          setLive('');
+          toast('已中断生成', 'warn');
+          return;
+        }
+        /* 已生成的内容不丢：先落盘，避免用户白等一场 */
+        if (bodyBuf || thinkBuf) {
+          var keep = { role: 'assistant', content: String(bodyBuf || '') };
+          if (thinkBuf) keep.reasoning = String(thinkBuf);
+          call('subagent:subagent_save_turn', { id: id, turns: [keep], done: false }, 'saveTurn', function () {});
+        }
+        /* 关键：任何流式失败都降级到后端推进，绝不把任务晾在 queued。
+           上一轮删掉整个流式就是因为漏了这一步。 */
+        sinkToAdvance(id, holder, explainFetchErr((STREAM.ctx && STREAM.ctx.endpoint) || '', e1), bodyBuf, thinkBuf);
+      });
+    }
+  }
+
+  /* 流式走不通时的统一兜底：收起占位块 → 提示能看懂的原因 → 转后端推进。
+     降级只提示一次，同一任务反复失败不刷屏。 */
+  function sinkToAdvance(id, holder, reason, bodyBuf, thinkBuf) {
+    STREAM.busy = false;
+    S.streaming = false;
+    setLive('');
+    if (holder && holder.parentNode) holder.remove();
+    if (!STREAM.fellBack) {
+      STREAM.fellBack = true;
+      warnMsg('该端点不支持流式，已切后端推进（无逐字效果，功能不受影响）');
+    }
+    if (reason && /HTTP \d{3}/.test(String(reason))) warnMsg(String(reason).slice(0, 200));
+    /* 已经有内容就先留住，别让用户白等 */
+    if (bodyBuf || thinkBuf) {
+      var keep = { role: 'assistant', content: String(bodyBuf || '') };
+      if (thinkBuf) keep.reasoning = String(thinkBuf);
+      call('subagent:subagent_save_turn', { id: id, turns: [keep], done: false }, 'saveTurn', function () {});
+    }
+    advanceTask(id, 1);
+  }
+
+  /* 停止流式 */
+  function abortStream() {
+    if (STREAM.abort) { try { STREAM.abort.abort(); } catch (e) {} }
+    STREAM.busy = false;
+    S.streaming = false;
+    setLive('');
+  }
+
+  /* 推进任务：steps 默认 1，一次最多 3（后端限制）
+   注意 桥 20 秒会超时，但后端不受影响会继续跑完。
+   所以这里不等回包判定结果，启动了就交给轮询（startPoll）盯进度。 */
+  function advanceTask(id, steps) {
+    if (!id) return;
+    S.advancing = true;
+    S.curStatus = 'running';
+    setLive('模型生成中…');
+    startPoll();
+    call('subagent:subagent_advance', { id: id, steps: steps || 1 }, 'advance');
+  }
+  /* 轮询：整个界面的进度真源。每 1.5 秒读一次 trace，
+     桥超时也不停——后端还在跑，trace 会一直变化。 */
+  function startPoll() {
+    stopPoll();
+    pollOnce();
+  }
+  function stopPoll() {
+    try { clearTimeout(S.pollT); } catch (e) {}
+    S.pollT = null;
+  }
+  function pollOnce() {
+    if (!ALIVE) return;
+    try { clearTimeout(S.pollT); } catch (e) {}
+    S.pollT = null;
+    if (!S.cur || S.page !== 'detail') return;
+    var st = String(S.curStatus || '');
+    if (st !== 'running' && st !== 'queued') return;
+    call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+    /* 桥已超时说明后端还在跑，这时把轮询降频：原来 1.5s 一次会让整页发烫变卡。
+       恢复正常后再回到高频，保证有进展时界面跟得上。 */
+    var gap = S.bridgeDropped ? 2200 : 1500;
+    S.pollT = setTimeout(pollOnce, gap);
+  }
+  /* 兼容旧调用点：tickDetail 已并入 pollOnce */
+  function tickDetail() {
+    if (!S.cur || S.page !== 'detail') return;
+    var st = String(S.curStatus || '');
+    if (st !== 'running' && st !== 'queued') return;
+    startPoll();
+  }
+  function openTools() {
+    if (!S.tools) call('subagent:subagent_tools', {}, 'tools');
+    /* 多选：点选即时改 S.sel，右下的「确定」只是关闭并回读，不会丢选择 */
+    openDlg('允许工具', toolGroups(), true, function (picked) {
+      if (picked && picked.length) S.sel = picked.slice();
+      if ($('vTools')) $('vTools').textContent = S.sel.length ? (S.sel.length + ' 项') : '未选择';
+    });
+  }
+
+  /* ── 配置 ── */
+  var PROVIDERS = {
+    'DeepSeek 官方': { ep: 'https://api.deepseek.com/v1' },
+    'OpenAI 官方': { ep: 'https://api.openai.com/v1' },
+    'Gemini 兼容': { ep: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+    'OpenRouter': { ep: 'https://openrouter.ai/api/v1' },
+    'Anthropic 兼容': { ep: '' },
+    '自定义中转': { ep: '' }
+  };
+  /* ── 端点后缀自动补全 ──
+ * 规则（严格按用户要求，绝不做多余推断）：
+ *   1. 不写协议 → 补 https://
+ *   2. 路径为空或只有 /         → 补 /v1/chat/completions
+ *   3. 路径正好是 /v1（或 /v1/）  → 补 /chat/completions
+ *   4. 其它任何路径（/v1/models、/openai、/api/v3…）→ 原样不动
+ *   5. 已经是 /chat/completions 或 /responses 或 /messages → 原样不动
+ * 用户自己填了后缀，绝不会再叠加。 */
+  function epNorm(raw) {
+    var s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+    s = s.replace(/\s+/g, '');
+    var m = s.match(/^(https?:\/\/[^\/]+)(\/.*)?$/i);
+    if (!m) return s;
+    var host = m[1];
+    var p = (m[2] || '').replace(/\/{2,}/g, '/').replace(/\/+$/, '');   /* 折叠多斜杠 + 去尾斜杠 */
+    /* 已经有完整协议后缀 → 原样返回（大小写不敏感，输出用小写标准名） */
+    if (/\/chat\/completions$/i.test(p)) return host + p.replace(/\/chat\/completions$/i, '/chat/completions');
+    if (/\/responses$/i.test(p)) return host + p.replace(/\/responses$/i, '/responses');
+    if (/\/messages$/i.test(p)) return host + p;
+    /* 空路径 → 补整段 */
+    if (p === '') return host + '/v1/chat/completions';
+    /* 只有 /v1（任意版本号）→ 补 chat/completions */
+    if (/^\/v\d+$/i.test(p)) return host + p + '/chat/completions';
+    /* 其它路径原样不动 */
+    return host + p;
+  }
+  /* 判断补全动了什么，返回一句人话给预览行 */
+  function epExplain(raw) {
+    var s = String(raw == null ? '' : raw).trim();
+    if (!s) return { text: '填写 API 端点后自动补全', warn: false };
+    /* 用户自己已经写全了 → 明确告知不会再动 */
+    if (/\/chat\/completions\/?$/i.test(s) || /\/responses\/?$/i.test(s) || /\/messages\/?$/i.test(s)) {
+      return { text: '已完整，按原样使用 ' + s.replace(/\/+$/, ''), warn: false, full: s };
+    }
+    var full = epNorm(s);
+    var sFull = full.replace(/\/+$/, '');
+    if (/\/chat\/completions$/i.test(full)) {
+      return { text: '将补全为 ' + sFull, warn: false, full: sFull };
+    }
+    /* 有非 v1 的路径 → 不补，但要说明 */
+    var m = full.match(/^(https?:\/\/[^\/]+)(\/.*)$/i);
+    if (m && m[2]) {
+      return { text: '自定义路径，按原样使用 ' + sFull, warn: true, full: sFull };
+    }
+    return { text: '将补全为 ' + sFull, warn: false, full: sFull };
+  }
+  function syncEpPreview() {
+    var el = $('inEp'), pre = $('epPre');
+    if (!el || !pre) return;
+    var r = epExplain(el.value);
+    pre.className = 'ep-pre' + (r.warn ? ' warn' : '');
+    pre.textContent = r.text;
+    syncCfgTip();
+  }
+  /* 三项齐了才提示测试 */
+  function syncCfgTip() {
+    var tip = $('cfgTip');
+    if (!tip) return;
+    var ep = $('inEp') ? String($('inEp').value || '').trim() : '';
+    var model = $('inModel') ? String($('inModel').value || '').trim() : '';
+    var keyOn = !!S.keyOk;
+    var ok = !!(ep && model && keyOn);
+    tip.style.display = ok ? '' : 'none';
+    if (ok && $('cfgTipTxt')) {
+      /* 连通性判断不能靠文案匹配（verdict 可能是「连通正常 · 198 个模型」等变体）：
+       用 S.probed 这个布尔量记「是否测过」，测过就换提示文案 */
+      $('cfgTipTxt').textContent = S.probed
+        ? '配置完整，再测一次可刷新结果'
+        : '端点、密钥、模型都齐了，点这里测试连通性';
+    }
+  }
+  function renderCfg(d) {
+    var p = (d && d.profile) || {}, st = (d && d.status) || {};
+    S.cfgProv = p.api_provider || '';
+    S.cfgModel = p.model || (st.model || '');
+    S.keyOk = !!st.key_configured;
+    if ($('cfgProv')) $('cfgProv').textContent = S.cfgProv ? String(S.cfgProv).replace(/通用$/, '') : '未点选择';
+    if ($('cfgKey')) {
+      $('cfgKey').textContent = st.key_configured ? '已配置' : '未配置';
+      $('cfgKey').className = 'cfg-val ' + (st.key_configured ? 'ok' : 'bad');
+    }
+    /* 用户已经手动填过东西时，不要用后端旧值覆盖输入框 */
+    if (!S.formDirty) {
+      if ($('inEp')) $('inEp').value = p.base_url || st.base_url || '';
+      if ($('inModel')) $('inModel').value = p.model || st.model || '';
+    }
+    /* 模型块副标题：显示缓存到的模型数量 */
+    if ($('cbModelSub')) {
+      var n = (d && d.models_count) || 0;
+      $('cbModelSub').textContent = n ? ('共 ' + n + ' 个可选模型，点右侧列表选一个') : '从列表里选一个，或直接手填';
+    }
+    syncEpPreview();
+    syncCfgTip();
+    /* 密钥不回填明文（只写不读）。已配置时给占位提示，让用户知道不用重填；
+       输入框里用户已经打的字绝不覆盖 */
+    if ($('inKey') && !S.keyFilled) {
+      $('inKey').placeholder = st.key_configured ? '已保存（不显示，需要更换时重新输入）' : 'sk-…';
+    }
+    /* 模型列表：进页面直接吃后端 24h 磁盘缓存，不用等网络 */
+    if (!S.allModels.length && (d && d.cached_models) && d.cached_models.length) {
+      fillModels(d.cached_models, true, d.models_at || 0);
+    }
+  }
+  /* 密钥显示切换：默认密码态，点一下变明文 */
+  function toggleKey() {
+    var el = $('inKey'); if (!el) return;
+    var show = el.type === 'password';
+    el.type = show ? 'text' : 'password';
+    if ($('btnEye')) {
+      $('btnEye').innerHTML = '<svg><use href="#' + (show ? 'i-eye-off' : 'i-eye') + '"/></svg>';
+      $('btnEye').setAttribute('title', show ? '隐藏密钥' : '显示密钥');
+    }
+    hf();
+  }
+  function applyCaps(caps) {
+    if (!caps || !$('cfgCaps')) return;
+    var on = [];
+    var names = { tool_call: '工具调用', reasoning: '推理' };
+    for (var k in names) {
+      if (!Object.prototype.hasOwnProperty.call(names, k)) continue;
+      if (caps[k]) on.push(names[k]);
+    }
+    $('cfgCaps').textContent = on.length ? ('支持：' + on.join(' / ')) : '（未探测到）';
+    $('cfgCaps').className = 'cfg-val ' + (on.length ? 'ok' : '');
+  }
+  /* 渲染分层连通性结果：端点可达 / 密钥有效 / 模型可生成 */
+  function renderProbe(d) {
+    var pr = (d && d.probe) || d || {};
+    var layers = pr.layers || [];
+    var ok = pr.connected === true;
+    S.probed = true;
+    if ($('cfgConn')) {
+      $('cfgConn').textContent = pr.verdict || (ok ? '连通正常' : '未测试');
+      /* 三态：全通 ok、全不通 bad、部分通过 warn（不能把「端点可达但密钥无效」显示成全绿或全红） */
+      var anyBad = false, anyOk = false;
+      for (var li = 0; li < layers.length; li++) {
+        var LL = layers[li] || {};
+        if (LL.ok === false) anyBad = true;
+        if (LL.ok === true) anyOk = true;
+      }
+      var cls = ok ? 'ok' : (anyOk && anyBad ? 'warn' : 'bad');
+      $('cfgConn').className = 'cfg-val ' + cls;
+    }
+    if ($('probeLayers')) {
+      if (!layers.length) { $('probeLayers').innerHTML = ''; return; }
+      var names = { tool_call: '工具调用', reasoning: '推理' };
+      var h = '<div class="probe-card">';
+      for (var i = 0; i < layers.length; i++) {
+        var L = layers[i] || {};
+        var cc = L.ok === true ? 'ok' : (L.ok === false ? 'bad' : 'skip');
+        var mark = L.ok === true ? '<svg><use href="#i-check"/></svg>'
+          : (L.ok === false ? '<svg><use href="#i-x"/></svg>' : '<span class="dot"></span>');
+        h += '<div class="probe-row ' + cc + '">'
+          + '<span class="pv-mark">' + mark + '</span>'
+          + '<span class="pv-name">' + esc(L.name || '') + '</span>'
+          + (L.ms ? '<span class="pv-ms">' + fmtMs(L.ms) + '</span>' : '')
+          + '</div>'
+          + '<div class="pv-detail">' + esc(L.detail || '') + '</div>';
+      }
+      var caps = pr.capabilities;
+      if (caps) {
+        var on = [];
+        for (var k in names) { if (Object.prototype.hasOwnProperty.call(names, k) && caps[k]) on.push(names[k]); }
+        if (on.length) h += '<div class="pv-detail">推断能力：' + esc(on.join(' / ')) + '</div>';
+      }
+      if (pr.total_ms) h += '<div class="pv-detail">总耗时 ' + fmtMs(pr.total_ms) + '</div>';
+      h += '</div>';
+      $('probeLayers').innerHTML = h;
+    }
+    /* 模型能力行同步 */
+    applyCaps(pr.capabilities);
+  }
+  function pickProv() {
+    var rows = [];
+    for (var k in PROVIDERS) rows.push({ val: k, label: k, desc: PROVIDERS[k].ep || '端点手填' });
+    openDlg('选择 API 提供商', [{ title: '提供商', items: rows }], false, function (v) {
+      if (!v || v === '__ro') return;
+      var pr = PROVIDERS[v] || {};
+      var ep = pr.ep || '';
+      S.cfgProv = v;
+      if ($('cfgProv')) $('cfgProv').textContent = String(v).replace(/通用$/, '');
+      /* 只记录提供商本身。
+         端点：有预置值且用户框里还是空的才填，否则一律不动。
+         模型：**永远不自动填**。模型名必须由用户自己写，或从「拉取到的模型列表」里选。
+         曾经这里会塞 models[0]，导致「自定义中转」被塞进 deepseek-flash，
+         还只写了 model 没写端点，配置里留下 base_url 空 + model 有值的脏数据。 */
+      var payload = { api_provider: v };
+      if (ep) {
+        var cur = ($('inEp') ? $('inEp').value : '').trim();
+        if (!cur) { if ($('inEp')) $('inEp').value = ep; payload.base_url = ep; }
+      }
+      call('subagent:subagent_config', { action: 'set', payload: payload }, 'cfgset');
+    }, false);
+  }
+  /* API 端点右侧下拉：只给「协议后缀」两个选项，不是常用端点列表。
+     主机名由用户自己填，这里只决定末尾补什么。 */
+  function pickEp() {
+    var base = ($('inEp') ? String($('inEp').value || '').trim() : '');
+    /* 先剥掉已有的协议后缀，拿到纯根 */
+    var root = base.replace(/\/chat\/completions\/?$/i, '').replace(/\/responses\/?$/i, '').replace(/\/+$/, '');
+    root = root.replace(/^https?:\/\//i, '');
+    var host = /^[^\/]+/.test(root) ? root.match(/^[^\/]+/)[0] : '';
+    var pre = host ? ('https://' + host) : '';
+    var rows = [
+      { val: 'chat', label: 'v1 / chat / completions', desc: pre ? (pre + '/v1/chat/completions') : 'OpenAI 兼容对话（最常用）' },
+      { val: 'responses', label: 'v1 / responses', desc: pre ? (pre + '/v1/responses') : 'OpenAI Responses 协议' },
+      { val: 'none', label: '不补后缀', desc: '我已填完整地址，或协议不属于上面两种' }
+    ];
+    openDlg('端点后缀', [{ title: '补什么', items: rows }], false, function (v) {
+      if (!v || v === '__ro') return;
+      var cur = ($('inEp') ? String($('inEp').value || '').trim() : '');
+      var r = cur.replace(/\/chat\/completions\/?$/i, '').replace(/\/responses\/?$/i, '').replace(/\/+$/, '');
+      if (!/^https?:\/\//i.test(r)) r = 'https://' + r;
+      if (v === 'chat') r = r.replace(/\/v\d+$/i, '') + '/v1/chat/completions';
+      else if (v === 'responses') r = r.replace(/\/v\d+$/i, '') + '/v1/responses';
+      if ($('inEp')) $('inEp').value = r;
+      S.formDirty = true;
+      syncEpPreview();
+      hf();
+      okMsg('已设为 ' + r);
+    }, false);
+  }
+  /* 模型列表：本地过滤，单选。600 个模型也扛得住。命中缓存直接开，未命中才拉 */
+  function pickModel() {
+    var list = S.allModels || [];
+    var stamp = S.modelsAt ? ('　·　更新于 ' + fmtAgo(S.modelsAt)) : '';
+    openDlg('选择模型', [{ title: '', items: modelRows(list) }], false, selectModel);
+    if ($('dlgSearch')) $('dlgSearch').placeholder = '搜索模型（共 ' + list.length + ' 个）';
+    if (!list.length) {
+      toast('还没有模型列表，正在拉取…', 'info');
+      pullModels(false);
+    } else {
+      okMsg('共 ' + list.length + ' 个模型' + stamp);
+    }
+  }
+  /* 距上次刷新多久 */
+  function fmtAgo(ts) {
+    var s = Math.max(0, Math.floor((Date.now() - Number(ts || 0)) / 1000));
+    if (s < 60) return s + ' 秒前';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+    return Math.floor(s / 86400) + ' 天前';
+  }
+  /* 拉模型列表：带当前输入框端点；force=false 时后端会走 24h 磁盘缓存 */
+  function pullModels(force) {
+    var ep = ($('inEp') ? String($('inEp').value || '').trim() : '');
+    var p = { action: 'refresh_models' };
+    if (ep) p.base_url = epNorm(ep);
+    if (force === true) p.force = true;
+    call('subagent:subagent_config', p, 'modelsRefreshed');
+  }
+  function modelRows(list) {
+    var cur = (($('inModel') ? $('inModel').value : '') || '').trim();
+    var rows = [];
+    for (var i = 0; i < list.length; i++) {
+      rows.push({ val: list[i], label: list[i], desc: '', on: list[i] === cur });
+    }
+    if (!rows.length) rows.push({ val: '__ro', label: '还没有模型列表', desc: '先点右上角刷新，或直接手填模型名' });
+    return rows;
+  }
+  function selectModel(v) {
+    if (!v || v === '__ro') return;
+    if ($('inModel')) $('inModel').value = v;
+    S.cfgModel = v;
+    S.formDirty = true;
+    hf();
+    okMsg('已选 ' + v + '，记得保存');
+  }
+  /* 拉回的模型列表：填进弹窗 + 记进内存 */
+  function fillModels(list, fromCache, at) {
+    S.allModels = list || [];
+    if (at) S.modelsAt = Number(at) || 0;
+    else if (!S.modelsAt || !fromCache) S.modelsAt = Date.now();
+    if (S.dlg) {
+      S.dlg.groups = [{ title: '', items: modelRows(S.allModels) }];
+      renderDlg($('dlgSearch') ? $('dlgSearch').value : '');
+      if ($('dlgSearch')) $('dlgSearch').placeholder = '搜索模型（共 ' + S.allModels.length + ' 个）';
+    }
+    if ($('cbModelSub')) {
+      $('cbModelSub').textContent = S.allModels.length
+        ? ('共 ' + S.allModels.length + ' 个可选模型，点右侧列表换一个')
+        : '从列表里选一个，或直接手填';
+    }
+    if (!list.length) return;
+    /* fromCache 才提示（用户点列表时看到「已载入」）；网络拉取由调用方 toast，避免重复 */
+    if (fromCache) okMsg('已载入 ' + S.allModels.length + ' 个模型（' + fmtAgo(S.modelsAt) + '）');
+  }
+  /* 思考等级滑块：0..3 → off/low/medium/high
+   滑块端点最省、右端最深，比下拉更有「科技感」，也少一次点击。 */
+  var THINK_ORDER = ['off', 'low', 'medium', 'high'];
+  /* 思考等级：滑块 → 档位 + 英文标签 + 填充进度 + 刻度高亮 */
+  function syncThinkFromSlider() {
+    var el = $('inThink'); if (!el) return;
+    var i = Math.max(0, Math.min(3, parseInt(el.value || '1', 10) || 0));
+    S.think = THINK_ORDER[i];
+    var v = $('vThink'); if (v) v.textContent = THINK_EN[S.think] || 'Medium';
+    var fill = $('thinkFill');
+    if (fill) {
+      /* 填充条必须停在「滑块圆心」上，不能按 0-100% 直接算。
+         滑钮直径 20px，圆心行程是从 10px 到 (宽度-10px)。
+         从两端各让出 10px 的可用行程，再用 calc 把圆心位置换算成宽度：
+         宽度 = 半径 + 行程 × 比例。
+         只算百分比会让 high 档填充条顶到边框外，低档又落后于圆心。 */
+      var pct = i / 3;
+      fill.style.width = 'calc(10px + (100% - 20px) * ' + pct.toFixed(4) + ')';
+    }
+    /* 刻度文字高亮：让用户知道现在停在哪一档 */
+    var lab = el.parentNode && el.parentNode.parentNode ? el.parentNode.parentNode.querySelector('.slines') : null;
+    if (lab) {
+      var ss = lab.querySelectorAll('span');
+      for (var k = 0; k < ss.length; k++) ss[k].classList.toggle('on', k === i);
+    }
+  }
+  function setThinkSlider(level) {
+    var i = THINK_ORDER.indexOf(String(level || ''));
+    if (i < 0) i = 2;
+    var el = $('inThink'); if (el) el.value = String(i);
+    syncThinkFromSlider();
+  }
+  /* 最大深度已改输入框：只做取值规范化（0 = 不限制，上限 5） */
+  function syncDepthFromSlider() {
+    var el = $('inDepth'); if (!el) return;
+    var n = parseInt(el.value || '0', 10);
+    if (!(n >= 0)) n = 0;
+    if (n > 5) n = 5;
+    el.value = String(n);
+  }
+  function saveKey() {
+    var k = ($('inKey').value || '').trim();
+    if (!k) return;
+    if (S.keySaving) return;
+    S.keySaving = true;
+    call('subagent:subagent_config', { action: 'key', api_key: k }, 'cfgkey');
+  }
+  /* 保存端点 + 模型：从输入框读，端点会做后缀补全 */
+  function saveCfg() {
+    var raw = ($('inEp') ? $('inEp').value : '').trim();
+    var model = ($('inModel') ? $('inModel').value : '').trim();
+    if (!raw) { err('请填写 API 端点'); return; }
+    var ep = epNorm(raw);
+    /* 把补全结果写回输入框，让用户看见最终地址 */
+    if ($('inEp') && ep !== raw) $('inEp').value = ep;
+    /* formDirty 不能在发请求前清：后端拒绝（如模型名像密钥）时要保持「有未保存改动」，
+       否则回包渲染会把用户的输入覆盖成旧值。清标志由 cfgset 成功分支负责。 */
+    call('subagent:subagent_config', { action: 'set', payload: { base_url: ep, model: model } }, 'cfgset');
+  }
+  function probe() {
+    /* 测的是眼前输入框里的值，不是已保存的值：用户改完端点/模型直接点测试也能测对 */
+    var ep = ($('inEp') ? String($('inEp').value || '').trim() : '');
+    var md = ($('inModel') ? String($('inModel').value || '').trim() : '');
+    var p = { deep: true };
+    if (ep) p.base_url = epNorm(ep);
+    if (md) p.model = md;
+    if ($('cfgConn')) { $('cfgConn').textContent = '测试中…'; $('cfgConn').className = 'cfg-val'; }
+    if ($('probeLayers')) $('probeLayers').innerHTML = '<div class="probe-card"><div class="pv-detail">正在测试端点 / 密钥 / 模型…</div></div>';
+    S.probed = false;
+    call('subagent:subagent_probe', p, 'probe');
+  }
+  /* 模型右侧放大镜：只探测当前这个模型能不能真跑起来 */
+  function probeModel() {
+    /* 以输入框为准：用户可能刚改过还没保存 */
+    var m = (($('inModel') ? $('inModel').value : '') || S.cfgModel || '').trim();
+    if (!m) { err('先填一个模型名'); return; }
+    hf();
+    var ep = ($('inEp') ? String($('inEp').value || '').trim() : '');
+    var p = { deep: true, model: m };
+    if (ep) p.base_url = epNorm(ep);
+    if ($('cfgConn')) { $('cfgConn').textContent = '测试中…'; $('cfgConn').className = 'cfg-val'; }
+    if ($('probeLayers')) $('probeLayers').innerHTML = '<div class="probe-card"><div class="pv-detail">正在探测模型 ' + esc(m) + '…</div></div>';
+    S.probed = false;
+    call('subagent:subagent_probe', p, 'probe');
+  }
+
+  /* ── 收件箱 ── */
+  /* ── 收件箱（邮件式，用户定 2026-11-05）──
+     不再复用通用弹窗：列表页 + 阅读页两级，正文 Markdown 渲染。 */
+  function openInbox() {
+    show('inbox');
+    var box = $('inboxList');
+    if (box) box.innerHTML = '<div class="mail-empty">读取中…</div>';
+    call('subagent:subagent_inbox', {}, 'inbox');
+  }
+  /* 时间戳格式化：毫秒数 → "MM-DD HH:mm"；非数字原样截断 */
+  function fmtMailTime(v) {
+    var s = String(v || '');
+    if (/^\d{10,}$/.test(s)) {
+      var d = new Date(Number(s));
+      if (!isNaN(d.getTime())) {
+        function z(n) { return (n < 10 ? '0' : '') + n; }
+        return (d.getMonth() + 1) + '-' + z(d.getDate()) + ' ' + z(d.getHours()) + ':' + z(d.getMinutes());
+      }
+    }
+    return s.slice(5, 16);
+  }
+  function renderInbox(d) {
+    var items = (d && d.items) || [];
+    S.inboxItems = items;
+    var box = $('inboxList');
+    if (!box) return;
+    if (!items.length) {
+      box.innerHTML = '<div class="mail-empty">收件箱是空的<br><span>子代理完成任务的结论会出现在这里</span></div>';
+      return;
+    }
+    /* 窗口化（第七轮）：初始 30 条；滚到底部加载下一批 30，DOM 始终 ≤150 条。
+       items 全量存 S.inboxItems，idx 用全局下标，不因加载批次漂移。 */
+    var ITEMS_BATCH = 30, ITEMS_MAX_DOM = 150;
+    S.inboxShown = Math.min(ITEMS_BATCH, items.length);
+    box.innerHTML = inboxSliceHtml(items, 0, S.inboxShown, true);
+    /* 批次入场错峰：每批次 30 条，延迟 0~(29*20)ms */
+    var kids = box.children || [];
+    for (var k = 0; k < kids.length; k++) { kids[k].style.animation = 'gpuFade .18s ease-out ' + (k * 20) + 'ms both'; }
+    /* 向下滚动加载：仅当还有未显示的条目时追加 */
+    box.onscroll = function () {
+      var left = items.length - (S.inboxShown || 0);
+      if (left <= 0) return;
+      if (box.scrollTop + box.clientHeight >= box.scrollHeight - 48) {
+        var add = Math.min(ITEMS_BATCH, left);
+        var frag = document.createElement('div');
+        frag.innerHTML = inboxSliceHtml(items, S.inboxShown, S.inboxShown + add, false);
+        while (frag.firstChild) box.appendChild(frag.firstChild);
+        S.inboxShown = (S.inboxShown || 0) + add;
+        /* DOM 上限 150：超过就把最早的批移出（邮件列表按最新在前，尾部是旧件） */
+        if (box.children.length > ITEMS_MAX_DOM) {
+          var cut = box.children.length - ITEMS_MAX_DOM;
+          while (cut-- > 0) box.removeChild(box.lastChild);
+        }
+      }
+    };
+  }
+  /* 生成邮件列表片段：兼容新旧字段（title/task_title、text/conclusion） */
+  function inboxSliceHtml(items, from, to, withEmpty) {
+    var html = '';
+    for (var i = from; i < to; i++) {
+      var it = items[i] || {};
+      var title = String(it.task_title || it.title || it.task_id || '未命名任务');
+      var body = String(it.conclusion || it.text || '').replace(/^#.*\n+/, '').slice(0, 120);
+      var tm = fmtMailTime(it.finished_at || it.created_at || '');
+      var unread = it.unread !== false ? ' unread' : '';
+      html += '<div class="mail-item' + unread + '" data-act="openMail" data-idx="' + i + '">'
+        + '<div class="mi-row1"><span class="mi-from">' + esc(title) + '</span>'
+        + '<span class="mi-time">' + esc(tm) + '</span></div>'
+        + '<div class="mi-sub">' + esc(String(it.task_title || it.title || '').slice(0, 40) || '子代理结论') + '</div>'
+        + '<div class="mi-prev">' + esc(body) + '</div>'
+        + '</div>';
+    }
+    return html;
+  }
+  function openMail(idx) {
+    var it = (S.inboxItems || [])[idx];
+    if (!it) return;
+    var title = String(it.task_title || it.task_id || '结论');
+    if ($('mailTitle')) $('mailTitle').textContent = title.slice(0, 18);
+    var body = $('mailBody');
+    if (body) {
+      var full = String(it.conclusion || it.text || '（无内容）');
+      var head = it.finished_at || it.created_at ? '<div class="mail-meta">' + esc(it.finished_at || it.created_at || '') + '</div>' : '';
+      body.innerHTML = head + md(full);
+      body.scrollTop = 0;
+    }
+    show('mail');
+  }
+  /* ── 目录选择器：真正的文件树（目录可进、文件显示体积） ── */
+  function lsGroups(d) {
+    var dirs = d.dirs || [], files = d.files || [];
+    var items = [];
+    var cur = String(d.path || '/');
+    if (cur !== '/') {
+      items.push({ val: '__up', label: '.. 上一级', desc: '返回上级目录', up: d.parent || '/' });
+    }
+    for (var i = 0; i < dirs.length; i++) {
+      var sub = (cur.replace(/\/+$/, '')) + '/' + dirs[i];
+      items.push({ val: sub + '/', label: dirs[i] + '/', desc: '目录 · 点击进入', isDir: true });
+    }
+    for (var j = 0; j < files.length; j++) {
+      var f = files[j];
+      items.push({ val: '__file', label: f.name, desc: fmtSize(f.size) + ' · 文件', isFile: true });
+    }
+    if (!items.length) items.push({ val: '__ro', label: '（空目录）', desc: '这里没有子目录' });
+    return [{ title: cur + '  ·  ' + dirs.length + ' 目录 / ' + files.length + ' 文件 / ' + fmtSize(d.total_size), items: items }];
+  }
+  function fmtSize(n) {
+    var v = Number(n || 0);
+    if (v < 1024) return v + ' B';
+    if (v < 1048576) return (v / 1024).toFixed(1) + ' KB';
+    if (v < 1073741824) return (v / 1048576).toFixed(2) + ' MB';
+    return (v / 1073741824).toFixed(2) + ' GB';
+  }
+  function renderBrowse(d) {
+    S._browsePath = d.path || '/';
+    if (!S.dlg) {   // 兜底：弹窗没打开时自己开一个
+      S.dlg = { groups: [], multi: false, onOk: null };
+      if ($('mask')) $('mask').classList.add('on');
+      if ($('dlg')) $('dlg').classList.add('on');
+    }
+    S.dlg.groups = lsGroups(d);
+    S.dlg.multi = false;
+    S.dlg.browsing = true;                 // 标记：这是目录浏览模式
+    S.dlg.onOk = function (v) {
+      if (v === '__file' || v === '__ro') return;
+      $('inWs').value = v;
+      $('vWs').textContent = v;
+      okMsg('已选：' + v);
+    };
+    if ($('dlgTitle')) $('dlgTitle').textContent = '选择目录';
+    /* 目录浏览：点目录=进入，右下角「选择此目录」才确认 */
+    if ($('dlgFoot')) {
+      $('dlgFoot').innerHTML = '<span class="dlg-cnt">' + esc(S._browsePath) + '</span>'
+        + '<button class="btn" data-act="dlgCancel">取消</button>'
+        + '<button class="btn pri" data-act="pickHere">选择此目录</button>';
+    }
+    renderDlg($('dlgSearch') ? $('dlgSearch').value : '');
+  }
+  function browseTo(p) {
+    openDlg('选择目录', [{ title: '', items: [{ val: '__loading', label: '读取中…', desc: '' }] }], false, null, false);
+    call('subagent:subagent_list_dir', { path: p || '/sdcard' }, 'ls');
+  }
+
+  /* ── 事件绑定 ── */
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest ? e.target.closest('[data-act]') : null;
+    if (!el) return;
+    var act = el.getAttribute('data-act'), val = el.getAttribute('data-val') || '';
+    if (act === 'open') { hf(); return openTask(val); }
+    if (act === 'closeTask') { e.stopPropagation(); return closeTask(val); }
+    if (act === 'deleteTask') { e.stopPropagation(); return deleteTask(val); }
+    if (act === 'goHome') return goHome();
+    if (act === 'goList') return goList();
+    if (act === 'backList') { S.cur = null; show('list'); renderList(S.items); return; }
+    if (act === 'fold') {
+      var f = el;
+      f.classList.toggle('open');
+      var nb = f.nextElementSibling;
+      if (nb && nb.classList && nb.classList.contains('fold-body')) nb.style.display = f.classList.contains('open') ? 'block' : 'none';
+      return;
+    }
+    /* 思考块的单击/双击统一在文档末尾的 .thk-head 委托里处理，
+       这里不再拦截（旧 data-act=think 分支已删除，避免两套逻辑打架） */
+
+    if (act === 'meta') return openMeta(val);
+    if (act === 'toolDlg') return openToolDlg(val);
+    if (act === 'sheetClose') return closeSheet();
+    if (act === 'goNew') { show('new'); if (!S.tools) call('subagent:subagent_tools', {}, 'tools'); loadNewForm(); return; }
+    if (act === 'goCfg') {
+      S.formDirty = false;
+      S.keyFilled = false;
+      /* 每次进配置页都清空密钥框：密钥只写不读，靠 placeholder 告知「已保存」 */
+      if ($('inKey')) { $('inKey').value = ''; $('inKey').type = 'password'; }
+      if ($('btnEye')) { $('btnEye').innerHTML = '<svg><use href="#i-eye"/></svg>'; $('btnEye').setAttribute('title', '显示密钥'); }
+      show('cfg');
+      call('subagent:subagent_config', { action: 'status' }, 'cfg');
+      /* 有磁盘缓存的话进页面就有模型数，不必等用户点列表 */
+      return;
+    }
+    if (act === 'openInboxBtn') return openInbox();
+    if (act === 'openMail') return openMail(Number(t.dataset.idx));
+    if (act === 'backToInbox') return openInbox();
+    if (act === 'inboxClearAll') { call('subagent:subagent_inbox', { action: 'read' }, 'inboxClear'); return; }
+    if (act === 'deleteCur') { if (S.cur) deleteTask(S.cur); return; }
+    if (act === 'closeCur') { if (S.cur) closeTask(S.cur); return; }
+    /* 确认框 */
+    if (act === 'cfmNo') return closeCfm();
+    if (act === 'cfmYes') { var fY = S.cfmYes; closeCfm(); if (fY) fY(); return; }
+    /* 列表页批量删除 */
+    if (act === 'enterMulti') return enterMulti();
+    if (act === 'exitMulti') return exitMulti();
+    if (act === 'toggleSel') return toggleSel(val);
+    if (act === 'deleteSelected') return deleteSelected();
+    if (act === 'doSaveCfg') return saveCfg();
+    if (act === 'toggleKey') return toggleKey();
+    if (act === 'dlgPick') {
+      if (!S.dlg || val === '__ro') return;
+      /* 目录浏览模式：点目录 = 进入下一级（不关窗），文件只展示 */
+      if (S.dlg.browsing) {
+        if (val === '__file') { err('这是文件，不是目录'); return; }
+        if (val === '__up') {
+          hf();
+          var ups = '';
+          for (var gi = 0; gi < S.dlg.groups.length; gi++) {
+            var its = S.dlg.groups[gi].items || [];
+            for (var hj = 0; hj < its.length; hj++) { if (its[hj].val === '__up') ups = its[hj].up || '/'; }
+          }
+          browseTo(ups || '/');
+          return;
+        }
+        if (/\/$/.test(val)) { hf(); browseTo(val); return; }
+        return;
+      }
+      if (S.dlg.multi) {
+        var ix = S.sel.indexOf(val);
+        if (ix >= 0) S.sel.splice(ix, 1); else S.sel.push(val);
+        if ($('vTools')) $('vTools').textContent = S.sel.length ? (S.sel.length + ' 项') : '未选择';
+        hf();
+        renderDlg($('dlgSearch') ? ($('dlgSearch').value || '') : '');
+        if ($('dlgFoot')) $('dlgFoot').innerHTML = '<span class="dlg-cnt">已选 ' + S.sel.length + ' 项</span><button class="btn" data-act="dlgCancel">取消</button><button class="btn pri" data-act="dlgOk">确定</button>';
+      } else {
+        var f = S.dlg.onOk; closeDlg(); if (f) f(val);
+      }
+      return;
+    }
+    if (act === 'dlgOk') {
+      if (!S.dlg) return;
+      var cb = S.dlg.onOk;
+      closeDlg();
+      if (cb) cb(S.sel.slice());
+      /* 空选是合法状态（= 不限制），不是错误，所以用中性提示而不是红叉 */
+      if (S.sel.length) okMsg('已选 ' + S.sel.length + ' 个工具');
+      else toast('未选工具 = 不限制', 'info');
+      return;
+    }
+    if (act === 'runCur') return runCur();
+    if (act === 'stopCur') return stopCur();
+    if (act === 'dlgCancel') return closeDlg();
+    if (act === 'pickHere') {
+      /* 目录浏览模式下确认"当前所在目录" */
+      var here = S._browsePath || '/sdcard';
+      if (S.dlg && S.dlg.onOk) { var f2 = S.dlg.onOk; closeDlg(); f2(here); }
+      else closeDlg();
+      return;
+    }
+    if (act === 'inboxClear') { call('subagent:subagent_inbox', { action: 'read' }, 'inboxClear'); return; }
+    if (act === 'pickProv') return pickProv();
+    if (act === 'pickEp') return pickEp();
+    if (act === 'pickModel') return pickModel();
+    if (act === 'probeModel') return probeModel();
+    if (act === 'doProbe') return probe();
+    if (act === 'saveKey') return saveKey();
+    if (act === 'doCreate') return createTask();
+    if (act === 'openTools') return openTools();
+    if (act === 'usePrivateWs') {
+      call('subagent:subagent_workspace', { action: 'init' }, 'privateWs');
+      return;
+    }
+    if (act === 'pickWs') {
+      browseTo(($('inWs').value || '').trim() || '/sdcard');
+      return;
+    }
+    if (act === 'sendMsg') return sendMsg();
+    if (act === 'collapseThink') { hf(); collapseThinkAll(); return; }
+    if (act === 'togglePerm') { hf(); togglePanel('permBox', 'btnPerm'); return; }
+    if (act === 'toggleRun') { hf(); togglePanel('runBox', 'cardRun'); return; }
+    if (act === 'editFull') return openFullEdit();
+    if (act === 'closeFull') return closeFullEdit();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && e.target && e.target.id === 'dtInput') { e.preventDefault(); sendMsg(); }
+  });
+  $('dlgSearch').addEventListener('input', function () { renderDlg(this.value); });
+  /* ── 新建页交互：滑块、分段选择器、上下文轮数 ── */
+  if ($('inThink')) $('inThink').addEventListener('input', function () {
+    syncThinkFromSlider(); saveNewForm(); syncCardSubs();
+  });
+  if ($('inDepth')) $('inDepth').addEventListener('input', function () {
+    syncDepthFromSlider(); saveNewForm(); syncCardSubs();
+  });
+  /* 步数/超时改动也要刷新卡片摘要 */
+  ['inSteps', 'inTimeout'].forEach(function (id) {
+    if ($(id)) $(id).addEventListener('input', function () { saveNewForm(); syncCardSubs(); });
+  });
+  /* 任务描述：输入即存内存草稿（不写 localStorage，避免下次带出旧任务） */
+  if ($('inTask')) $('inTask').addEventListener('input', function () { syncTaskDraft(); });
+  if ($('inTaskFull')) $('inTaskFull').addEventListener('input', function () {
+    syncTaskDraft();
+    /* 全屏编辑时同步回新建页，退出时不丢内容 */
+    if ($('inTask')) $('inTask').value = this.value;
+  });
+  /* 分段按钮事件已随「附带上下文」移除 */
+  /* 进入新建页时把滑块与卡片同步到当前状态 */
+  setThinkSlider(S.think);
+  syncDepthFromSlider();
+  syncCardSubs();
+  /* 用户改过端点/模型后，标记 dirty，避免后续 status 回包把内容覆盖回旧值 */
+  ['inEp', 'inModel'].forEach(function (id) {
+    if ($(id)) $(id).addEventListener('input', function () { S.formDirty = true; if (id === 'inEp') syncEpPreview(); else syncCfgTip(); });
+  });
+  /* 密钥框输完（失焦）自动保存：不需要按钮，也不清空、不重载表单 */
+  if ($('inKey')) $('inKey').addEventListener('blur', function () {
+    setTimeout(syncCfgTip, 0);
+    var v = String(this.value || '').trim();
+    if (v) saveKey();
+  });
+  /* 密钥框：聚焦时显示明文，失焦立刻恢复星号（顺手也支持右侧小眼睛手动切） */
+  if ($('inKey')) {
+    $('inKey').addEventListener('input', function () { syncCfgTip(); });
+    $('inKey').addEventListener('focus', function () {
+      if (this.type !== 'text') {
+        this.type = 'text';
+        if ($('btnEye')) { $('btnEye').innerHTML = '<svg><use href="#i-eye-off"/></svg>'; $('btnEye').setAttribute('title', '隐藏密钥'); }
+      }
+    });
+    $('inKey').addEventListener('blur', function () {
+      if (this.type !== 'password') {
+        this.type = 'password';
+        if ($('btnEye')) { $('btnEye').innerHTML = '<svg><use href="#i-eye"/></svg>'; $('btnEye').setAttribute('title', '显示密钥'); }
+      }
+    });
+  }
+  if ($('listSearch')) $('listSearch').addEventListener('input', function () { renderList(S.items); });
+  if ($('homeSearch')) {
+    $('homeSearch').addEventListener('input', function () {
+      var v = String(this.value || '').trim();
+      if (!v) { renderList(S.items); return; }
+      if (!(S.listAt && (Date.now() - S.listAt) < LIST_TTL)) refreshList(false);
+      var hit = [];
+      for (var i = 0; i < S.items.length; i++) {
+        var it = S.items[i];
+        var hay = ((it.title || '') + ' ' + (it.id || '') + ' ' + stCn(it.status) + ' ' + (it.last_text || '')).toLowerCase();
+        if (hay.indexOf(v.toLowerCase()) >= 0) hit.push(it);
+      }
+      renderList(hit);
+    });
+    $('homeSearch').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { goList(); if ($('listSearch')) { $('listSearch').value = this.value; renderList(S.items); } }
+    });
+  }
+/* 删除只在详情页做：列表页不提供删除入口（长按也不行），避免误删 */
+  if ($('sheet-mask')) $('sheet-mask').addEventListener('click', closeSheet);
+  if ($('mask')) $('mask').addEventListener('click', function () { closeDlg(); closeCfm(); });
+
+  /* 思考块交互（用户定稿）：
+       整张卡片任意位置单击 = 切换 收起 ⇄ 展开全部（不截断）
+       双击 = 同样切换（保留，防用户习惯性双击）
+       不再区分「一小部分/全部」两档 */
+  var _thinkTapEl = null, _thinkTapT = 0;
+  document.addEventListener('click', function (e) {
+    if (!e.target || typeof e.target.closest !== 'function') return;
+    var tb = e.target.closest('.thinkbox');
+    if (!tb) return;
+    /* 卡片内的正文选中文字时不触发，避免想复制却把它收起 */
+    try {
+      var sel = window.getSelection && window.getSelection();
+      if (sel && String(sel).length) return;
+    } catch (eS) {}
+    var now = Date.now();
+    if (_thinkTapEl === tb && (now - _thinkTapT) < 300) { _thinkTapT = 0; _thinkTapEl = null; return; }
+    _thinkTapEl = tb; _thinkTapT = now;
+    var st0 = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
+    setThinkState(tb, st0 === 1 ? 0 : 1);
+  });
+  /* 移除 data-act=think 的直接切换，交给上面的双击/单击判定 */
+
+  /* ── 启动 ── */
+show('welcome');
+  refreshList(true);
+  setTimeout(function () { S.initAnim = true; if (S.initLoaded) show('home'); }, 1200);
+  /* 兜底：3 秒后无论如何都进主页，避免桥不回导致永远停在欢迎页 */
+  setTimeout(function () { if (S.page === 'welcome') show('home'); }, 3000);
+  call('subagent:subagent_config', { action: 'status' }, 'cfg');
+  /* KaTeX 外接（第七轮）：用户把 katex.min.js 放到
+     /sdcard/Download/Operit/subagent/vendor/ 后，这里经桥读入并注入。
+     失败静默走内置渲染器，不打扰用户。仅尝试一次。 */
+  (function () {
+    if (window.__katexTried) return;
+    window.__katexTried = true;
+    call('subagent:subagent_vendor_js', { name: 'katex.min.js' }, 'vendor', function (r) {
+      var d = (r && r.data) || {};
+      if (!d || !d.text) return;
+      try {
+        /* new Function 隔离作用域：katex.min.js 是 UMD，会自己挂 window.katex */
+        (new Function(d.text))();
+        if (window.katex && typeof window.katex.renderToString === 'function') {
+          /* css 也顺带注入（KaTeX 排版必需，字体缺失时会退化到系统字体，仍可用） */
+          call('subagent:subagent_vendor_js', { name: 'katex.min.css' }, 'vendor', function (r2) {
+            var d2 = (r2 && r2.data) || {};
+            if (d2 && d2.text) {
+              var st = document.createElement('style');
+              st.textContent = d2.text;
+              document.head.appendChild(st);
+            }
+          });
+        }
+      } catch (e) { /* 注入失败：保持 window.katex 未定义，内置渲染器兜底 */ }
+    });
+  })();
+})();

@@ -116,11 +116,17 @@ A.chk('数据目录固定 Download/Operit/subagent', /Download\/Operit\/subagent
 A.nomatch('subagent_version 不写死 tools 计数', SUB, /tools:\s*\d+\s*\}/);
 A.match('subagent_version 动态统计 tools', SUB, /var n = 0;[\s\S]{0,400}?tools: n/);
 
-/* README 必须与实际一致：allowed_tools 已非必填 */
+/* README 必须与实际一致 */
 var RD = A.src('../README.md');
 if (RD) {
     A.nomatch('README 不再说 allowed_tools 必填', RD, /`allowed_tools` 必填/);
-    A.match('README 说明 allowed_tools 留空=不限制', RD, /allowed_tools.*留空.*不限制|留空 = 不限制/);
+    /* 【2026-11-07 反转】这条原来锁的是「留空 = 不限制」，而实现是「留空 = 全拒」。
+       断言把错误说法锁死了：谁改 README 谁测试红。第二十二轮用户拍板「留空 = 全拒」，
+       第二十六轮审计把它列为 P0（给外部用户看的 README 说反了）。
+       现在方向反转，锁正确语义。 */
+    A.match('README 说明留空 = 一个工具都用不了', RD, /allowed_tools.*留空.*一个工具都用不了/);
+    A.match('README 说明 all=true 全放开', RD, /all=true/);
+    A.nomatch('README 不再说留空 = 不限制', RD, /留空 = 不限制/);
     A.match('README 工具表覆盖 29 个', RD, /## 工具（29 个）/);
     A.match('README 提到 CORS 判据', RD, /access-control-allow-origin/);
     A.match('README 有测试章节', RD, /node e2e_all\.js/);
@@ -134,9 +140,14 @@ A.match('无未读时注入能力提示', HOOK, /CAPABILITY_HINT/);
 A.match('能力提示含 subagent_spawn 用法', HOOK, /subagent_spawn\(task=/);
 A.match('能力提示含 subagent_result 用法', HOOK, /subagent_result\(id=/);
 A.match('有未读时列收件箱', HOOK, /\[子代理收件箱\] 有 /);
-/* 铁律：钩子内禁止调工具 API（会回环导致 ANR）——检查代码行，排除注释 */
-var hookCode = HOOK.split('\n').filter(function (l) { return !/^\s*[\*\/]/.test(l); }).join('\n');
-A.nomatch('hook 代码里不调 Tools.*（铁律）', hookCode, /Tools\.\w+/);
+/* 铁律：钩子内禁止调工具 API（会回环导致 ANR）——检查代码行，排除注释。
+   注意：不能只按行首星号或斜杠过滤，块注释的续行（如「为什么用 SP...」）不以星号开头，
+   会被漏掉造成假阳性。这里先把整段块注释剥掉，再按行注释过滤。 */
+var hookCode = HOOK.replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter(function (l) { return !/^\s*\/\//.test(l); })
+    .join('\n');
+A.nomatch('hook 代码里不调 Tools 系列（铁律）', hookCode, /Tools\.\w+/);
 A.match('hook 注册在 main.js', A.src('main.js'), /registerSystemPromptComposeHook/);
 
 

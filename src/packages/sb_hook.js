@@ -22,6 +22,16 @@
 var EVENT_NAME = "after_compose_system_prompt";
 var SP_NAME = "subagent_inbox";
 var SP_KEY = "items";
+/* 埋点键：钩子被调用一次就 +1。写在 SharedPreferences，工具侧能读到。
+   为什么不用 globalThis：钩子与工具不在同一 JS 引擎，globalThis 不跨。
+   为什么用 SP 不违反铁律：铁律禁的是「工具 API」（Tools.Files/Net/Shell 等，会回环），
+   Java.getApplicationContext().getSharedPreferences 是直接 Java 调用，不经过工具层。 */
+var SP_CALLS = "hook_calls";
+/* 开关：环境变量 SUBAGENT_HOOK_ENABLED，缺省为开。
+   设为 0 / false / off 时钩子直接 return（undefined），系统提示词原样保留。
+   为什么需要开关：能力提示每轮都注入，用户不需要子代理时（闲聊、做别的项目）
+   这 5 行是纯浪费，还会诱导主代理去派活。上游 moodlet 也是双开关设计。 */
+var ENV_ENABLED = "SUBAGENT_HOOK_ENABLED";
 
 /* 注入上限：钩子每轮都跑，正文全带会把上下文撑爆。
    只给 id + 标题 + 摘要，正文由 subagent_result(id=...) 现取。 */
@@ -57,6 +67,34 @@ function readInbox() {
   }
 }
 
+/* 读开关：缺省开。任何异常都当开处理，不让钩子因为读不到环境变量就失效。 */
+function hookEnabled() {
+  try {
+    if (typeof getEnv !== "function") return true;
+    var v = String(getEnv(ENV_ENABLED) || "").trim().toLowerCase();
+    if (!v) return true;
+    if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
+/* 埋点：钩子被真正调用（且通过开关）时 +1，写进 SharedPreferences。
+   这是判断「钩子到底会不会被宿主调用」的唯一可观测手段。
+   计数器恒 0 = 宿主根本没调这个钩子，写法再对也是空转。 */
+function bumpCalls() {
+  try {
+    if (typeof Java === "undefined" || !Java) return;
+    var ctx = Java.getApplicationContext();
+    if (!ctx) return;
+    var p = ctx.getSharedPreferences(SP_NAME, 0);
+    if (!p) return;
+    var n = Number(p.getInt(SP_CALLS, 0)) + 1;
+    p.edit().putInt(SP_CALLS, n).apply();
+  } catch (e) {}
+}
+
 function clipText(s, n) {
   var t = String(s == null ? "" : s);
   if (!n || t.length <= n) return t;
@@ -85,6 +123,16 @@ function subagentInboxHook(event) {
     /* ① 只处理 after_compose_system_prompt，其它阶段一律不插手 */
     if (String(ev.eventName || "") !== EVENT_NAME) return;
 
+    /* ② 开关关掉时 return（undefined），系统提示词原样保留。
+       注意：这一步在埋点之前 —— 关掉是用户主动行为，不该算进「钩子被调用」。
+       但这样也意味着「开关关着 + 计数器 0」无法区分「没触发」和「关掉了」，
+       所以计数放在开关判断之后、事件名判断之后：
+       事件名对 = 宿主确实调了这个钩子；开关关 = 我们主动不注入。 */
+    if (!hookEnabled()) return;
+
+    /* 埋点：走到这里说明宿主确实调用了这个钩子，且开关是开的 */
+    bumpCalls();
+
     var payload = ev.eventPayload || {};
     /* ③ 原始系统提示词：必须原样保留，我们的内容只能追加在后面 */
     var base = String(payload.systemPrompt || "");
@@ -108,3 +156,7 @@ function subagentInboxHook(event) {
 exports.subagentInboxHook = subagentInboxHook;
 exports.CAPABILITY_HINT = CAPABILITY_HINT;
 exports.EVENT_NAME = EVENT_NAME;
+exports.SP_NAME = SP_NAME;
+exports.SP_CALLS = SP_CALLS;
+exports.ENV_ENABLED = ENV_ENABLED;
+exports.hookEnabled = hookEnabled;

@@ -26,7 +26,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 
 | 工具 | 作用 |
 |---|---|
-| `subagent_spawn` | 建任务（只有 `task` 必填；`allowed_tools` 留空 = 不限制；含写类工具时必须给 `workspace`） |
+| `subagent_spawn` | 建任务（只有 `task` 必填；**`allowed_tools` 留空 = 一个工具都用不了**，要放开全部传 `all=true`；含写类工具时必须给 `workspace`） |
 | `subagent_advance` | 推进一步或 N 步（上限 3） |
 | `subagent_wait` | 等完成（默认最多 60s） |
 | `subagent_status` | 查状态；不传 id 列全部 |
@@ -130,7 +130,7 @@ test/                    断言测试（不在包内，见下）
 ## 测试
 
 ```bash
-cd test && node e2e_all.js        # 全部 242 条断言
+cd test && node e2e_all.js        # 全部 404 条断言
 cd test && node e2e_all.js ui     # 只跑一组：flow / md / tools / ui / toast
 ```
 

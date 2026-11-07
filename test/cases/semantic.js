@@ -190,4 +190,18 @@ A.nomatch('旧「空数组=不限制」注释已删', A.src('packages/subagent.j
 /* main.js 注释与事实一致 */
 A.match('main.js 注释说明注册了钩子', A.src('main.js'), /注册系统提示词钩子（after_compose_system_prompt）/);
 
+/* ── 第二十六轮：第二版审计修复 ── */
+/* 钩子必须有开关（上游 moodlet 是双开关设计）：关掉时 return undefined，不注入 */
+A.match('钩子有开关', HOOK, /function hookEnabled\(\)/);
+A.match('开关读环境变量', HOOK, /getEnv\(ENV_ENABLED\)/);
+A.match('开关关掉时 return', HOOK, /if \(!hookEnabled\(\)\) return;/);
+/* 钩子必须有真埋点：写 SP 计数器，工具侧能读到（原 bump 是 globalThis 假指标） */
+A.match('钩子埋点写 SP', HOOK, /p\.edit\(\)\.putInt\(SP_CALLS, n\)/);
+A.match('埋点在事件名判断之后', HOOK, /!== EVENT_NAME\) return;[\s\S]{0,300}?bumpCalls\(\);/);
+/* 工具侧报真指标 */
+A.match('inbox 报 hook_calls', A.src('packages/subagent.js'), /hook_calls: calls/);
+A.match('inbox 报 hook_enabled', A.src('packages/subagent.js'), /hook_enabled: enabled/);
+/* conclusion 冗余字段已清（sb_bus 只存 text，传两份是误导） */
+A.nomatch('notifyDone 不再传 conclusion', A.src('packages/subagent.js'), /text: text, conclusion: text/);
+
 A.finish();

@@ -793,7 +793,7 @@ async function notifyDone(task) {
         /* 全文入库（第七轮）：旧版截 160 字，邮件正文打不开——现在存全量，
            由 sb_bus 的 20000 上限统一兜底 */
         var text = task.result ? String(task.result) : String(task.error || "已结束");
-        try { BUS.add({ id: task.id, title: title, task_id: task.id, task_title: task.title || title, text: text, conclusion: text, finished_at: Date.now(), created_at: Date.now() }); } catch (e0) {}
+        try { BUS.add({ id: task.id, title: title, task_id: task.id, task_title: task.title || title, text: text, finished_at: Date.now(), created_at: Date.now() }); } catch (e0) {}
         if (mode === "system" && Tools && Tools.System && Tools.System.sendNotification) {
             Tools.System.sendNotification(text.slice(0, 120), "子代理：" + title);
         }
@@ -1131,11 +1131,27 @@ exports.subagent_inbox = async function (params) {
         complete({ success: true, message: "已清空收件箱（" + n + " 条）", data: { cleared: n } });
         return;
     }
-    /* 只报真实可观测的条数。原来的「钩子命中 N 次」是假指标：
-       钩子侧自增的 globalThis 工具侧读不到，SP 里的计数又因为 bump() 零调用恒为 0，
-       永远报 0，连「真的是 0」都无法判断。已删除。 */
+    /* 只报真实可观测的数据：
+       - count：收件箱未读条数
+       - hook_calls：钩子被宿主真正调用的次数（写在 SharedPreferences，跨引擎可读）
+         这个数是判断「提示词钩子到底会不会被触发」的唯一依据。
+         恒 0 = 宿主没调这个钩子，写法再对也是空转。
+       - hook_enabled：钩子开关当前状态 */
     var st = BUS.stat();
-    complete({ success: true, message: "未读 " + st.count + " 条", data: { count: st.count, items: BUS.list() } });
+    var calls = 0, enabled = true;
+    try {
+        var p = Java.getApplicationContext().getSharedPreferences("subagent_inbox", 0);
+        if (p) calls = Number(p.getInt("hook_calls", 0)) || 0;
+    } catch (eC) { calls = 0; }
+    try {
+        var HK = require("./sb_hook.js");
+        enabled = HK.hookEnabled();
+    } catch (eH) { enabled = true; }
+    complete({
+        success: true,
+        message: "未读 " + st.count + " 条；钩子调用 " + calls + " 次（" + (enabled ? "已开启" : "已关闭") + "）",
+        data: { count: st.count, hook_calls: calls, hook_enabled: enabled, items: BUS.list() }
+    });
 };
 exports.subagent_list = async function (params) {
     var all = await TASK.listTasks();

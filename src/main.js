@@ -41,7 +41,10 @@ function registerToolPkg() {
             });
         } catch (e) {}
     }
-    /* 收件箱钩子：只读内存，不调用工具 API */
+    /* 收件箱钩子：注册系统提示词钩子（after_compose_system_prompt）。
+   回调内只读 SharedPreferences + 内存，不调用任何工具 API —— 钩子里调工具会无限回环
+   （2026-10-27 事故：钩子内 Tools.Files.write 触发自身 → ANR + 进程被杀）。
+   Java.getApplicationContext().getSharedPreferences 是直接 Java 调用，不经过工具层，安全。 */
     try {
         var hookMod = require("./packages/sb_hook.js");
         ToolPkg.registerSystemPromptComposeHook({

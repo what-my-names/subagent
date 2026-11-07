@@ -50,7 +50,10 @@ A.match('killToast 飞出前清 animation', P, /el\.style\.animation = 'none';[\
 /* ── 飞出时不能先 reset（闪回第二根因） ── */
 A.nomatch('飞出前不调 reset', P, /if \(dist >= TST_SWIPE_MIN\) \{[\s\S]{0,200}?reset\(\);[\s\S]{0,110}?killToast/);
 A.match('飞出把当前位置交给 killToast', P, /killToast\(rec, dir, curX, curY\)/);
-A.match('飞出用双 rAF', P, /raf\(function \(\) \{[\s\S]{0,200}?raf\(function \(\) \{/);
+/* 【2026-11-07 改】原来锁「双 rAF」，但 rAF 在 WebView 被遮挡时可能不触发，
+   通知条会卡在屏幕上飞不出去。改成双 setTimeout，断言方向同步反转。 */
+A.match('飞出用双 setTimeout', P, /setTimeout\(function \(\) \{[\s\S]{0,260}?setTimeout\(function \(\) \{/);
+A.nomatch('飞出不再依赖 rAF', P, /raf\(function \(\) \{[\s\S]{0,200}?raf\(function \(\) \{/);
 A.match('飞出移除延时 320ms', P, /\}, dir \? 320 : 260\);/);
 
 /* ── 竖向手势还给页面（阻塞根因） ── */

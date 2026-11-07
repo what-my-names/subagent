@@ -148,7 +148,21 @@ async function migrateLegacyConfig() {
     return true;
 }
 
-async function load() {
+/* 配置缓存：config.json 约 30KB，advanceTask 每步都 load 一次，
+   20 步任务就是 20 次读盘 + 20 次迁移尝试，明显浪费。
+   TTL 800ms：够覆盖一次工具调用链内的多次读取，又不至于让面板改完配置后读不到。
+   save() 会主动清缓存，所以自己写完立刻能读到新值。 */
+var _cfgCache = null, _cfgCacheAt = 0;
+var CFG_TTL_MS = 800;
+function invalidateCache() { _cfgCache = null; _cfgCacheAt = 0; _envCache = {}; _envCacheAt = {}; }
+var _envCache = {}, _envCacheAt = {};
+
+async function load(force) {
+    var _now = Date.now();
+    if (!force && _cfgCache && (_now - _cfgCacheAt) < CFG_TTL_MS) {
+        /* 返回深拷贝，避免调用方改到缓存本体 */
+        try { return JSON.parse(JSON.stringify(_cfgCache)); } catch (eC) { return _cfgCache; }
+    }
     /* 先尝试一次性迁移，失败不影响后续读默认值 */
     try { await migrateLegacyConfig(); } catch (e) {}
     var raw = await readText(cfgPath());
@@ -164,12 +178,14 @@ async function load() {
         if (m && !String(cfg.profile.model || "").trim()) cfg.profile.model = String(m).trim();
     } catch (e) {}
     try { applyActive(cfg); } catch (e) {}
-    return cfg;
+    _cfgCache = cfg; _cfgCacheAt = Date.now();
+    try { return JSON.parse(JSON.stringify(cfg)); } catch (eD) { return cfg; }
 }
 
 async function save(cfg) {
     var body = JSON.stringify(cfg, null, 2);
     await writeText(cfgPath(), body);
+    invalidateCache();   /* 写完立刻失效，下一次 load 读到新值 */
     return true;
 }
 
@@ -192,6 +208,9 @@ async function setKey(value) {
         throw new Error("当前版本不支持写环境变量");
     }
     await Tools.SoftwareSettings.writeEnvironmentVariable(KEY_ENV, v);
+    /* 立刻清环境变量缓存：否则刚写完 key 的 3 秒内 getEnvValue 还返回旧值（空），
+       表现为「保存了密钥但马上测试连通性仍报未配置」。 */
+    try { invalidateCache(); } catch (e) {}
     return true;
 }
 
@@ -294,8 +313,18 @@ module.exports = {
     load: load,
     save: save,
     hasKey: hasKey,
+    /* 环境变量读缓存：getEnv 走宿主 API，每次都有跨进程开销。
+       advanceTask 每步都要读 key/url/model，20 步就是 60 次。
+       TTL 3s + 空值不缓存（避免刚填完 key 读不到）。
+       setKey 会主动清空缓存。 */
     getEnvValue: function (name) {
-        try { return String(getEnv(String(name)) || ""); } catch (e) { return ""; }
+        var k = String(name || "");
+        var now = Date.now();
+        if (_envCache[k] && (now - _envCacheAt[k]) < 3000) return _envCache[k];
+        var v = "";
+        try { v = String(getEnv(k) || ""); } catch (e) { v = ""; }
+        if (v) { _envCache[k] = v; _envCacheAt[k] = now; }
+        return v;
     },
     setKey: setKey,
     keyEnvName: keyEnvName,

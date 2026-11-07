@@ -9,11 +9,26 @@ var WRITE_TOOLS = {
 
 var PATH_KEYS = ["path", "file", "file_path", "source", "src", "dest", "destination", "target"];
 
+/* 明确只读的工具白名单：这些名字里带 terminal/shell 字样（terminal_wait、
+   terminal_getscreen），但只读不写。不排除的话会被下面的正则判成写类，
+   进而在 runOne 里走「写类必须能提取路径参数」分支 —— 而它们的参数里没有路径，
+   结果就是这两个工具永远报「无法确定路径参数」，等于不可用。 */
+var READ_ONLY_TOOLS = {
+    read_file: true, read_file_part: true, list_files: true, file_info: true, file_exists: true,
+    file_grep: true, find_files: true, visit_web: true, download_file: true,
+    terminal_wait: true, terminal_getscreen: true, terminal_read: true,
+    web_search: true, chat: true
+};
+
 function isWriteTool(name) {
     var n = String(name || "");
+    if (READ_ONLY_TOOLS[n]) return false;
     if (WRITE_TOOLS[n]) return true;
     var lower = n.toLowerCase();
-    return /(^|[_:-])(write|edit|create|delete|move|copy|apply|zip|unzip|terminal|shell)([_:-]|$)/.test(lower);
+    /* 兜底正则只认「写动词出现在词首或词尾」的形态，
+       避免 terminal_wait 这类「写动词前缀 + 只读后缀」被误判 */
+    return /(^|[_:-])(write|edit|create|delete|move|copy|apply|zip|unzip|terminal|shell)([_:-]|$)/.test(lower)
+        && !/(_wait|_getscreen|_read|_status|_list|_info|_show|_get)$/.test(lower);
 }
 
 function isRecursive(name) {
@@ -59,10 +74,38 @@ function extractPaths(args) {
     return out;
 }
 
+/* 路径规范化：折叠重复斜杠、去掉结尾斜杠、把 . 与 .. 段解掉。
+   为什么必须做：原来只做字符串前缀比较，`/sdcard/x/../etc/passwd` 会因为
+   字面以 `/sdcard/x` 开头而通过检查 —— 写类工具的边界形同虚设（实测可绕）。
+   这里按 posix 规则逐段折叠；`..` 越出根就保留在栈顶，最终仍会被 inRoot 拒掉。 */
+function normPath(p) {
+    var s = String(p == null ? "" : p);
+    if (!s) return "";
+    s = s.replace(/\\/g, "/");
+    var abs = s.charAt(0) === "/";
+    var parts = s.split("/");
+    var stack = [];
+    for (var i = 0; i < parts.length; i++) {
+        var seg = parts[i];
+        if (!seg || seg === ".") continue;
+        if (seg === "..") {
+            if (stack.length && stack[stack.length - 1] !== "..") stack.pop();
+            else if (!abs) stack.push("..");
+            /* 绝对路径下 .. 越出根 = 丢弃，等价于被钳在 / */
+            continue;
+        }
+        stack.push(seg);
+    }
+    return (abs ? "/" : "") + stack.join("/");
+}
+
 function inRoot(p, root) {
-    var path = String(p || "");
-    var r = String(root || "").replace(/\/+$/, "");
+    var path = normPath(p);
+    var r = normPath(root);
     if (!r) return false;
+    /* 规范化后仍含 .. 的相对路径，一律判越界（宁可错杀） */
+    if (path === ".." || path.indexOf("../") === 0) return false;
+    if (!path) return false;
     return path === r || path.indexOf(r + "/") === 0;
 }
 
@@ -205,6 +248,7 @@ module.exports = {
     cleanToolName: cleanToolName,
     extractPaths: extractPaths,
     inRoot: inRoot,
+    normPath: normPath,
     clip: clip,
     runOne: runOne,
     undoAll: undoAll,

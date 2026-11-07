@@ -727,7 +727,9 @@ textarea{resize:vertical;min-height:72px}
 .slines span.on{color:var(--acc);font-weight:600;transform:scale(1.06)}
 /* ── 数学公式（内置渲染器；KaTeX 存在时自动优先用 KaTeX） ── */
 .md-body .md-math{font-size:13.5px;line-height:1.35}
-.md-body .md-math.t-blk{display:block;margin:7px 0;overflow-x:auto;overflow-y:hidden;text-align:center}
+/* 类名必须与 panel.js 输出一致：md() 里生成的是 class="md-math blk"（display 公式），
+   原来写 .t-blk 永远匹配不到，导致内置渲染器下块级公式跟正文挤在同一行。 */
+.md-body .md-math.blk{display:block;margin:7px 0;overflow-x:auto;overflow-y:hidden;text-align:center}
 .t-math{white-space:nowrap;font-family:"Times New Roman",Times,serif}
 .t-math.t-blk{white-space:normal}
 .t-frac{display:inline-flex;flex-direction:column;vertical-align:middle;
@@ -792,8 +794,12 @@ textarea{resize:vertical;min-height:72px}
 .fulltip{font-size:11.5px;color:var(--mut);padding-right:4px}
 /* 流式输出区域：贴合气泡样式，思考与正文分开显示 */
 .streambox{align-self:stretch;margin:6px 0}
+/* 流式中的思考区：完整显示，不设高度上限。
+   原来写 max-height:120px + overflow-y:auto，超出部分藏在滚动区里，
+   用户看到的就是「思考写到这里就不动了」，其实后面还在写 —— 被误判成流式卡住。
+   流式阶段就该让它自然生长，滚动交给整个 dtChat。 */
 .sb-think{font-family:ui-monospace,monospace;font-size:11.5px;line-height:1.62;color:#8d9ab6;
-  white-space:pre-wrap;word-break:break-word;max-height:120px;overflow-y:auto;
+  white-space:pre-wrap;word-break:break-word;
   padding:8px 11px;border-left:2px solid #7f8db3;border-radius:0 8px 8px 0;
   background:rgba(127,141,179,.06);margin-bottom:6px}
 .streambox .sb-body{border-radius:12px;background:var(--bg3);padding:10px 12px;

@@ -1,0 +1,193 @@
+/* test/cases/semantic.js — 跨模块语义断言（第二十二轮）
+ *
+ * 与其它 case 的区别：这里不做「源码里有没有这行字」的静态匹配，
+ * 而是 **真 require 模块、真调函数、真造临时目录**，验证行为一致性。
+ *
+ * 为什么需要它：前 297 条断言全是正则匹配，7 个真 bug 一条都没抓到 ——
+ * 变量名写错（t.dataset）、两条路径对同一参数给出相反行为、路径穿越、
+ * 只读工具被误判成写类，这些都不是「字符串在不在」能测出来的。
+ */
+var fs = require('fs');
+var path = require('path');
+var A = require('../lib/assert.js').group('跨模块语义');
+var SRC = A.SRC;
+
+/* 直接加载被测模块（纯函数，不依赖宿主 Tools） */
+var TOOLS = require(SRC + '/packages/sb_tools.js');
+var LLM = require(SRC + '/packages/sb_llm.js');
+
+/* ── 1. openMail 变量名：必须用 el，不能用未声明的 t ── */
+var P = A.src('ui/web/panel.js');
+A.match('openMail 用 el.dataset.idx', P, /if \(act === 'openMail'\) return openMail\(Number\(el\.dataset\.idx\)\)/);
+A.nomatch('openMail 不再引用裸 t', P, /if \(act === 'openMail'\) return openMail\(Number\(t\.dataset/);
+
+/* ── 2. 路径穿越：inRoot 必须拒掉 .. 逃逸 ── */
+A.eq('inRoot 拒 ../ 逃逸', TOOLS.inRoot('/sdcard/x/../etc/passwd', '/sdcard/x'), false);
+A.eq('inRoot 拒多级 ../ 逃逸', TOOLS.inRoot('/sdcard/x/a/../../y', '/sdcard/x'), false);
+A.eq('inRoot 允许根内路径', TOOLS.inRoot('/sdcard/x/a.txt', '/sdcard/x'), true);
+A.eq('inRoot 允许深层根内路径', TOOLS.inRoot('/sdcard/x/a/b/c.txt', '/sdcard/x'), true);
+A.eq('inRoot 允许根本身', TOOLS.inRoot('/sdcard/x', '/sdcard/x'), true);
+A.eq('inRoot 拒前缀相同但不同目录', TOOLS.inRoot('/sdcard/xy/a', '/sdcard/x'), false);
+A.eq('inRoot 拒纯相对逃逸', TOOLS.inRoot('../etc/passwd', '/sdcard/x'), false);
+A.eq('inRoot 折叠重复斜杠', TOOLS.inRoot('/sdcard/x//a.txt', '/sdcard/x'), true);
+A.eq('inRoot 忽略尾斜杠', TOOLS.inRoot('/sdcard/x/', '/sdcard/x'), true);
+A.eq('normPath 折叠 .', TOOLS.normPath('/a/./b'), '/a/b');
+A.eq('normPath 折叠 ..', TOOLS.normPath('/a/b/../c'), '/a/c');
+
+/* ── 3. 只读工具不能被误判成写类 ── */
+A.eq('terminal_wait 是只读', TOOLS.isWriteTool('terminal_wait'), false);
+A.eq('terminal_getscreen 是只读', TOOLS.isWriteTool('terminal_getscreen'), false);
+A.eq('terminal 是写类', TOOLS.isWriteTool('terminal'), true);
+A.eq('shell 是写类', TOOLS.isWriteTool('shell'), true);
+A.eq('create_file 是写类', TOOLS.isWriteTool('create_file'), true);
+A.eq('edit_file 是写类', TOOLS.isWriteTool('edit_file'), true);
+A.eq('delete_file 是写类', TOOLS.isWriteTool('delete_file'), true);
+A.eq('read_file 是只读', TOOLS.isWriteTool('read_file'), false);
+A.eq('file_grep 是只读', TOOLS.isWriteTool('file_grep'), false);
+
+/* ── 4. allowed_tools 语义：留空 = 全拒，all=true 才全放开 ── */
+/* 4.1 留空时 schema 为空数组（2026-11-07 改）：
+   原来这里塞一个 run_tool 兜底，但执行层 matchAllowed(name, []) 直接 false，
+   模型调什么都被拒 —— 给一个必然失败的入口比不给更糟。 */
+var sEmpty = LLM.runToolSchema([]);
+A.eq('allowed=[] schema 为空', sEmpty.length, 0);
+/* 4.2 留空时白名单全拒 */
+A.eq('allowed=[] 拒 read_file', TOOLS.matchAllowed('read_file', []), false);
+A.eq('allowed=[] 拒任意工具', TOOLS.matchAllowed('create_file', []), false);
+/* 4.3 "*" 全放开：schema 展开内置表 + 保留 run_tool 兜底 */
+var sAll = LLM.runToolSchema(['*']);
+A.chk('allowed=[*] schema > 10 个', sAll.length > 10, '实际 ' + sAll.length);
+A.chk('allowed=[*] 含 read_file', sAll.some(function (x) { return x.function.name === 'read_file'; }));
+A.chk('allowed=[*] 含 create_file', sAll.some(function (x) { return x.function.name === 'create_file'; }));
+A.chk('allowed=[*] 含 terminal', sAll.some(function (x) { return x.function.name === 'terminal'; }));
+A.chk('allowed=[*] 保留 run_tool 兜底', sAll.some(function (x) { return x.function.name === 'run_tool'; }));
+/* 4.4 "*" 在白名单匹配层放行一切 */
+A.eq('allowed=[*] 放行 read_file', TOOLS.matchAllowed('read_file', ['*']), true);
+A.eq('allowed=[*] 放行包工具', TOOLS.matchAllowed('somepkg:some_tool', ['*']), true);
+/* 4.5 "*" 不解除递归禁令（isRecursive 在 matchAllowed 之前判） */
+A.eq('递归派子代理仍被识别', TOOLS.isRecursive('subagent_spawn'), true);
+A.eq('递归包工具仍被识别', TOOLS.isRecursive('subagent:subagent_spawn'), true);
+
+/* ── 5. 后端三处不再 fallback 到 default_allowed_tools ── */
+var SUB = A.src('packages/subagent.js');
+A.nomatch('tool_once 不再 fallback', SUB, /var allowed = \(task && task\.allowed_tools && task\.allowed_tools\.length\)[\s\S]{0,80}?cfg\.default_allowed_tools/);
+A.match('spawn 支持 all 参数', SUB, /if \(params\.all === true\) allowed = \["\*"\]/);
+A.match('METADATA 声明了 all', SUB, /"name": "all",\s*\n\s*"type": "boolean"/);
+A.match('allowed_tools 描述已改', SUB, /留空 = 一个工具都用不了/);
+
+/* ── 6. save_turn 必须记账（步数 / 用量 / 通知） ── */
+A.match('save_turn 累加 step', SUB, /if \(addedAssistant\) task\.step = Number\(task\.step \|\| 0\) \+ 1;/);
+A.match('save_turn 累加 usage', SUB, /task\.usage\.in = Number\(task\.usage\.in \|\| 0\) \+ uIn;/);
+A.match('save_turn 调 bumpUsage', SUB, /await TASK\.bumpUsage\(cfgU/);
+A.match('save_turn 调 notifyDone', SUB, /if \(params\.done === true \|\| task\.status === "failed"\) \{\s*\n\s*try \{ await notifyDone\(task\); \}/);
+A.match('bumpUsage 已导出', A.src('packages/sb_task.js'), /bumpUsage: bumpUsage/);
+/* 面板侧要把 usage 传下去 */
+A.match('面板回传 usage', P, /if \(out\.usage\) _sv\.usage = out\.usage;/);
+A.match('面板回传 finish_reason', P, /if \(out\.finishReason\) _sv\.finish_reason/);
+
+/* ── 7. index.json 不能被当任务（幽灵条目） ── */
+var T2 = A.src('packages/sb_task.js');
+A.match('listTasks 跳过 index', T2, /if \(tid === "index"\) continue;/);
+A.nomatch('refreshIndex 死代码已删', T2, /async function refreshIndex/);
+A.nomatch('indexPath 死代码已删', T2, /function indexPath/);
+
+/* ── 8. advanceTask 异常必须落 failed ── */
+A.match('advanceTask 有 catch', T2, /catch \(e\) \{[\s\S]{0,400}?task\.status = "failed"/);
+A.match('advanceTask 写 error', T2, /task\.error = "推进异常："/);
+
+/* ── 9. stream_relay 必须有超时 ── */
+A.match('relay 有 connect_timeout', SUB, /connect_timeout: 15000/);
+A.match('relay 有 read_timeout', SUB, /read_timeout: Math\.max\(30000/);
+
+/* ── 10. METADATA 参数与实现一致 ── */
+A.match('config 声明 profile_id', SUB, /"name": "profile_id"/);
+A.match('config action 描述含 set_active', SUB, /set_active/);
+
+/* ── 11. BUS.clear 返回条数 ── */
+A.match('clear 返回清空前条数', A.src('packages/sb_bus.js'), /function clear\(\) \{ var n = load\(\)\.length; save\(\[\]\); return n; \}/);
+
+/* ── 12. setLive 轮询侧不许覆盖流式 ── */
+A.match('setLive 有 fromPoll 守卫', P, /function setLive\(txt, fromPoll\) \{[\s\S]{0,160}?if \(fromPoll && STREAM\.busy && S\.streaming\) return;/);
+A.match('syncDtBar 传 fromPoll', P, /if \(running \|\| queued\) setLive\(phaseText\(st\), true\);/);
+
+/* ── 13. 块级公式类名 JS 与 CSS 必须一致 ── */
+A.match('JS 输出 md-math blk', P, /'<span class="md-math' \+ \(it\.display \? ' blk' : ''\)/);
+A.match('CSS 选择 .md-math.blk', A.src('ui/web/panel.css'), /\.md-body \.md-math\.blk\{/);
+A.nomatch('CSS 不再用 .md-math.t-blk', A.src('ui/web/panel.css'), /\.md-body \.md-math\.t-blk\{/);
+
+/* ── 14. 死代码清理 ── */
+A.nomatch('streamMode 已删', P, /function streamMode\(/);
+A.nomatch('THINK_CN 已删', P, /var THINK_CN =/);
+A.nomatch('未使用的 var ui 已删', P, /var it = limited\[i\], ui =/);
+
+/* ── 15. 文档与代码一致（baseUrl / 断言数） ── */
+var WEBUI = A.src('ui/web_panel.ui.js');
+A.match('web_panel 用 http://localhost', WEBUI, /baseUrl: "http:\/\/localhost\/subagent"/);
+A.nomatch('web_panel 不再用 https://localhost', WEBUI, /baseUrl: "https:\/\/localhost\/subagent"/);
+
+/* ── 16. 构建产物与源同步 ── */
+var HTML = A.src('ui/web/panel_html.js');
+A.chk('产物含 XHR 兜底超时', HTML.indexOf('_to + 30000') >= 0);
+A.chk('产物含终态收流式', HTML.indexOf('if (STREAM.busy) {') >= 0);
+A.chk('产物含 openMail 修正', HTML.indexOf('openMail(Number(el.dataset.idx))') >= 0);
+A.chk('产物含 md-math.blk CSS', HTML.indexOf('.md-math.blk{') >= 0);
+A.chk('产物不含旧 streamMode', HTML.indexOf('function streamMode(') < 0);
+
+/* ── 第二十三轮：流式落盘（退出再进来内容还在、状态不是「待开始」） ── */
+/* 真因：流式全程只在页面内存里跑，退出面板 = 内容全丢；
+   且从不把 status 写成 running，退出再进来后端还是 queued → 提示「待开始」
+   → 用户只能重新启动 → 重跑内容叠一层，越滚越大（实测 35KB 重复）。 */
+A.match('后端有流式落盘工具', A.src('packages/subagent.js'), /exports\.subagent_stream_flush/);
+A.match('落盘把状态置 running', A.src('packages/subagent.js'), /task\.status = "running";[\s\S]{0,200}?task\.pending = \{/);
+A.match('落盘写 pending', A.src('packages/subagent.js'), /task\.pending = \{[\s\S]{0,160}?think: String\(params\.think/);
+A.match('终态忽略落盘', A.src('packages/subagent.js'), /if \(st === "done" \|\| st === "failed" \|\| st === "cancelled" \|\| st === "closed"\) \{[\s\S]{0,120}?ignored: true/);
+A.match('trace 返回 pending', A.src('packages/subagent.js'), /pending: t\.pending \? \{/);
+A.match('save_turn 清 pending', A.src('packages/subagent.js'), /delete task\.pending/);
+/* 前端 */
+A.match('流式期间定时落盘', P, /function flushStream\(force\)/);
+/* 【2026-11-07 改】落盘绝不能挂在 paint 上：flushStream 是同步桥调用，
+   放在每 50ms 的绘制路径上会反复冻结主线程，流式看起来就是卡住。
+   改由独立 setInterval 驱动，间隔 8 秒。 */
+A.match('落盘由独立定时器驱动', P, /var flushTimer = setInterval\(function \(\) \{[\s\S]{0,200}?flushStream\(false\);[\s\S]{0,40}\}, 8000\);/);
+A.nomatch('paint 里不许落盘', P, /doPaint\(\);[\s\S]{0,160}?flushStream\(false\)/);
+/* 看门狗已删：固定秒数必然误杀长思考，连接死活交给 XHR 自身的 onerror/ontimeout */
+A.nomatch('没有臆想的看门狗', P, /IDLE_MS|idleTimer/);
+/* 流式思考区不许限高：限高会让超出部分藏在滚动区，用户以为流式卡住。 */
+A.nomatch('流式思考区不设 max-height', A.src('ui/web/panel.css'), /\.sb-think\{[^}]*max-height/);
+A.nomatch('流式思考区不设 overflow', A.src('ui/web/panel.css'), /\.sb-think\{[^}]*overflow/);
+/* 落盘定时器必须被 abortStream 清掉，否则停止后 8 秒内还会把任务写回 running */
+A.match('abortStream 清落盘定时器', P, /if \(STREAM\._flushTimer\) \{[\s\S]{0,80}?clearInterval\(STREAM\._flushTimer\)/);
+A.match('退出时同步落盘', P, /SBNative\.call\(JSON\.stringify\(\{[\s\S]{0,120}?subagent:subagent_stream_flush/);
+A.match('fillTrace 渲染 pending', P, /if \(d\.pending && \(d\.pending\.think \|\| d\.pending\.body\)\)/);
+A.match('running 也显示继续推进', P, /st === 'queued' \|\| st === 'failed' \|\| st === 'cancelled' \|\| st === 'running'/);
+A.match('running 时不直接拒绝', P, /if \(st === 'running' && !S\.streaming && !STREAM\.busy\)/);
+A.match('重跑前先落 pending', P, /if \(pend && \(pend\.think \|\| pend\.body\)\)/);
+
+/* ── 第二十五轮：提示词钩子按契约重写 ── */
+var HOOK = A.src('packages/sb_hook.js');
+/* 契约三条（以 moodlet 插件生产样本为准） */
+A.match('钩子判 eventName', HOOK, /if \(String\(ev\.eventName \|\| ""\) !== EVENT_NAME\) return;/);
+A.match('钩子拼原始 systemPrompt', HOOK, /var base = String\(payload\.systemPrompt \|\| ""\);/);
+A.match('钩子返回原文+追加', HOOK, /return base \+ String\.fromCharCode\(10\) \+ String\.fromCharCode\(10\) \+ addon;/);
+A.nomatch('钩子异常不返回空串', HOOK, /catch \(e\) \{[\s\S]{0,300}?return "";/);
+/* 收件箱必须读 SharedPreferences，不能只读 globalThis（跨引擎不共享） */
+A.match('钩子读 SharedPreferences', HOOK, /getSharedPreferences\(SP_NAME, 0\)/);
+A.nomatch('钩子不再只读 globalThis', HOOK, /globalThis\.__SUBAGENT_INBOX__/);
+/* 注入体积必须有上限 */
+A.match('钩子限制条数', HOOK, /var MAX_ITEMS = 5;/);
+A.match('钩子限制正文长度', HOOK, /var MAX_TEXT = 120;/);
+/* 不能教 sync=true（桥 20 秒硬超时） */
+A.nomatch('能力提示不再教 sync=true', HOOK, /sync=true\)/);
+A.match('能力提示教 advance/wait', HOOK, /subagent_advance\(id=\.\.\.\)/);
+/* 回调必须是模块导出函数 */
+A.match('钩子是模块导出函数', HOOK, /exports\.subagentInboxHook = subagentInboxHook;/);
+/* toolmeta 补齐两个只读终端工具 */
+var TM = A.src('packages/sb_toolmeta.js');
+A.match('toolmeta 有 terminal_wait', TM, /def\("terminal_wait"/);
+A.match('toolmeta 有 terminal_getscreen', TM, /def\("terminal_getscreen"/);
+/* 旧语义注释已清 */
+A.nomatch('旧「空数组=不限制」注释已删', A.src('packages/subagent.js'), /空数组 = 不限制（只读工具可直接跑/);
+/* main.js 注释与事实一致 */
+A.match('main.js 注释说明注册了钩子', A.src('main.js'), /注册系统提示词钩子（after_compose_system_prompt）/);
+
+A.finish();

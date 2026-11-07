@@ -130,6 +130,20 @@ def("shell", "一次性执行 shell 命令，无会话状态。单条短命令�
     { command: { type: "string", description: "要执行的命令" } },
     ["command"]);
 
+/* 这两个是只读工具，但名字里带 terminal，曾被 isWriteTool 误判成写类而永久不可用。
+   第二十二轮在 sb_tools 的 READ_ONLY_TOOLS 里救回来了；这里补上 schema，
+   否则 all=true 时模型根本看不见它们（runToolSchema 按 TOOLMETA.names() 展开）。 */
+def("terminal_wait", "等待持久终端里上一条命令执行完成，返回它的输出。适合长命令分步取结果。",
+    {
+        sessionId: { type: "string", description: "目标会话 id，不传用当前对话的默认会话" },
+        timeoutMs: { type: "integer", description: "超时毫秒，默认 300000" }
+    },
+    []);
+
+def("terminal_getscreen", "获取持久终端当前可见屏幕内容（一屏，不含历史滚动缓冲）。命令卡住时用它看现场。",
+    { sessionId: { type: "string", description: "目标会话 id，不传用当前对话的默认会话" } },
+    []);
+
 /* ── 网络 ── */
 def("visit_web", "访问网页并提取正文信息。需要读取某个 URL 的内容时用。",
     {

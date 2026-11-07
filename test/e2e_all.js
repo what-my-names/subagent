@@ -16,7 +16,7 @@
 var path = require('path');
 var A = require('./lib/assert.js');
 
-var ALL_CASES = ['flow', 'md', 'tools', 'ui', 'toast'];
+var ALL_CASES = ['flow', 'md', 'tools', 'ui', 'toast', 'semantic'];
 
 var only = process.argv[2];
 if (only && ALL_CASES.indexOf(only) < 0) {

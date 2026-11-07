@@ -90,10 +90,25 @@ A.match('sb_llm 引入 TOOLMETA', LLM, /require\("\.\/sb_toolmeta\.js"\)/);
 A.match('runToolSchema 按 allowed 逐项生成', LLM, /for \(var i = 0; i < list\.length; i\+\+\)/);
 A.match('表内工具用 meta.name 作 function 名', LLM, /name: meta\.name/);
 A.match('表外工具收进 fallback', LLM, /fallback\.push\(name\)/);
-A.match('有表外工具时才给 run_tool', LLM, /if \(fallback\.length\) \{[\s\S]{0,200}?name: RUN_TOOL/);
-A.match('空白名单仍给 run_tool 兜底', LLM, /if \(!out\.length\) \{[\s\S]{0,300}?name: RUN_TOOL/);
-A.match('系统提示词不再说通过 run_tool 调用', A.src('packages/sb_task.js'), /直接按工具名调用（不需要包 run_tool）/);
+A.match('有表外工具时才给 run_tool', LLM, /if \(fallback\.length \|\| allOpen\) \{[\s\S]{0,600}?name: RUN_TOOL/);
+/* 【2026-11-07 改】空白名单不再给 run_tool 兜底：执行层 matchAllowed 全拒，
+   给一个必然失败的入口比不给更糟。改为返回空数组，调用方不带 tools 字段。 */
+A.nomatch('空白名单不再给 run_tool 兜底', LLM, /if \(!out\.length\) \{[\s\S]{0,300}?name: RUN_TOOL/);
+A.match('空 schema 时调用方不带 tools', LLM, /if \(_sch && _sch\.length\) \{[\s\S]{0,80}?body\.tools = _sch/);
+A.match('系统提示词含工作目录', A.src('packages/sb_task.js'), /工作目录：/);
 A.nomatch('系统提示词不再有「通过 run_tool 调用」', A.src('packages/sb_task.js'), /通过 run_tool 调用/);
+/* 第十七轮：提示词极简化 —— 只留事实 */
+var TASKSRC = A.src('packages/sb_task.js');
+/* 只检查代码行（排除注释），注释里提到这些词是设计说明 */
+var TASKCODE = TASKSRC.split('\n').filter(function (l) {
+  var t = String(l || '').replace(/^\s+/, '');
+  return !(t.indexOf('*') === 0 || t.indexOf('//') === 0 || t.indexOf('/*') === 0);
+}).join('\n');
+A.nomatch('提示词不含角色声明', TASKCODE, /你是一个独立子代理/);
+A.nomatch('提示词不含输出格式模板', TASKCODE, /## 输出格式/);
+A.nomatch('提示词不含工具告诫', TASKCODE, /不要假装调用工具/);
+A.nomatch('提示词不重复工具列表', TASKCODE, /## 可用工具/);
+A.nomatch('提示词不含写入范围小节', TASKCODE, /## 写入范围/);
 
 /* 动态验证：schema 生成结果符合预期 */
 var L = null;
@@ -109,7 +124,10 @@ if (L && typeof L.runToolSchema === 'function') {
     A.chk('有表外工具时附带 run_tool 兜底', hasFallback);
 
     var s3 = L.runToolSchema([]);
-    A.eq('空白名单仍返回 1 个（run_tool）', s3.length, 1);
+    /* 【2026-11-07 改】空白名单 = 全拒（用户拍板）。原来这里塞一个 run_tool 兜底，
+       但执行层 matchAllowed(name, []) 直接 false，模型调什么都被拒 ——
+       给一个必然失败的入口比不给更糟。现在返回空数组，调用方不带 tools 字段。 */
+    A.eq('空白名单返回空数组', s3.length, 0);
 
     /* 每个 function 必须带 parameters，否则端点会拒 */
     var allHaveParams = s1.every(function (x) { return x.function.parameters && x.function.parameters.type === 'object'; });

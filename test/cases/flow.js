@@ -79,7 +79,11 @@ A.match('收件箱 add 写入 finished_at', BUS, /finished_at/);
 A.match('收件箱 add 写入 unread', BUS, /unread/);
 A.match('收件箱正文有 20000 字符上限', BUS, /20000/);
 A.match('收件箱数组有 40 条上限', BUS, /40/);
-A.chk('收件箱有 bump（未读计数）', /function bump/.test(BUS));
+/* 【2026-11-07 改】bump 已删：钩子与工具不在同一 JS 引擎，钩子侧自增的计数
+   工具侧天然读不到，SP 里的计数又因为 bump 零调用恒为 0，是假指标。
+   断言方向反转：必须没有 bump，stat 只报真实可观测的条数。 */
+A.nomatch('收件箱不再有假诊断 bump', BUS, /function bump/);
+A.match('stat 只报条数', BUS, /return \{ count: load\(\)\.length \};/);
 A.chk('收件箱有 stat（未读统计）', /function stat/.test(BUS));
 A.chk('收件箱导出 add/list/remove/clear', /module\.exports = \{ add/.test(BUS));
 
@@ -134,5 +138,45 @@ A.match('有未读时列收件箱', HOOK, /\[子代理收件箱\] 有 /);
 var hookCode = HOOK.split('\n').filter(function (l) { return !/^\s*[\*\/]/.test(l); }).join('\n');
 A.nomatch('hook 代码里不调 Tools.*（铁律）', hookCode, /Tools\.\w+/);
 A.match('hook 注册在 main.js', A.src('main.js'), /registerSystemPromptComposeHook/);
+
+
+/* ── 第十五轮：可靠性修复 ── */
+var LLM2 = A.src('packages/sb_llm.js');
+var CFG2 = A.src('packages/sb_config.js');
+var TASK2 = A.src('packages/sb_task.js');
+
+/* LLM 重试：429/5xx/网络失败要重试，配置类错误不重试 */
+A.match('有 isRetryable 判定', LLM2, /function isRetryable\(status, text\)/);
+A.match('重试覆盖 429', LLM2, /status === 429/);
+A.match('重试覆盖 5xx', LLM2, /502.*503.*504|500.*502.*503/);
+A.match('网络失败 status=0 也重试', LLM2, /if \(!status\) return true/);
+A.match('有 postJsonOnce 单次请求', LLM2, /async function postJsonOnce/);
+A.match('postJson 带重试循环', LLM2, /for \(var attempt = 0; attempt <= waits\.length/);
+A.match('重试有退避等待', LLM2, /Tools\.System\.sleep\(waits\[attempt\]\)/);
+
+/* 配置缓存 */
+A.match('CFG 有 _cfgCache', CFG2, /var _cfgCache = null/);
+A.match('CFG load 支持 force 参数', CFG2, /async function load\(force\)/);
+A.match('CFG save 后失效缓存', CFG2, /writeText\(cfgPath\(\), body\)[\s\S]{0,60}?invalidateCache\(\)/);
+A.match('setKey 后失效缓存', CFG2, /writeEnvironmentVariable\(KEY_ENV, v\)[\s\S]{0,300}?invalidateCache\(\)/);
+A.match('环境变量有缓存', CFG2, /var _envCache = \{\}/);
+A.match('空值不缓存', CFG2, /if \(v\) \{ _envCache\[k\] = v;/);
+
+/* 任务推进锁 */
+A.match('advanceTask 有互斥锁', TASK2, /var _advancing = \{\}/);
+A.match('锁在 finally 释放', TASK2, /finally \{[\s\S]{0,80}?delete _advancing\[_lk\]/);
+A.match('重复推进返回 busy', TASK2, /busy: true/);
+
+/* ── 第十六轮：流式与渲染修复 ── */
+var P2 = A.src('ui/web/panel.js');
+/* 改配置后必须清流式环境缓存，否则一直用旧端点（旧端点没 CORS 就永远走中继） */
+A.match('cfgset 后清 STREAM 缓存', P2, /if \(r && r\.success === false\) return;[\s\S]{0,400}?STREAM\.ctx = null/);
+/* 流式 ctx 缓存要按任务 id 校验，换任务不能复用旧白名单 */
+A.match('loadStreamEnv 按任务 id 校验', P2, /STREAM\.ctxFor === _tid/);
+A.match('loadStreamEnv 记录 ctxFor', P2, /STREAM\.ctxFor = _tid/);
+/* 工具调用轮次结束后必须定格 holder，否则下一轮流式覆盖造成「内容消失又出现」 */
+A.match('工具轮结束后定格流式 holder', P2, /工具调用这一轮结束后，必须把当前流式 holder/);
+A.match('定格时把已流出内容转成正式气泡', P2, /host\.insertBefore\(_hist, holder\)/);
+A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="sb-think"/);
 
 A.finish();

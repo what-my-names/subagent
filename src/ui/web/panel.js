@@ -26,7 +26,28 @@
   };
   function shutdown() {
     if (!ALIVE) return;
+    /* 先置 false：后面的桥调用如果因为引擎已死而抛异常，
+       也不会有其它定时器趁这个窗口再发请求。 */
     ALIVE = false;
+    /* 【关键】页面销毁前必须把流式内容落盘，否则退出面板 = 内容全丢。
+       这里用同步桥调用（SBNative.call 本身是同步的），保证在 JsEngine 回收前发出。
+       不用 call() 是因为它走 setTimeout，页面一死定时器就不跑了。
+       注意：如果引擎已经被宿主回收，这次调用会抛异常，catch 掉即可
+       （那种情况下内容早就随引擎一起没了，救不回来）。 */
+    try {
+      /* STREAM 声明在文件后面，这里是函数体执行期，已经初始化过了；
+         但为防极端时序，用 typeof 兜一层。 */
+      var _st = (typeof STREAM !== 'undefined' && STREAM) ? STREAM : null;
+      if (_st && _st.busy && _st.curId && (_st.curThink || _st.curBody)) {
+        if (window.SBNative && typeof SBNative.call === 'function') {
+          SBNative.call(JSON.stringify({
+            tool: 'subagent:subagent_stream_flush',
+            params: { id: _st.curId, think: _st.curThink, body: _st.curBody },
+            kind: 'streamFlush', id: 0
+          }));
+        }
+      }
+    } catch (eSF) {}
     for (var i = 0; i < _ivals.length; i++) { try { clearInterval(_ivals[i]); } catch (e) {} }
     for (var j = 0; j < _timers.length; j++) { try { clearTimeout(_timers[j]); } catch (e) {} }
     _ivals.length = 0; _timers.length = 0;
@@ -486,7 +507,6 @@ function mathHtml(texEsc, display) {
     ['create_file', '新建文件', 1], ['edit_file', '编辑文件', 1], ['delete_file', '删除文件', 1], ['move_file', '移动文件', 1], ['copy_file', '复制文件', 1]
   ];
   var ST_CN = { queued: '待开始', running: '运行中', done: '已完成', failed: '失败', closed: '已关闭', cancelled: '已停止' };
-  var THINK_CN = { off: '关', low: '低', medium: '中', high: '高' };
   /* 思考等级的英文标签：面板上显示英文，和后端档位名一致，也更好看 */
   var THINK_EN = { off: 'Off', low: 'Low', medium: 'Medium', high: 'High' };
   function stCn(s) { return ST_CN[s] || (s || '-'); }
@@ -694,18 +714,22 @@ function killToast(rec, dir, fromX, fromY) {
     else if (dir === 'right') tx = '130%';
     else if (dir === 'up') ty = '-160%';
     else if (dir === 'down') ty = '160%';
-    var raf = (typeof requestAnimationFrame === 'function')
-      ? requestAnimationFrame : function (f) { return setTimeout(f, 16); };
-    raf(function () {
-      /* 双 rAF：确保上面那帧的 transform 已被浏览器接受，
+    /* 双延时代替双 rAF：rAF 在 WebView 被遮挡/悬浮窗时会被暂停，
+       通知条就永远飞不出去、卡在屏幕上不消失。setTimeout 不受可见性影响。
+       【延时不能省】两个 setTimeout 都必须带 ms，否则都是 0ms，
+       会在同一轮事件循环里连续跑完，中间没有渲染帧 ——
+       transform 初始值没被浏览器接受，transition 从终值起算，动画直接跳过去。
+       16ms ≈ 一帧，作用等价于原来的双 rAF。 */
+    setTimeout(function () {
+      /* 再等一帧：确保上面那帧的 transform 已被浏览器接受，
          否则 transition 会从「初始值」起算，看起来就是闪回 */
-      raf(function () {
+      setTimeout(function () {
         if (!el.parentNode) return;
         el.style.transition = 'transform .22s cubic-bezier(.3,0,.8,.4), opacity .22s ease-out';
         el.style.transform = 'translate3d(' + tx + ',' + ty + ',0)';
         el.style.opacity = '0';
-      });
-    });
+      }, 16);
+    }, 16);
   } else {
     el.classList.add('out');
   }
@@ -725,16 +749,15 @@ function warnMsg(m) { toast(m, 'warn'); }
 
   /* ── 桥调用 ── */
   /* 桥是同步阻塞接口，直接调用会卡住 WebView 主线程导致界面不重绘。
-     统一延迟到下一帧再发，保证点击后界面立刻有反馈。 */
+     统一延迟到下一帧再发，保证点击后界面立刻有反馈。
+     【注意】这里用 setTimeout 而不是 requestAnimationFrame：
+     rAF 在 WebView 被遮挡/悬浮窗/后台时会被暂停，一旦暂停桥调用就永远发不出去，
+     表现为「点了按钮没任何反应」。setTimeout 只依赖主线程，不受可见性影响。 */
   function call(tool, params, kind, onOk) {
     var id = ++S.seq;
     if (kind) S.lastId[kind] = id;
     var fire0 = function () { callRaw(tool, params, kind, id, onOk); };
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(function () { requestAnimationFrame(fire0); });
-    } else {
-      setTimeout(fire0, 16);
-    }
+    setTimeout(fire0, 16);
   }
   function callRaw(tool, params, kind, id, onOk) {
     /* 页面已销毁：直接放弃，不发桥调用（否则报 JsEngine already destroyed） */
@@ -768,6 +791,14 @@ function warnMsg(m) { toast(m, 'warn'); }
      所以这里不弹错误、不把 advancing 置假，交给 trace 轮询接管。 */
   function onBridgeDrop(kind, e) {
     var m = String(e && e.message ? e.message : e);
+    /* 【关键】JsEngine 已被宿主回收：页面还活着但桥死了，任何后续调用都会继续失败。
+       这种情况不能弹红框吓用户 —— 他切回来页面自然会重建。
+       同时立刻把 ALIVE 置 false，停掉所有定时器和轮询，不再继续撞桥。
+       实测场景：游戏悬浮窗把 WebView 挂起，pagehide 没触发，但 JsEngine 被回收。 */
+    if (/JsEngine|destroyed|detached|already/i.test(m)) {
+      try { shutdown(); } catch (eS) {}
+      return;
+    }
     if (/timed? ?out|timeout/i.test(m)) {
       S.bridgeDropped = (S.bridgeDropped || 0) + 1;
       /* advance 桥断了：清掉 in-flight 标记，让轮询在读到 idle 后自动补推下一步 */
@@ -855,14 +886,20 @@ function warnMsg(m) { toast(m, 'warn'); }
         }, 700);
       } else if (st2 === 'done') {
         stopPoll();
+        setLive('');
+        S.streaming = false;
         okMsg('任务已完成');
         refreshList(true);
       } else if (st2 === 'failed') {
         stopPoll();
+        setLive('');
+        S.streaming = false;
         err(at2.error || '任务失败');
         refreshList(true);
       } else if (st2 === 'cancelled') {
         stopPoll();
+        setLive('');
+        S.streaming = false;
         okMsg('任务已停止');
         refreshList(true);
       }
@@ -908,6 +945,11 @@ function warnMsg(m) { toast(m, 'warn'); }
          并把 formDirty 清掉，让用户的输入被旧值覆盖 */
       if (r && r.success === false) return;
       okMsg('已保存'); S.formDirty = false;
+      /* 【关键】配置变了必须清流式环境缓存。
+         STREAM.ctx/key 一旦加载就永不失效，改完端点（比如 7878→9191 加了 CORS）
+         不刷新页面还会一直用旧端点 → 旧端点没 CORS → 一直走中继 → 用户看到
+         「明明配了 CORS 还不是流式」。 */
+      try { STREAM.ctx = null; STREAM.key = ''; STREAM.relay = false; STREAM.fellBack = false; } catch (eS) {}
       call('subagent:subagent_config', { action: 'status' }, 'cfg');
       return;
     }
@@ -966,7 +1008,7 @@ function warnMsg(m) { toast(m, 'warn'); }
     if (!limited.length) { target.innerHTML = '<div class="empty small">' + (kw ? '没有匹配的任务。' : '还没有任务，点右下 ＋ 新建一个。') + '</div>'; return; }
     var h = '';
     for (var i = 0; i < limited.length; i++) {
-      var it = limited[i], ui = (it.origin === 'ui');
+      var it = limited[i];
       var picked = !!(S.multi && S.selIds && S.selIds[it.id]);
       /* 多选模式下整行点击 = 勾选，不进详情；勾选框只在多选时出现 */
       h += '<div class="chat-row' + (S.multi ? ' multi' : '') + (picked ? ' picked' : '') + '" data-act="' + (S.multi ? 'toggleSel' : 'open') + '" data-val="' + esc(it.id) + '">'
@@ -987,6 +1029,15 @@ function warnMsg(m) { toast(m, 'warn'); }
     S.cur = id; show('detail');
     var hit = null;
     for (var i = 0; i < S.items.length; i++) { if (S.items[i].id === id) { hit = S.items[i]; break; } }
+    /* 【关键】进任务前先自愈：状态是终态但流式标记还挂着 = 上一轮没收尾。
+       不清掉的话，下面所有 !STREAM.busy 判断都会跳过，内容区永远空白，
+       而且「继续推进」会被 runCur 拦掉，用户只能刷新页面。 */
+    var stPre = hit ? String(hit.status || '') : '';
+    var termPre = (stPre === 'done' || stPre === 'failed' || stPre === 'cancelled' || stPre === 'closed');
+    if (termPre && (STREAM.busy || S.streaming)) {
+      abortStream();
+      S.streaming = false;
+    }
     /* 标题优先用任务描述；编号只是内部标识，不放到最上面给人看 */
     var ti = hit ? String(hit.title || '') : '';
     $('dtTitle').textContent = ti || '任务详情';
@@ -994,10 +1045,13 @@ function warnMsg(m) { toast(m, 'warn'); }
     if (ti) $('dtStatus').title = id;   // 编号挂在状态行 tooltip 上，需要时可查
     /* 刚创建的任务列表还没刷新回来时，别把已经设好的 queued/running 覆盖成空 */
     S.curStatus = hit ? String(hit.status || '') : String(S.curStatus || '');
-    /* 有缓存先秒显，同时在后台刷新 */
+    /* 有缓存先秒显，同时在后台刷新。
+       注意：流式进行中不能清 dtChat —— holder 就在里面，清掉等于把正在输出的内容抹了。
+       这是「创建任务后内容一直空白」的直接原因：spawn 后 120ms 启动流式，
+       而 openTask 的 trace 回包常常晚于 120ms，一回包就 innerHTML 覆盖。 */
     if (S.traceCache && S.traceCache[id]) {
-      fillTrace(S.traceCache[id], true);
-    } else if ($('dtChat')) {
+      if (!STREAM.busy) fillTrace(S.traceCache[id], true);
+    } else if ($('dtChat') && !STREAM.busy) {
       $('dtChat').innerHTML = '<div class="scanline"></div>';
     }
     syncDtBar();
@@ -1006,6 +1060,14 @@ function warnMsg(m) { toast(m, 'warn'); }
        pollOnce 早已因 page 不是 detail 而退出，不重启就永远停在拉取那一刻 */
     var stNow = String(S.curStatus || '');
     if (stNow === 'running' || stNow === 'queued') startPoll();
+    /* 【关键】状态是 running 说明上一轮流式还没收尾（面板退出时后端仍是 running）。
+       这时不能提示「待开始 / 请重新启动」—— 用户看到的就是「每次回来都让我重新启动」。
+       正确做法：直接恢复界面，让用户看到已生成的部分，按钮显示「继续推进」即可。
+       注意：不能把 S.advancing 置 true，那会让 syncDtBar 的
+       canRun = !ended && !S.advancing && ... 恒为假，「继续推进」按钮直接消失。 */
+    if (stNow === 'running') {
+      setLive('上次的生成被中断，已保存已生成内容，点「继续推进」接着跑', true);
+    }
   }
   /* 操作条：根据状态决定显示「继续推进」还是「停止」 */
   function syncDtBar() {
@@ -1015,13 +1077,16 @@ function warnMsg(m) { toast(m, 'warn'); }
     var ended = (st === 'done' || st === 'closed');
     /* 结束（done/closed）就彻底收尾：不显示推进、不显示停止、不显示输入框。
        子代理产出结论即任务终止；追问由主代理调用 subagent_resume 完成。 */
-    var canRun = !ended && !S.advancing && (st === 'queued' || st === 'failed' || st === 'cancelled');
+    /* 【关键】running 也要允许「继续推进」：面板退出时后端停在 running，
+       用户回来看到的应该是「继续推进」而不是死等。真正的流式进行中会被
+       runCur 的 STREAM.busy 守卫挡住，不会重复启动。 */
+    var canRun = !ended && !S.advancing && (st === 'queued' || st === 'failed' || st === 'cancelled' || st === 'running');
     if ($('btnRun')) $('btnRun').style.display = canRun ? '' : 'none';
     if ($('btnStop')) $('btnStop').style.display = (running || queued) ? '' : 'none';
     /* 输入框：用户可手发消息的入口整个移除，追问走主代理 */
     if ($('dtCompose')) $('dtCompose').style.display = 'none';
-    if (running || queued) setLive(phaseText(st));
-    else setLive('');
+    if (running || queued) setLive(phaseText(st), true);
+    else setLive('', true);
     if ($('dtBar')) $('dtBar').style.display = (canRun || running || queued) ? '' : 'none';
     /* 状态行同步刷新：运行中立刻显示「运行中」，不会停在「待开始」 */
     syncDtStatusText(st);
@@ -1033,7 +1098,12 @@ function warnMsg(m) { toast(m, 'warn'); }
     var d = S.trace || null;
     if (d && (d.step || d.max_steps)) bits.push('第 ' + (d.step || 0) + '/' + (d.max_steps || '?') + ' 步');
     if (S.advancing && (st === 'running' || st === 'queued')) bits.push(phaseText(st));
+    /* 通道诊断：把「走的直连还是中继、读到几块」显示出来。
+       用户排查流式时最需要这一行 —— 之前全靠猜。
+       chunks=1 就是假流式（整包一次到）；reader=no 就是 WebView 不支持 response.body。 */
+    if (STREAM && STREAM.diag) bits.push(STREAM.diag);
     el.textContent = bits.join(' · ');
+    if (STREAM && STREAM.lastDirectErr) el.title = '直连错误：' + STREAM.lastDirectErr;
   }
   /* 阶段文案：后端每步都会写 phase，轮询拿到的就是真实进度 */
   function phaseText(st) {
@@ -1059,8 +1129,39 @@ function warnMsg(m) { toast(m, 'warn'); }
    function runCur() {
      if (!S.cur) { err('没有选中的任务'); return; }
      var st = String(S.curStatus || '');
-     if (st === 'running') { err('任务正在运行'); return; }
-     if (S.streaming) { err('正在生成中'); return; }
+     /* 【关键】running 不再直接拒绝。面板退出时后端会停在 running（流式没走完），
+        用户回来点「继续推进」应该能接着跑，而不是被一句「任务正在运行」挡死。
+        真正的流式进行中由下面 STREAM.busy 守卫拦住，不会重复启动。 */
+     if (st === 'running' && !S.streaming && !STREAM.busy) {
+       /* 后端说 running 但前端没有流式在跑 = 上一轮被中断。
+          有 pending（已生成一部分）时先把它落成正式 turn，再重开新一轮，
+          否则重跑会从头发一遍，和已生成的内容叠起来越滚越大。 */
+       var pend = (S.trace && S.trace.pending) ? S.trace.pending : null;
+       if (pend && (pend.think || pend.body)) {
+         var keep = { role: 'assistant', content: String(pend.body || '') };
+         if (pend.think) keep.reasoning = String(pend.think);
+         call('subagent:subagent_save_turn', { id: S.cur, turns: [keep], done: false }, 'saveTurn', function () {
+           startRun(S.cur);
+         });
+         return;
+       }
+       startRun(S.cur);
+       return;
+     }
+     /* 【关键】状态已是终态但 streaming 标记还挂着 = 上一轮流式没正常收尾。
+         这时不能直接拦，否则用户点多少次都没反应，只能刷新页面。
+         判据：后端状态是终态（不在 running/queued），前端却还认为在流式 → 标记已失效。
+         强制收掉残留，让本次点击能正常走。 */
+     if (S.streaming || STREAM.busy) {
+       var terminal = (st === 'done' || st === 'failed' || st === 'cancelled' || st === 'closed' || !st);
+       if (terminal) {
+         abortStream();
+         S.streaming = false;
+       } else {
+         err('正在生成中');
+         return;
+       }
+     }
      /* 先把任务拉回可推进的状态（后端只改状态，不跑模型），再开跑 */
      var start = function () {
        startRun(S.cur);
@@ -1073,9 +1174,13 @@ function warnMsg(m) { toast(m, 'warn'); }
        start();
      }
    }
-  /* 实时提示条：告诉用户在等模型，不是在卡死 */
-  function setLive(txt) {
+  /* 实时提示条：告诉用户在等模型，不是在卡死。
+   fromPoll=true 表示这次是轮询侧（syncDtBar）写进来的，流式进行中一律忽略 ——
+   否则流式正在输出时，trace 回包会把「模型生成中…」改成「等待下一步…」
+   （S.advancing 在流式路径是 false）。流式自己的写入不传这个参数，永远生效。 */
+  function setLive(txt, fromPoll) {
     if (!$('dtLive')) return;
+    if (fromPoll && STREAM.busy && S.streaming) return;
     if (txt) {
       $('dtLive').style.display = '';
       if ($('dtLiveTxt')) $('dtLiveTxt').textContent = txt;
@@ -1093,7 +1198,12 @@ function warnMsg(m) { toast(m, 'warn'); }
     abortStream();
     S.advancing = false;
     okMsg('已请求停止');
-    call('subagent:subagent_cancel', { id: S.cur }, 'cancel');
+    /* 停止后主动拉一次 trace：把后端真实状态（cancelled）取回来。
+       不这么做的话，界面会停在「模型生成中…」，因为轮询已经停了，
+       没有任何东西再去读后端状态。 */
+    call('subagent:subagent_cancel', { id: S.cur }, 'cancel', function () {
+      if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+    });
   }
 var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
   var SVG_OK = '<svg class="okmark" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg>';
@@ -1190,13 +1300,40 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     S.curToolNow = String(d.tool_now || '');
     /* 缓存一份，二次进入秒显 */
     if (!S.traceCache) S.traceCache = {};
-    if (d.id) S.traceCache[d.id] = d;
+    if (d.id) {
+      S.traceCache[d.id] = d;
+      /* 缓存上限：每个 trace 含全部轮次+工具结果，不设上限会持续吃内存。
+         只留最近 5 个任务，超出的按插入顺序淘汰最旧的。 */
+      var _keys = Object.keys(S.traceCache);
+      if (_keys.length > 5) {
+        for (var _i = 0; _i < _keys.length - 5; _i++) {
+          if (_keys[_i] !== d.id) delete S.traceCache[_keys[_i]];
+        }
+      }
+    }
     fillTrace(d, false);
     syncDtBar();
     /* 轮询读到终态就停手：避免 advance 回包和轮询各推一次造成重复推进 */
     var st = String(d.status || '');
     if (st === 'done' || st === 'failed' || st === 'cancelled' || st === 'closed') {
       stopPoll();
+      S.advancing = false;
+      /* 【关键】终态必须无条件收干净，不能只在 STREAM.busy 时收。
+         原来写成 if (STREAM.busy) { abortStream(); S.streaming = false; }，
+         当流式早已退出（busy 已 false）但 S.streaming 还是 true 时，
+         这个 if 不成立 → setLive('') 永远不执行 → live 停在「模型生成中…」，
+         而状态行已经显示「已停止」。用户看到的就是自相矛盾的僵尸界面。 */
+      if (STREAM.busy) abortStream();
+      S.streaming = false;
+      setLive('');
+      /* 终态后清指纹，确保下一次进入能重绘 */
+      S.chatSig = null;
+    } else if (S.bridgeDropped > 0) {
+      /* 桥已超时（20s 硬限）→ 这轮 advance 请求已不可达，后端还在跑由轮询盯着。
+         必须清 advancing，否则 syncDtBar 的
+         canRun = !ended && !S.advancing && (queued|failed|cancelled)
+         永远为假 → 「继续推进」按钮永久消失，只能刷新页面才恢复。
+         清掉是安全的：真在跑时 status 仍是 running，canRun 也不会亮。 */
       S.advancing = false;
     }
   }
@@ -1270,11 +1407,48 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         h += '<div class="bubble mine"><div class="b-body">' + esc(m.content) + '</div></div>';
       }
     }
-    $('dtChat').innerHTML = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
+    /* 【关键】pending = 流式过程中临时落盘、还没收尾的内容。
+       用户退出面板再进来时，这些内容不在 turns 里（还没落正式 turn），
+       不补的话界面上就什么都没有，用户以为丢了、只能重新点启动 —— 这就是
+       「每次回来都让我重新启动、内容越叠越大」的根源。
+       这里把 pending 渲染成一条「生成中」的临时气泡，只显示不落盘。 */
+    if (d.pending && (d.pending.think || d.pending.body)) {
+      if (d.pending.think) {
+        h += '<div class="thinkbox" data-think="p1" data-state="0">'
+          + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+          + '<span class="thk-tx">思考过程（生成中）</span><span class="thk-tip">展开</span>'
+          + '<span class="thk-len">' + String(d.pending.think).length + ' 字</span></div>'
+          + '<div class="thk-body" data-thk-body="p1">' + esc(d.pending.think) + '</div>'
+          + '</div>';
+      }
+      if (d.pending.body) {
+        h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(d.pending.body) + '</div></div>';
+      }
+      h += '<div class="streambox" data-pending="1"><div class="sb-think" style="display:none"></div>'
+        + '<div class="sb-body md-body" style="opacity:.55">（已暂停，点「继续推进」接着生成）</div></div>';
+    }
+    /* 【关键】流式进行中绝不能重建 dtChat。
+       原逻辑每次轮询（1.5s）都 innerHTML = h 全量重建整个消息区：
+       1) 流式气泡就在 dtChat 里，被一起清掉 → 用户看不到流式，只有结束才突然出现
+       2) 每次重建导致滚动位置、输入框焦点、思考块展开状态全丢 → 用户看到「一直跳动」
+       所以流式期间只更新状态行，DOM 交给流式自己增量维护。
+
+       另外：内容没变化时也不重建。轮询 1.5s 一次，任务可能好几分钟没新内容，
+       每次都重写 DOM 就是纯浪费，还会把用户手动展开的思考块弹回去。
+       用整串 HTML 做等值比较（几 KB 字符串比较，比 DOM 重建便宜几个量级）。 */
+    var _h = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
+    if (!STREAM.busy && _h !== S.chatSig) {
+      S.chatSig = _h;
+      $('dtChat').innerHTML = _h;
+    }
     /* 思考块默认 0 档，渲染后统一滚到底跟随最新输出 */
     syncThinkScroll();
     var u = d.usage || {};
-    var st = '<span class="chip ' + (d.status || '') + '">' + stCn(d.status) + '</span><span class="chip">step ' + esc(d.step) + '</span><span class="chip" title="累计输入+输出 token">' + ((u.in || 0) + (u.out || 0)) + ' tok</span>';
+    /* 流式期间状态行以后端 trace 为准会显示「待开始」——
+       因为流式是前端在跑，后端任务还没推进。这时用流式状态覆盖。 */
+    var _stShown = d.status;
+    if (STREAM.busy && (d.status === 'queued' || !d.status)) _stShown = 'running';
+    var st = '<span class="chip ' + (_stShown || '') + '">' + stCn(_stShown) + '</span><span class="chip">step ' + esc(d.step) + '</span><span class="chip" title="累计输入+输出 token">' + ((u.in || 0) + (u.out || 0)) + ' tok</span>';
     $('dtStatus').innerHTML = st;
     $('dtClose').style.display = (d.status === 'queued' || d.status === 'running' || d.status === 'failed') ? '' : 'none';
     S.dStatus = d.status;
@@ -1290,14 +1464,9 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     现在统一走后端 subagent_advance：模型调用、工具执行、逐步落盘全在后端完成，
     页面只用 trace 轮询显示。牺牲逐字效果，换来确定能跑起来。 */
 
-  /* 停止生成：清掉续推定定时器与轮询，并给任务打取消标记 */
-  function abortStream() {
-    try { clearTimeout(S.advT); } catch (e) {}
-    S.advT = null;
-    S.streaming = false;
-    S.advancing = false;
-    setLive('');
-  }
+/* 停止生成：清掉续推定定时器与轮询，并给任务打取消标记。
+     注意：这里还有一份完整版在文件后面（含清占位块、清 STREAM.abort），
+     由于函数声明提升，实际生效的是后面那份。保留这一行是为了不破坏调用顺序。 */
 
   function sendMsg() {
     var inp = $('dtInput'); var v = (inp.value || '').trim(); if (!v) return;
@@ -1414,7 +1583,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     for (var i = 0; i < S.items.length; i++) { if (S.items[i].id === id) { it = S.items[i]; break; } }
     openCfm('删除任务', (it ? (it.title || it.id) : id) + '\n连同产物目录与快照一起删，不可恢复。', function () {
       dropRow(id);                        // 秒删：DOM 立刻没了
-      if (S.cur === id) { S.cur = null; show('list'); renderList(S.items); }
+      if (S.cur === id) { S.cur = null; show('list'); }
       okMsg('已删除');
       DEL_Q.push({ tool: 'subagent:subagent_delete', params: { id: id, confirm: true } });
       runDelQueue();
@@ -1469,7 +1638,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
 
   /* ── 新建页 ── */
   function show(id) { var p = ['welcome', 'home', 'list', 'new', 'full', 'detail', 'cfg', 'inbox', 'mail']; for (var i = 0; i < p.length; i++) { var el = $('page-' + p[i]); if (el) el.style.display = (p[i] === id) ? '' : 'none'; } S.page = id; if (id === 'home' || id === 'list') renderList(S.items); }
-  function goList() { show('list'); refreshList(false); if ($('listSearch')) $('listSearch').value = ''; renderList(S.items); }
+  /* show('list') 内部已调 renderList，这里不再重复（列表大时白渲染两遍） */
+  function goList() { show('list'); refreshList(false); if ($('listSearch')) $('listSearch').value = ''; }
   function goHome() {
     /* 不清 S.cur：任务可能还在后端跑，清掉会让轮询与「继续推进」都失去目标。
        详情页的返回列表才真正切换上下文（goList / backList）。 */
@@ -1683,20 +1853,20 @@ document.addEventListener('visibilitychange', function () {
      前端跨域 fetch 照样被 CORS 拦 —— 所以不能只看协议。
      策略：一律先试直连（direct），fetch 失败自动落中继（relay），
      中继再失败落 advanceTask。三层保底，用户零配置。 */
-  var STREAM = { key: '', ctx: null, busy: false, abort: null, fellBack: false, relay: false };
+  var STREAM = { key: '', ctx: null, busy: false, abort: null, fellBack: false, relay: false,
+    curId: '', curThink: '', curBody: '', lastFlush: 0 };
 
   /* 端点协议决定走哪条路。
      页面 origin 已经是 http://localhost（见 web_panel.ui.js baseUrl 注释），
      http 页面拉 https 与 http 端点都不受 mixed content 限制 → 全部走前端直连拿真流式。
      中继只在前端 fetch 失败时由 sinkToAdvance 兜底，不再按协议预判。 */
-  function streamMode(endpoint) {
-    return /^http:|^https:/i.test(String(endpoint || '')) ? 'direct' : 'direct';
-  }
-
   /* 取直连参数 + 密钥（各一次，缓存到内存） */
   function loadStreamEnv(taskId, done) {
-    if (STREAM.key && STREAM.ctx) { done(null); return; }
-    call('subagent:subagent_stream_ctx', { id: taskId || S.cur || '' }, 'streamCtx', function (r1) {
+    /* 缓存必须按任务 id 校验：ctx 里含该任务的白名单与思考等级，
+       换了任务还复用旧 ctx 会把上一个任务的工具白名单带过去。 */
+    var _tid = String(taskId || S.cur || '');
+    if (STREAM.key && STREAM.ctx && STREAM.ctxFor === _tid) { done(null); return; }
+    call('subagent:subagent_stream_ctx', { id: _tid }, 'streamCtx', function (r1) {
       var d1 = (r1 && r1.data) || {};
       if (!d1.endpoint) { done(new Error('未配置端点')); return; }
       call('subagent:subagent_stream_key', {}, 'streamKey', function (r2) {
@@ -1704,6 +1874,7 @@ document.addEventListener('visibilitychange', function () {
         if (!d2.key) { done(new Error('未配置密钥')); return; }
         STREAM.ctx = d1;
         STREAM.key = d2.key;
+        STREAM.ctxFor = _tid;
         done(null);
       });
     });
@@ -1799,6 +1970,170 @@ document.addEventListener('visibilitychange', function () {
     };
   }
 
+  /* ── 通道 A0：XHR 增量读（WebView 里最可靠的流式路径） ──
+     为什么不用 fetch：实测端点 curl -N 每 20~60ms 一块（3586→11542→18945→28768→37219），
+     响应头 Content-Type: text/event-stream + X-Accel-Buffering: no + 无 Content-Encoding，
+     CORS 头齐全（ACAO: *），前端诊断也能拿到 reader=yes。
+     但页面依然看不到逐字 —— 因为部分 Android WebView 里 response.body.getReader()
+     能拿到对象、read() 却攒到整包结束才 resolve。
+     XHR 的 onprogress 是宿主侧事件，每收到一段就触发，不经过 ReadableStream，绕开这个坑。
+     解析逻辑与 fetch 版一致：按行切 data: → JSON.parse → 累加 content/reasoning/tool_calls。 */
+  function streamOnceXhr(messages, onDelta) {
+    var ctx = STREAM.ctx;
+    var url = ctx.endpoint;
+    var headers = {};
+    for (var hk in (ctx.headers || {})) if (Object.prototype.hasOwnProperty.call(ctx.headers, hk)) headers[hk] = ctx.headers[hk];
+    var hasAuth = false;
+    for (var hk2 in headers) if (/^authorization$/i.test(hk2)) hasAuth = true;
+    if (!hasAuth) headers['Authorization'] = 'Bearer ' + STREAM.key;
+    var body = buildStreamBody(messages, ctx);
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      var seen = 0;          /* 已解析到的 responseText 长度，用来只取增量 */
+      var buf = '';          /* 未闭合的行缓冲 */
+      var finished = false;
+      var acc = { content: '', reasoning: '', byIdx: {}, finishReason: '', usage: {} };
+      STREAM.chunkCount = 0;
+
+      /* 把一条 SSE 的 JSON 增量合并进 acc，并回调给渲染层 */
+      function applyChunk(j) {
+        if (j.usage) acc.usage = j.usage;
+        var ch = (j.choices && j.choices[0]) || null;
+        if (!ch) return;
+        var d = ch.delta || {};
+        var c = String(d.content || '');
+        var r = String(d.reasoning_content || d.reasoning || '');
+        if (c) acc.content += c;
+        if (r) acc.reasoning += r;
+        var dtc = d.tool_calls || [];
+        for (var i = 0; i < dtc.length; i++) {
+          var one = dtc[i] || {};
+          var ix = Number(one.index == null ? 0 : one.index);
+          if (!acc.byIdx[ix]) acc.byIdx[ix] = { id: '', name: '', argsText: '' };
+          var slot = acc.byIdx[ix];
+          if (one.id) slot.id = String(one.id);
+          var fn = one.function || {};
+          if (fn.name) slot.name += String(fn.name);
+          if (fn.arguments) slot.argsText += String(fn.arguments);
+        }
+        if (ch.finish_reason) acc.finishReason = String(ch.finish_reason);
+        if (onDelta) onDelta({ content: c, reasoning: r });
+      }
+
+      /* 按换行切 SSE：只认 data: 开头，跳过注释行与空行 */
+      function feed(chunk) {
+        buf += chunk;
+        var idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          var line = buf.slice(0, idx).replace(/\r$/, '');
+          buf = buf.slice(idx + 1);
+          if (!line || line.charAt(0) === ':') continue;
+          if (line.indexOf('data:') !== 0) continue;
+          var payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          var j = null;
+          try { j = JSON.parse(payload); } catch (e) { continue; }
+          applyChunk(j);
+        }
+      }
+
+      function collect() {
+        var tcs = [];
+        for (var key in acc.byIdx) {
+          if (!Object.prototype.hasOwnProperty.call(acc.byIdx, key)) continue;
+          var s = acc.byIdx[key];
+          var args = {};
+          try { args = JSON.parse(s.argsText || '{}'); } catch (e) { args = { __unparsed: s.argsText }; }
+          tcs.push({ id: s.id || ('call_' + key), name: s.name, args: args });
+        }
+        return {
+          content: acc.content,
+          reasoning: acc.reasoning,
+          toolCalls: tcs,
+          finishReason: acc.finishReason || (tcs.length ? 'tool_calls' : 'stop'),
+          usage: acc.usage
+        };
+      }
+
+      /* 把 responseText 里新增的那一段喂进解析器。
+         必须用 seen 记录位置：onprogress 给的是累计全文，不是增量。 */
+      function drain() {
+        var raw = '';
+        try { raw = xhr.responseText || ''; } catch (eR) { raw = ''; }
+        if (raw.length <= seen) return;
+        var piece = raw.slice(seen);
+        seen = raw.length;
+        STREAM.chunkCount = (STREAM.chunkCount || 0) + 1;
+        try {
+          feed(piece);
+        } catch (eF) {
+          /* feed 里任何一步抛异常都会让这次 onprogress 中断：
+             块数已 +1，但 onDelta 不触发，缓冲区不增长，画面冻结。
+             以前这里完全静默，现在至少留痕到 console。 */
+          try { console.error('[subagent] feed error: ' + ((eF && eF.message) || eF)); } catch (eL) {}
+        }
+      }
+
+      try {
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        for (var h in headers) {
+          if (!Object.prototype.hasOwnProperty.call(headers, h)) continue;
+          try { xhr.setRequestHeader(h, headers[h]); } catch (eH) {}
+        }
+      } catch (eO) {
+        reject(new Error('XHR 打开失败：' + String((eO && eO.message) || eO)));
+        return;
+      }
+      xhr.onprogress = function () { drain(); };
+      /* 兜底超时：端点如果连上但不发数据、也不关连接，XHR 会永远挂着。
+         STREAM.busy 就一直为 true，整个面板卡死（用户看到「模型生成中…」转圈不动）。
+         取任务配置的超时（默认 90s）再加一点余量，给推理模型留足思考时间。 */
+      var _to = Number((STREAM.ctx && STREAM.ctx.timeout_ms) || 0);
+      xhr.timeout = _to > 0 ? (_to + 30000) : 180000;
+      /* readyState 3 = 正在接收，部分 WebView 不触发 onprogress 但会触发这个 */
+      xhr.onreadystatechange = function () { if (xhr.readyState === 3) drain(); };
+      xhr.onload = function () {
+        if (finished) return;
+        finished = true;
+        drain();
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error('HTTP ' + xhr.status + '：' + String(xhr.responseText || '').slice(0, 300)));
+          return;
+        }
+        if (buf) feed('\n');
+        var out = collect();
+        STREAM.diag = 'xhr=yes ctype=' + String(xhr.getResponseHeader('content-type') || '?')
+          + ' chunks=' + (STREAM.chunkCount || 0);
+        try { syncDtStatusText(S.curStatus || 'done'); } catch (eDg) {}
+        resolve(out);
+      };
+      xhr.onerror = function () {
+        if (finished) return;
+        finished = true;
+        reject(new Error('XHR 网络失败（端点不可达或被 CORS 拦）'));
+      };
+      xhr.ontimeout = function () {
+        if (finished) return;
+        finished = true;
+        reject(new Error('XHR 超时'));
+      };
+      xhr.onabort = function () {
+        if (finished) return;
+        finished = true;
+        reject(new Error('aborted'));
+      };
+      /* 停止按钮走 STREAM.abort，两种通道都要能中断 */
+      STREAM.abort = { abort: function () { try { xhr.abort(); } catch (eA) {} } };
+      try {
+        xhr.send(JSON.stringify(body));
+      } catch (eSend) {
+        finished = true;
+        reject(new Error('XHR 发送失败：' + String((eSend && eSend.message) || eSend)));
+      }
+    });
+  }
+
   /* ── 通道 A：前端 fetch 直连（https 端点） ── */
   function streamOnceDirect(messages, onDelta) {
     var ctx = STREAM.ctx;
@@ -1827,6 +2162,12 @@ document.addEventListener('visibilitychange', function () {
         }
         var reader = null;
         try { reader = res.body && res.body.getReader ? res.body.getReader() : null; } catch (eR) { reader = null; }
+        /* 诊断：记录这条通道到底能不能逐块读。用户看不到流式时，第一个要区分的就是
+           「reader 拿不到（WebView 不支持 response.body）」还是「reader 有但只来一块」。 */
+        STREAM.diag = 'reader=' + (reader ? 'yes' : 'no')
+          + ' ctype=' + String((res.headers && res.headers.get && res.headers.get('content-type')) || '?')
+          + ' clen=' + String((res.headers && res.headers.get && res.headers.get('content-length')) || '?');
+        STREAM.chunkCount = 0;
         /* 拿不到 reader：整包读回来按 SSE 解析，仍逐条回调 */
         if (!reader) {
           return res.text().then(function (raw) {
@@ -1902,11 +2243,19 @@ document.addEventListener('visibilitychange', function () {
               return finish();
             }
             /* 每块立刻渲染：流式的「逐字」来自这里，不是靠定时器攒批 */
+            STREAM.chunkCount = (STREAM.chunkCount || 0) + 1;
             feed(dec.decode(r.value, { stream: true }));
             return pump();
           });
         }
-        return pump();
+        return pump().then(function (r) {
+          /* 收尾时把通道诊断写进状态行：块数 = 1 说明「假流式」（整包一次到），
+             块数 > 10 说明真逐块；reader=no 说明 WebView 不支持 response.body。 */
+          STREAM.diag = (STREAM.diag || '') + ' chunks=' + (STREAM.chunkCount || 0);
+          /* 立刻把诊断刷到状态行（不等下一轮 trace） */
+          try { syncDtStatusText(S.curStatus || 'done'); } catch (eDg) {}
+          return r;
+        });
       }).then(function (r) {
         STREAM.abort = null;
         return r;
@@ -1947,13 +2296,31 @@ document.addEventListener('visibilitychange', function () {
     });
   }
 
-  /* 统一入口：先直连；CORS/网络失败自动落中继，中继失败交给上层降级 advanceTask */
+  /* 统一入口：XHR 优先（WebView 最可靠），失败再 fetch 直连，再失败落中继，
+     中继失败交给上层降级 advanceTask。
+     为什么 XHR 排第一：部分 Android WebView 的 fetch + response.body.getReader()
+     能拿到 reader（诊断显示 reader=yes），但 read() 攒到整包结束才 resolve，
+     用户就看不到逐字。XHR 的 onprogress 由宿主触发，每段都回调，绕开这个坑。 */
   function streamOnce(messages, onDelta) {
-    return streamOnceDirect(messages, onDelta).then(null, function (eDirect) {
-      /* 直连失败（CORS 拦/网络不通）→ 换后端中继，不让用户看见报错 */
-      if (STREAM.ctx && STREAM.ctx.endpoint) STREAM.relay = true;
-      return streamOnceRelay(messages, onDelta).then(function (r) { return r; }, function (eRelay) {
-        throw eDirect && /abort/i.test(String(eDirect.message || eDirect)) ? eDirect : eRelay;
+    return streamOnceXhr(messages, onDelta).then(null, function (eXhr) {
+      /* XHR 这条路不通（被拦/端点不可达）→ 再试 fetch 直连 */
+      STREAM.lastDirectErr = String((eXhr && eXhr.message) || eXhr || '');
+      return streamOnceDirect(messages, onDelta).then(null, function (eDirect) {
+        /* 两条直连都失败 → 换后端中继，不让用户看见报错。
+           但必须留痕：之前完全静默，用户根本不知道自己在走中继，
+           以为「配了 CORS 还是没流式」是代码问题。现在把原因写进 live 状态行。 */
+        if (STREAM.ctx && STREAM.ctx.endpoint) STREAM.relay = true;
+        STREAM.lastDirectErr = String((eDirect && eDirect.message) || eDirect || STREAM.lastDirectErr || '');
+        setLive('直连失败，走中继回放…');
+        /* 只在本次会话第一次失败时提示，避免每轮刷屏。
+           这条提示是排障关键：能直接看到 CORS 拦 / 网络不通 / HTTP 4xx 的真实文案。 */
+        if (!STREAM.warnedDirect) {
+          STREAM.warnedDirect = true;
+          try { err('直连失败：' + STREAM.lastDirectErr.slice(0, 160)); } catch (eW) {}
+        }
+        return streamOnceRelay(messages, onDelta).then(function (r) { return r; }, function (eRelay) {
+          throw /abort/i.test(String((eDirect && eDirect.message) || eDirect || '')) ? eDirect : eRelay;
+        });
       });
     });
   }
@@ -1968,6 +2335,9 @@ document.addEventListener('visibilitychange', function () {
     if (!id) { err('没有选中的任务'); return; }
     STREAM.busy = true;
     S.streaming = true;
+    /* 流式会自己往 dtChat 里画，指纹必须失效：否则流式结束后 trace 重建时
+       算出的 h 若与流式前的旧指纹相同，会被误判成「没变化」而不渲染。 */
+    S.chatSig = null;
     setLive('连接中…');
     /* 占位气泡：后续 delta 直接往里追加，不重建整棵 DOM */
     var host = $('dtChat');
@@ -1983,22 +2353,68 @@ document.addEventListener('visibilitychange', function () {
 
     /* 逐帧渲染：每块 delta 到达后下一帧就刷，不再攒 60ms 批。
        长文本靠 md() 只在正文变化时重算，滚动用 rAF 合并，避免每块都触发重排。 */
-    var paintPending = false;
+    /* 渲染节流：用时间戳代替 requestAnimationFrame。
+       【为什么必须换】WebView 在悬浮窗/被遮挡/后台时，requestAnimationFrame 会被
+       暂停或极度降频。原来写成：
+         if (paintPending) return;
+         paintPending = true;
+         rAF(function () { paintPending = false; doPaint(); });
+       rAF 一旦不触发，paintPending 就永远停在 true，后续每一次 paint() 都在
+       第一行 return —— 一个字节都不再画。用户看到的就是「输出一会儿停住，
+       等流结束一下子全部蹦出来」。
+       实测证据：状态行 rs/seen/cd 三个数字一直在涨（数据在收、在解析），
+       但画面完全不动，FPS 59，页面不卡。
+       换成时间戳节流后不依赖 rAF，主线程活着就一定会画。 */
+    var lastPaintAt = 0;
     function paint(force) {
-      if (force) { paintPending = false; doPaint(); return; }
-      if (paintPending) return;
-      paintPending = true;
-      var raf = (typeof requestAnimationFrame === 'function')
-        ? requestAnimationFrame
-        : function (f) { return setTimeout(f, 16); };
-      raf(function () { paintPending = false; doPaint(); });
+      var now = Date.now();
+      if (!force && (now - lastPaintAt) < 50) return;
+      lastPaintAt = now;
+      doPaint();
+      /* 注意：这里绝不能调 flushStream。
+         flushStream → call() → SBNative.call 是同步阻塞的，后端还要写文件 + 读回校验。
+         把它放在每 50ms 的绘制路径上，等于流式过程中反复冻结主线程，
+         画面看起来就是「卡住 / 不动」。
+         落盘改由独立的定时器驱动（见下面的 flushTimer）。 */
     }
     function doPaint() {
-      if (thinkBuf) { thinkEl.style.display = ''; thinkEl.textContent = thinkBuf; }
+      if (thinkBuf) {
+        thinkEl.style.display = '';
+        thinkEl.textContent = thinkBuf;
+      }
       if (bodyBuf) bodyEl.innerHTML = md(bodyBuf);
       var c = $('dtChat');
       if (c) c.scrollTop = c.scrollHeight;
     }
+
+    /* 流式增量落盘：独立定时器驱动，不挂在绘制路径上。
+        【为什么必须有】原来 thinkBuf/bodyBuf 只活在页面内存里，
+        用户退出面板再进来，内容全丢、后端状态还是 queued（显示「待开始」），
+        只能重新点启动 → 重跑的内容又叠一层，越滚越大。
+        【为什么用定时器而不是跟着 paint 走】flushStream 最终是同步桥调用，
+        挂在每 50ms 的绘制路径上会反复冻结主线程，流式看起来就是卡住。
+        间隔 8 秒足够：落盘只为了「退出不丢」，不需要实时。 */
+    function flushStream(force) {
+      if (!id || (!thinkBuf && !bodyBuf)) return;
+      STREAM.curId = id;
+      STREAM.curThink = thinkBuf;
+      STREAM.curBody = bodyBuf;
+      call('subagent:subagent_stream_flush', {
+        id: id, think: thinkBuf, body: bodyBuf
+      }, 'streamFlush');
+    }
+    var flushTimer = setInterval(function () {
+      if (!ALIVE || !STREAM.busy) {
+        try { clearInterval(flushTimer); } catch (eFT) {}
+        return;
+      }
+      flushStream(false);
+    }, 8000);
+    STREAM._flushTimer = flushTimer;
+    /* 立刻落一次：把 status 置 running。
+       不然前 8 秒后端还是 queued，状态行显示「待开始」，
+       用户会以为没跑起来。这次不带内容，只为了让状态立刻正确。 */
+    call('subagent:subagent_stream_flush', { id: id, think: '', body: '' }, 'streamFlush');
 
     loadStreamEnv(id, function (e0) {
       if (e0) {
@@ -2098,7 +2514,11 @@ document.addEventListener('visibilitychange', function () {
           /* 落盘：刷新页面后内容仍在；页面只管显示，持久化交给后端 */
           var saved = { role: 'assistant', content: out.content || '' };
           if (out.reasoning) saved.reasoning = out.reasoning;
-          call('subagent:subagent_save_turn', { id: id, turns: [saved], done: true }, 'saveTurn', function () {
+          /* usage 与 finish_reason 一起回传：后端靠它累计 token/花费，否则状态行永远 0 tok */
+          var _sv = { id: id, turns: [saved], done: true };
+          if (out.usage) _sv.usage = out.usage;
+          if (out.finishReason) _sv.finish_reason = String(out.finishReason);
+          call('subagent:subagent_save_turn', _sv, 'saveTurn', function () {
             if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
           });
           refreshList(false);
@@ -2111,6 +2531,35 @@ document.addEventListener('visibilitychange', function () {
           return { id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args || '{}') } };
         });
         msgs.push(asst);
+        /* 【关键修复 2026-11-07】工具调用这一轮结束后，必须把当前流式 holder「定格」：
+           1) 把本轮已流出的思考/正文转成正式气泡，留在时间线里
+           2) 清空 holder 内容并给下一轮 runRound 用新 holder
+           不这么做的话：runRound 里 thinkBuf/bodyBuf 清零但 holder DOM 还留着旧内容，
+           下一轮流式又往同一个 holder 里画 → 视觉上「先显示一段、突然消失、再重新出现」。
+           用户实测就是这个现象：先冒出 list_files 工具块，然后整块消失变成正文。 */
+        try {
+          if (thinkBuf || bodyBuf) {
+            var _hist = document.createElement('div');
+            _hist.className = 'bubble ai';
+            _hist.innerHTML = '<div class="b-body md-body">' + md(bodyBuf || '') + '</div>';
+            host.insertBefore(_hist, holder);
+            if (thinkBuf) {
+              var _th = document.createElement('div');
+              _th.className = 'thinkbox';
+              _th.setAttribute('data-state', '0');
+              _th.innerHTML = '<div class="thk-head">' + SVG_CHEV
+                + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
+                + '<span class="thk-len">' + thinkBuf.length + ' 字</span></div>'
+                + '<div class="thk-body">' + esc(thinkBuf) + '</div>';
+              host.insertBefore(_th, holder);
+            }
+            thinkBuf = ''; bodyBuf = '';
+            holder.innerHTML = '<div class="sb-think" style="display:none"></div>'
+              + '<div class="sb-body md-body"></div>';
+            thinkEl = holder.querySelector('.sb-think');
+            bodyEl = holder.querySelector('.sb-body');
+          }
+        } catch (eHist) {}
         var queue = out.toolCalls.slice();
         var idx = 0;
         function nextTool() {
@@ -2186,9 +2635,38 @@ document.addEventListener('visibilitychange', function () {
   /* 停止流式 */
   function abortStream() {
     if (STREAM.abort) { try { STREAM.abort.abort(); } catch (e) {} }
+    STREAM.abort = null;
+    /* 【必须清】流式落盘定时器。不清的话它要等下一个 8 秒才自己发现 busy=false，
+       这 8 秒里会继续把内容写回后端，把刚取消的任务又写成 running。 */
+    if (STREAM._flushTimer) {
+      try { clearInterval(STREAM._flushTimer); } catch (eFT2) {}
+      STREAM._flushTimer = null;
+    }
     STREAM.busy = false;
     S.streaming = false;
     setLive('');
+    /* 【关键】清掉空的流式占位块。
+       中断时 holder 里通常只有骨架（空的 .sb-think + .sb-body），
+       留在时间线上就是一块空白，用户以为界面卡死。
+       有内容的才保留（那是已经生成的部分，不能丢）。 */
+    try {
+      var host = $('dtChat');
+      if (host) {
+        var boxes = host.querySelectorAll('.streambox');
+        for (var i = 0; i < boxes.length; i++) {
+          var bx = boxes[i];
+          var th = bx.querySelector('.sb-think');
+          var bd = bx.querySelector('.sb-body');
+          var hasThink = th && String(th.textContent || '').trim();
+          var hasBody = bd && String(bd.textContent || '').trim();
+          if (!hasThink && !hasBody) {
+            bx.parentNode.removeChild(bx);
+          }
+        }
+      }
+    } catch (eCl) {}
+    /* 指纹失效，下一次 trace 能正常重绘 */
+    S.chatSig = null;
   }
 
   /* 推进任务：steps 默认 1，一次最多 3（后端限制）
@@ -2219,6 +2697,16 @@ document.addEventListener('visibilitychange', function () {
     if (!S.cur || S.page !== 'detail') return;
     var st = String(S.curStatus || '');
     if (st !== 'running' && st !== 'queued') return;
+    /* 【关键】用户在输入框打字时跳过这一轮轮询。
+       桥调用是同步阻塞的（addJavascriptInterface），一次 trace 回来就卡住 JS 线程，
+       用户每敲一个字符，正好撞上轮询 → 输入卡顿 + 下方内容跟着重建跳动。
+       跳过不丢信息：下一轮（1.5s 后）照常拉，任务本身在后端跑不受影响。 */
+    var ae = document.activeElement;
+    var typing = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA'));
+    if (typing) {
+      S.pollT = setTimeout(pollOnce, 600);
+      return;
+    }
     call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
     /* 桥已超时说明后端还在跑，这时把轮询降频：原来 1.5s 一次会让整页发烫变卡。
        恢复正常后再回到高频，保证有进展时界面跟得上。 */
@@ -2779,7 +3267,7 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'deleteTask') { e.stopPropagation(); return deleteTask(val); }
     if (act === 'goHome') return goHome();
     if (act === 'goList') return goList();
-    if (act === 'backList') { S.cur = null; show('list'); renderList(S.items); return; }
+    if (act === 'backList') { S.cur = null; show('list'); return; }
     if (act === 'fold') {
       var f = el;
       f.classList.toggle('open');
@@ -2806,7 +3294,7 @@ document.addEventListener('visibilitychange', function () {
       return;
     }
     if (act === 'openInboxBtn') return openInbox();
-    if (act === 'openMail') return openMail(Number(t.dataset.idx));
+    if (act === 'openMail') return openMail(Number(el.dataset.idx));
     if (act === 'backToInbox') return openInbox();
     if (act === 'inboxClearAll') { call('subagent:subagent_inbox', { action: 'read' }, 'inboxClear'); return; }
     if (act === 'deleteCur') { if (S.cur) deleteTask(S.cur); return; }

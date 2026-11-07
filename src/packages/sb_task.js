@@ -25,8 +25,6 @@ function newId() {
 
 function tasksDir() { return CFG.tasksDir(); }
 function taskPath(id) { return tasksDir() + "/" + id + ".json"; }
-/* 索引跟任务放一起（它是任务的目录表，不是可丢缓存） */
-function indexPath() { return CFG.tasksDir() + "/index.json"; }
 /* 用量与请求日志是可再生的统计，放 cache */
 function usagePath() { return CFG.cacheDir() + "/usage.json"; }
 function reqLogPath() { return CFG.cacheDir() + "/reqlog.jsonl"; }
@@ -74,7 +72,13 @@ async function listTasks(force) {
         var arr = (r && r.entries) ? r.entries : [];
         for (var i = 0; i < arr.length; i++) {
             var n = String(arr[i].name || "");
-            if (n.slice(-5) === ".json") ids.push(n.slice(0, -5));
+            if (n.slice(-5) !== ".json") continue;
+            var tid = n.slice(0, -5);
+            /* index.json 是任务目录表，不是任务本体。不排除的话它会被当任务解析，
+               得到一个没有 id 字段的对象塞进列表 → 前端渲染出 data-val="undefined"
+               的幽灵行，点进去 loadTask("undefined") 又找不到。 */
+            if (tid === "index") continue;
+            ids.push(tid);
         }
     } catch (e) {}
     var out = [];
@@ -88,22 +92,6 @@ async function listTasks(force) {
     out.sort(function (a, b) { return (b.created_at || 0) - (a.created_at || 0); });
     _listCache.at = nowMs(); _listCache.data = out;
     return out;
-}
-
-async function refreshIndex() {
-    var all = await listTasks();
-    var items = [];
-    for (var i = 0; i < all.length; i++) {
-        var t = all[i];
-        items.push({
-            id: t.id, title: t.title, status: t.status, step: t.step,
-            max_steps: t.max_steps, group: t.group || null,
-            created_at: t.created_at, updated_at: t.updated_at,
-            usage: t.usage || { in: 0, out: 0, est_cost: 0 }
-        });
-    }
-    try { await mkdirs(CFG.tasksDir()); await writeJson(indexPath(), { items: items, updated_at: nowMs() }); } catch (e) {}
-    return items;
 }
 
 function nextFor(task) {
@@ -140,44 +128,29 @@ function clipText(t, n) {
     return s.slice(0, n) + "\n...(已截断，原长 " + s.length + " 字符)";
 }
 
+/* 系统提示词（2026-11-07 极简化，用户定调）
+ *
+ * 设计原则：只放事实，不放角色扮演、不放行为告诫、不放输出格式。
+ *   1) 不写「你是子代理」—— 模型会先自我定位、多绕一圈（用户实测）
+ *   2) 不写「不要假装调用工具」—— 反而诱导它去权衡「要不要调」
+ *   3) 不规定输出格式 —— 用户自己能看懂，模板只会束缚
+ *   4) 工具定义由 API 的 tools 字段给，这里不重复
+ *
+ * 保留的只有：工作区（能用 cd 表达的就用路径）、调用方显式传的 key_points、背景文本。
+ * 要加限制由用户指定，不自作主张。
+ */
 function buildSystemPrompt(task, cfg) {
     var kp = task.key_points || {};
     var lines = [];
-    lines.push("你是一个独立子代理，只对下面这一件事负责。");
-    lines.push("");
-    lines.push("## 任务");
-    lines.push("标题：" + (task.title || ""));
-    lines.push("目标：" + (kp.goal || task.task || ""));
+    /* 工作区：直接给路径，等于告诉它「你在这儿干活」 */
+    if (task.workspace_resolved) lines.push("工作目录：" + task.workspace_resolved);
+    /* 调用方显式给的要求，原样带上，不加壳 */
+    if (kp.goal) lines.push(kp.goal);
     if (kp.deliverable) lines.push("交付物：" + kp.deliverable);
     if (kp.constraints && kp.constraints.length) lines.push("约束：" + kp.constraints.join("；"));
     if (kp.acceptance && kp.acceptance.length) lines.push("验收：" + kp.acceptance.join("；"));
-    lines.push("");
-    /* 工具：只说"能用什么"。越权由执行层硬拒，不需要在这里威胁模型 */
-    lines.push("## 可用工具");
-    /* 2026-11-06：工具不再统一包 run_tool 壳 —— 每个工具都是独立的 function，
-       直接用工具名调用，参数就是该工具自己的参数。这里只列名字，
-       否则模型会以为必须包一层（实测会把工具名拼成 "visit_web<tool_sep:...>" 这种污染串）。 */
-    var toolList = (task.allowed_tools && task.allowed_tools.length) ? task.allowed_tools.join(", ") : "（无）";
-    lines.push("直接按工具名调用（不需要包 run_tool）。可用工具：" + toolList);
-    lines.push("参数直接按该工具自己的字段传，例如 read_file({path:\"/sdcard/foo.txt\"})。");
-    if (task.workspace_resolved) {
-        lines.push("");
-        lines.push("## 写入范围");
-        lines.push("写类工具只能落在 " + task.workspace_resolved + " 内。");
-    }
-    if (task.context_text) {
-        lines.push("");
-        lines.push("## 背景");
-        lines.push(clipText(task.context_text, cfg.inject_max_chars || 20000));
-    }
-    lines.push("");
-    lines.push("## 输出格式");
-    lines.push("直接给出可交付结论，分三块：");
-    lines.push("- 结论：一句话给答案");
-    lines.push("- 依据：文件路径 / 命令输出 / 计算过程");
-    lines.push("- 遗留项：没有就写「无」");
-    lines.push("");
-    lines.push("信息不足时按最合理假设继续，并把假设写进依据。做完即停。");
+    /* 背景文本（对话历史 / 文件内容等），原样注入 */
+    if (task.context_text) lines.push(clipText(task.context_text, cfg.inject_max_chars || 20000));
     return lines.join("\n");
 }
 
@@ -332,7 +305,38 @@ async function setPhase(task, phase, extra) {
     try { await saveTask(task); } catch (e) {}
 }
 
+/* 同一任务的推进锁（内存级）：
+   面板流式 + 后端 advance 可能同时推同一个任务 → 双份 LLM 请求（双倍计费）
+   + 两个 saveTask 互相覆盖（丢步骤）。
+   ToolPkg 后端是单进程单事件循环，用 Set 做互斥就够，不需要文件锁。 */
+var _advancing = {};
+
 async function advanceTask(cfg, task) {
+    var _lk = String(task.id || "");
+    if (_lk && _advancing[_lk]) return { ok: false, busy: true, task: task, message: "该任务正在推进中，请稍后" };
+    if (_lk) _advancing[_lk] = true;
+    try {
+        return await _advanceTaskInner(cfg, task);
+    } catch (e) {
+        /* 【关键】异常必须落盘成 failed，否则任务会永久钉在 running：
+           saveTask 的「写回校验失败」等异常抛出后，status 仍是 running，
+           而 subagent_resume 见到 running 直接返回「任务正在运行」不重置，
+           用户只能手改 json 才能救回来。 */
+        var msg = String((e && e.message) || e);
+        try {
+            task.status = "failed";
+            task.error = "推进异常：" + msg;
+            task.phase = "idle";
+            task.phase_at = nowMs();
+            await saveTask(task);
+        } catch (e2) {}
+        return { ok: false, task: task, message: task.error };
+    } finally {
+        if (_lk) delete _advancing[_lk];
+    }
+}
+
+async function _advanceTaskInner(cfg, task) {
     if (task.status === "done") return { ok: true, done: true, task: task, message: "任务已完成" };
     if (task.status === "cancelled") return { ok: false, task: task, message: "任务已取消" };
     if (task.cancel) { task.status = "cancelled"; await saveTask(task); return { ok: false, task: task, message: "任务已取消" }; }
@@ -458,7 +462,6 @@ module.exports = {
     dropCache: dropCache,
     saveTask: saveTask,
     listTasks: listTasks,
-    refreshIndex: refreshIndex,
     advanceTask: advanceTask,
     steerTask: steerTask,
     buildSummary: buildSummary,
@@ -466,5 +469,6 @@ module.exports = {
     nextFor: nextFor,
     loadUndo: loadUndo,
     saveUndo: saveUndo,
-    loadUsage: loadUsage
+    loadUsage: loadUsage,
+    bumpUsage: bumpUsage
 };

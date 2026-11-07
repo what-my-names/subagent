@@ -16,8 +16,8 @@ METADATA
         {
             "name": "subagent_spawn",
             "description": {
-                "zh": "建任务：只有 task 必填；allowed_tools 留空 = 不限制工具；含写类工具时必须给 workspace。sync=true 时直接跑完并返回结论。",
-                "en": "Create a task. Only task required; empty allowed_tools means unrestricted. workspace required if write tools allowed."
+                "zh": "建任务：只有 task 必填。allowed_tools 留空 = 一个工具都用不了；要放开全部传 all=true（递归派子代理仍硬拦）。含写类工具时必须给 workspace。sync=true 时直接跑完并返回结论。",
+                "en": "Create a task. Only task required. Empty allowed_tools means no tools; pass all=true to allow everything (recursive subagents still blocked). workspace required if write tools allowed."
             },
             "parameters": [
                 {
@@ -29,7 +29,13 @@ METADATA
                 {
                     "name": "allowed_tools",
                     "type": "string",
-                    "description": "允许的工具，逗号分隔，支持通配与 包名:工具名；留空 = 不限制",
+                    "description": "允许的工具，逗号分隔，支持通配与 包名:工具名。留空 = 一个工具都用不了；要放开全部请传 all=true",
+                    "required": false
+                },
+                {
+                    "name": "all",
+                    "type": "boolean",
+                    "description": "true = 放开全部工具（内置工具全展开 + 包工具走 run_tool）。递归派子代理仍被硬拦。默认 false",
                     "required": false
                 },
                 {
@@ -400,8 +406,14 @@ METADATA
                 {
                     "name": "action",
                     "type": "string",
-                    "description": "status/set/key/refresh_models",
+                    "description": "status / set / key / refresh_models / list_profiles / add_profile / set_profile / set_active / del_profile",
                     "required": true
+                },
+                {
+                    "name": "profile_id",
+                    "type": "string",
+                    "description": "set_active / del_profile 时的目标配置 id",
+                    "required": false
                 },
                 {
                     "name": "payload",
@@ -548,7 +560,7 @@ METADATA
         {
             "name": "subagent_save_turn",
             "description": {
-                "zh": "面板流式结束后把这一轮助手/工具消息落盘，保证刷新后不丢",
+                "zh": "面板流式结束后把这一轮助手/工具消息落盘，保证刷新后不丢；同时累计步数与用量，done=true 时进收件箱",
                 "en": "Persist a streamed turn so it survives reload"
             },
             "parameters": [
@@ -566,6 +578,42 @@ METADATA
                     "name": "done",
                     "type": "boolean",
                     "description": { "zh": "这一轮是否已结束（true 则置 done）", "en": "mark task done" }
+                },
+                {
+                    "name": "usage",
+                    "type": "object",
+                    "description": { "zh": "本步用量 {in,out} 或 {prompt_tokens,completion_tokens}，用于累计 token 与花费", "en": "token usage of this step" },
+                    "required": false
+                },
+                {
+                    "name": "finish_reason",
+                    "type": "string",
+                    "description": { "zh": "本步结束原因（stop / tool_calls / length）", "en": "finish reason" },
+                    "required": false
+                }
+            ]
+        },
+        {
+            "name": "subagent_stream_flush",
+            "description": {
+                "zh": "流式增量落盘：把 status 置 running 并保存当前已生成的思考/正文。面板流式过程中定时调用，保证退出再进来内容还在、状态不是「待开始」",
+                "en": "Persist in-progress stream so it survives panel reload"
+            },
+            "parameters": [
+                {
+                    "name": "id",
+                    "type": "string",
+                    "description": { "zh": "任务 id", "en": "task id" }
+                },
+                {
+                    "name": "think",
+                    "type": "string",
+                    "description": { "zh": "当前累计的思考文本", "en": "accumulated reasoning" }
+                },
+                {
+                    "name": "body",
+                    "type": "string",
+                    "description": { "zh": "当前累计的正文文本", "en": "accumulated content" }
                 }
             ]
         },
@@ -791,6 +839,12 @@ exports.subagent_spawn = async function (params) {
     var cfg = await CFG.load();
     var taskText = String(params.task == null ? "" : params.task).trim();
     var allowed = parseList(params.allowed_tools);
+    /* all=true：放开全部工具。语义定调（2026-11-07 用户拍板）：
+       留空 = 一个工具都用不了（空数组，白名单全拒）；
+       要全放开必须显式传 all=true → 内部变成 ["*"]。
+       "*" 在 sb_llm.runToolSchema 里会展开 sb_toolmeta 全表 + 留 run_tool 兜底表外包；
+       在 sb_tools.matchAllowed 里匹配一切；但 isRecursive 仍会硬拦递归派子代理。 */
+    if (params.all === true) allowed = ["*"];
     var template = null;
     if (params.template_id) {
         var tpls = cfg.templates || [];
@@ -800,8 +854,10 @@ exports.subagent_spawn = async function (params) {
         if (!allowed.length && template.allowed_tools) allowed = parseList(template.allowed_tools);
     }
     if (!taskText) { complete({ success: false, message: "task 不能为空", data: {} }); return; }
-    /* allowed_tools 不是必填：空数组 = 不限制（只读工具可直接跑，写类仍受 workspace 边界约束）。
-       用户明确要求过「任务的工具可以不需要填」，前端也按这个语义放开了，后端不能再硬拦。 */
+    /* allowed_tools 不是必填，但语义是「留空 = 一个工具都用不了」（2026-11-07 用户拍板）。
+       要放开全部必须显式传 all=true → 内部变成 ["*"]。
+       注意：空数组不会 fallback 到 default_allowed_tools，否则面板路径与 advanceTask 路径
+       对同一条规矩给出相反结果。 */
     if (allowed.length > 40) { complete({ success: false, message: "allowed_tools 过多（上限 40）", data: {} }); return; }
     var bad = [];
     for (var j = 0; j < allowed.length; j++) { if (TOOLS.isRecursive(allowed[j])) bad.push(allowed[j]); }
@@ -1075,9 +1131,11 @@ exports.subagent_inbox = async function (params) {
         complete({ success: true, message: "已清空收件箱（" + n + " 条）", data: { cleared: n } });
         return;
     }
+    /* 只报真实可观测的条数。原来的「钩子命中 N 次」是假指标：
+       钩子侧自增的 globalThis 工具侧读不到，SP 里的计数又因为 bump() 零调用恒为 0，
+       永远报 0，连「真的是 0」都无法判断。已删除。 */
     var st = BUS.stat();
-    st.hits = Number(globalThis.__SUBAGENT_HITS__) || st.hits;
-    complete({ success: true, message: "未读 " + st.count + " 条，钩子命中 " + st.hits + " 次", data: { hits: st.hits, count: st.count, items: BUS.list() } });
+    complete({ success: true, message: "未读 " + st.count + " 条", data: { count: st.count, items: BUS.list() } });
 };
 exports.subagent_list = async function (params) {
     var all = await TASK.listTasks();
@@ -1464,6 +1522,13 @@ exports.subagent_trace = async function (params) {
             phase_at: Number(t.phase_at || 0),
             tool_now: String(t.tool_now || ""),
             step_at: Number(t.step_at || 0),
+            /* 流式过程中的临时落盘：面板退出再进来时用它恢复已生成的内容，
+               不用重新跑一遍（重跑会叠出 35KB 的重复内容）。 */
+            pending: t.pending ? {
+                think: String(t.pending.think || ""),
+                body: String(t.pending.body || ""),
+                at: Number(t.pending.at || 0)
+            } : null,
             created_at: tsOf(t.created_at), updated_at: tsOf(t.updated_at || t.last_at),
             workspace_resolved: t.workspace_resolved || "", product_dir: t.product_dir || "",
             total_turns: turns.length, shown: out.length,
@@ -1481,12 +1546,17 @@ exports.subagent_save_turn = async function (params) {
     var task = await TASK.loadTask(String(params.id || ""));
     if (!task) { complete({ success: false, message: "找不到任务", data: {} }); return; }
     var list = Array.isArray(params.turns) ? params.turns : [];
+    /* 面板流式路径原来完全不记账：step 永远 0、usage 永远 0、完成也不进收件箱。
+       结果就是状态行永远「第 0/20 步 · 0 tok」，收件箱永远空。
+       这里补上与 advanceTask 一致的三件事：步数、用量、完成通知。 */
+    var addedAssistant = false;
     for (var i = 0; i < list.length; i++) {
         var m = list[i] || {};
         var role = String(m.role || "");
         if (role !== "assistant" && role !== "tool" && role !== "user") continue;
         var t = { role: role };
         if (role === "assistant") {
+            addedAssistant = true;
             t.content = String(m.content || "");
             if (m.reasoning) t.reasoning = String(m.reasoning);
             if (m.tool_calls && m.tool_calls.length) t.tool_calls = m.tool_calls;
@@ -1503,6 +1573,29 @@ exports.subagent_save_turn = async function (params) {
         task.turns.push(t);
         await TASK.saveTask(task);
     }
+    /* 一轮 = 一步，与 advanceTask 的 task.step + 1 对齐 */
+    if (addedAssistant) task.step = Number(task.step || 0) + 1;
+    /* 落了正式 turn 就清掉流式临时落盘，避免 fillTrace 里 pending 与 turn 重复渲染 */
+    if (addedAssistant && list.length) {
+        try { delete task.pending; } catch (eP2) { task.pending = null; }
+    }
+    /* 用量：面板直接调端点，usage 由页面回传（OpenAI 字段名 prompt/completion） */
+    var uIn = Number((params.usage && (params.usage.in != null ? params.usage.in : params.usage.prompt_tokens)) || 0);
+    var uOut = Number((params.usage && (params.usage.out != null ? params.usage.out : params.usage.completion_tokens)) || 0);
+    if (uIn || uOut) {
+        task.usage = task.usage || { in: 0, out: 0, est_cost: 0 };
+        task.usage.in = Number(task.usage.in || 0) + uIn;
+        task.usage.out = Number(task.usage.out || 0) + uOut;
+        var cfgU = null;
+        try { cfgU = await CFG.load(); } catch (eU) { cfgU = null; }
+        if (cfgU) {
+            try { await TASK.bumpUsage(cfgU, { in: uIn, out: uOut }); } catch (eB) {}
+            try {
+                task.usage.est_cost = Math.round((Number(task.usage.est_cost || 0) + LLM.estimateCost(cfgU, { in: uIn, out: uOut })) * 1000000) / 1000000;
+            } catch (eC) {}
+        }
+    }
+    if (params.finish_reason) task.last = Object.assign(task.last || {}, { finish_reason: String(params.finish_reason) });
     if (params.done === true) {
         task.status = "done";
         task.phase = "idle";
@@ -1511,9 +1604,52 @@ exports.subagent_save_turn = async function (params) {
             if (task.turns[j].role === "assistant") { lastA = task.turns[j]; break; }
         }
         if (lastA) task.result = String(lastA.content || "");
+        task.phase_at = Date.now();
+        /* 收尾时清掉流式过程中的临时落盘，避免 pending 内容在刷新后重复显示 */
+        try { delete task.pending; } catch (eP) { task.pending = null; }
+    } else if (Number(task.step || 0) > Number(task.max_steps || 0) && Number(task.max_steps || 0) > 0) {
+        /* 超步数：与 advanceTask 一致置 failed，别让任务无限跑下去。
+           判 > 而不是 >= ：面板第 max_steps 步跑完仍允许收尾，只有真超出才终止。 */
+        task.status = "failed";
+        task.error = "超出步数上限 " + task.max_steps;
     }
     await TASK.saveTask(task);
-    complete({ success: true, message: "已保存", data: { count: list.length, status: task.status } });
+    /* 完成/失败都要进收件箱，否则面板用户永远看不到结论 */
+    if (params.done === true || task.status === "failed") {
+        try { await notifyDone(task); } catch (eN) {}
+    }
+    complete({ success: true, message: "已保存", data: { count: list.length, status: task.status, step: task.step, usage: task.usage } });
+};
+
+/* 流式增量落盘：面板流式过程中每几秒调一次。
+   【为什么必须有】原来流式全程只在页面内存里跑（thinkBuf/bodyBuf 是闭包变量），
+   退出面板 = 页面销毁 = 内容全丢；而且从不把 task.status 写成 running，
+   退出再进来后端还是 queued，面板显示「待开始」，用户只能重新点启动 ——
+   重跑的内容又叠在旧的上面，越滚越大（实测出现过 35KB 的重复内容）。
+   这个工具做两件事：
+     1) 把 status 置 running（面板再进来时能正确判断「正在跑」）
+     2) 把当前已生成的内容写进 task.pending（不追加 turns，避免重复）
+   收尾时由 subagent_save_turn 用 done=true 落正式 turn 并清掉 pending。 */
+exports.subagent_stream_flush = async function (params) {
+    params = params || {};
+    var task = await TASK.loadTask(String(params.id || ""));
+    if (!task) { complete({ success: false, message: "找不到任务", data: {} }); return; }
+    /* 已经是终态就别再翻回 running，避免用户点了停止又被拉起来 */
+    var st = String(task.status || "");
+    if (st === "done" || st === "failed" || st === "cancelled" || st === "closed") {
+        complete({ success: true, message: "终态，忽略", data: { status: st, ignored: true } });
+        return;
+    }
+    task.status = "running";
+    task.phase = "llm";
+    task.phase_at = Date.now();
+    task.pending = {
+        think: String(params.think || ""),
+        body: String(params.body || ""),
+        at: Date.now()
+    };
+    await TASK.saveTask(task);
+    complete({ success: true, message: "已落盘", data: { status: task.status, chars: (task.pending.think || "").length + (task.pending.body || "").length } });
 };
 
 /* 单个工具执行：流式循环在页面里跑，但工具必须由后端执行（页面没有文件/shell 能力）。
@@ -1528,7 +1664,11 @@ exports.subagent_tool_once = async function (params) {
     var args = (params.args && typeof params.args === "object") ? params.args : {};
     var allowed = (task && task.allowed_tools && task.allowed_tools.length)
         ? task.allowed_tools
-        : (cfg.default_allowed_tools || []);
+        : [];
+    /* 注意（2026-11-07 定调）：allowed_tools 留空 = 一个工具都用不了，
+       不再 fallback 到 default_allowed_tools。否则面板路径与 advanceTask 路径
+       对同一条规矩给出相反结果（一个能跑 5 个只读工具，一个全拒）。
+       要全放开请建任务时传 all=true。 */
     var roots = [];
     if (task) {
         if (task.workspace_resolved) roots.push(task.workspace_resolved);
@@ -1578,7 +1718,8 @@ exports.subagent_stream_ctx = async function (params) {
     var profile = LLM.resolveProfile(cfg, (task && task.profile_override) || {});
     var allowed = (task && task.allowed_tools && task.allowed_tools.length)
         ? task.allowed_tools
-        : (cfg.default_allowed_tools || []);
+        : [];
+    /* 留空 = 一个工具都用不了（2026-11-07 定调，见 subagent_spawn 注释） */
     var level = (task && task.thinking_level) || cfg.thinking_level || "medium";
     var protocol = String(profile.protocol || "chat");
     complete({
@@ -1651,7 +1792,8 @@ exports.subagent_stream_relay = async function (params) {
     if (!body) {
         var allowed = (task && task.allowed_tools && task.allowed_tools.length)
             ? task.allowed_tools
-            : (cfg.default_allowed_tools || []);
+            : [];
+        /* 留空 = 一个工具都用不了（2026-11-07 定调，见 subagent_spawn 注释） */
         var level = (task && task.thinking_level) || cfg.thinking_level || "medium";
         body = {
             model: String(profile.model || ""),
@@ -1673,7 +1815,14 @@ exports.subagent_stream_relay = async function (params) {
             url: url,
             method: "POST",
             headers: headers,
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            /* 超时必须显式给：不给的话端点连上却不发数据、也不关连接时，
+               后端线程会永久挂着（桥 20s 就断了，但后端不释放）。
+               与 sb_llm.postJsonOnce 保持一致。 */
+            connect_timeout: 15000,
+            read_timeout: Math.max(30000, Number((task && task.timeout_ms) || 90000) + 30000),
+            responseType: "text",
+            validateStatus: true
         });
         var sc = Number((res && res.statusCode) || 0);
         raw = String((res && (res.body != null ? res.body : res.content)) || "");

@@ -27,6 +27,17 @@ var SP_KEY = "items";
    为什么用 SP 不违反铁律：铁律禁的是「工具 API」（Tools.Files/Net/Shell 等，会回环），
    Java.getApplicationContext().getSharedPreferences 是直接 Java 调用，不经过工具层。 */
 var SP_CALLS = "hook_calls";
+/* 上次调用时间戳（毫秒）。
+   为什么需要：只有累计次数时，calls=6 分不清是刚才调的还是三天前调的。
+   排查「钩子是不是还活着」时，时间戳比累计值有用。 */
+var SP_LAST_AT = "hook_last_at";
+/* 因开关关闭而跳过的次数。
+   为什么需要：calls 恒 0 有两种解释——宿主没调 / 开关关着，分不清。
+   加上 skips 后三种情形可区分：
+     calls=0, skips=0  → 宿主根本没调钩子（写法或注册有问题）
+     calls>0, skips>0  → 钩子在调，但开关关着（用户主动关的）
+     calls>0, skips=0  → 钩子在调，开关开着（正常） */
+var SP_SKIPS = "hook_disabled_skips";
 /* 开关：环境变量 SUBAGENT_HOOK_ENABLED，缺省为开。
    设为 0 / false / off 时钩子直接 return（undefined），系统提示词原样保留。
    为什么需要开关：能力提示每轮都注入，用户不需要子代理时（闲聊、做别的项目）
@@ -40,14 +51,30 @@ var MAX_TEXT = 120;
 
 /* 能力提示：只在没有未读结论时注入。
    注意不要教 sync=true —— 桥有 20 秒硬超时，sync 会等几十秒导致界面假死。
-   正确路径是「建任务 → advance 推进 / wait 等结果」。 */
-var CAPABILITY_HINT = [
+   正确路径是「建任务 → advance 推进 / wait 等结果」。
+   中英两份：官方 payload 有 useEnglish 字段，英文界面下塞中文会诱导模型混语言。 */
+var CAPABILITY_HINT_ZH = [
   "[子代理能力] 可以把一整件独立的事派给子代理：它自己发模型请求、自己执行工具，回来只交结论。",
   "适合：多文件改造、大范围调研、需要反复试错的任务。",
   "派活：subagent_spawn(task=\"...\", allowed_tools=\"read_file,edit_file\", workspace=\"/sdcard/x/...\")",
   "推进：subagent_advance(id=...)；等结果：subagent_wait(id=...)。不要用 sync=true（桥 20 秒会超时）。",
   "取结论：subagent_result(id=...)；看进度：subagent_trace(id=...)。"
 ].join(String.fromCharCode(10));
+
+var CAPABILITY_HINT_EN = [
+  "[Subagent capability] You can delegate a whole self-contained job to a subagent: it issues its own model requests, runs its own tools, and returns only the conclusion.",
+  "Good for: multi-file refactors, broad research, tasks that need repeated trial and error.",
+  "Delegate: subagent_spawn(task=\"...\", allowed_tools=\"read_file,edit_file\", workspace=\"/sdcard/x/...\")",
+  "Advance: subagent_advance(id=...); wait: subagent_wait(id=...). Do not use sync=true (the bridge times out at 20s).",
+  "Get result: subagent_result(id=...); check progress: subagent_trace(id=...)."
+].join(String.fromCharCode(10));
+
+/* 语言选择：只有 payload.useEnglish === true 才用英文。
+   为什么默认中文：useEnglish 缺失时必须退回中文，不能默认英文——
+   中文用户占多数，默认英文会把绝大多数人的提示词搞坏。 */
+function pickHint(payload) {
+  return (payload && payload.useEnglish === true) ? CAPABILITY_HINT_EN : CAPABILITY_HINT_ZH;
+}
 
 /* 从 SharedPreferences 读收件箱。
    这是钩子侧唯一能拿到工具侧写入数据的通道（globalThis 不跨引擎）。
@@ -80,9 +107,10 @@ function hookEnabled() {
   }
 }
 
-/* 埋点：钩子被真正调用（且通过开关）时 +1，写进 SharedPreferences。
+/* 埋点：钩子被真正调用时 +1，同时记下时间戳，写进 SharedPreferences。
    这是判断「钩子到底会不会被宿主调用」的唯一可观测手段。
-   计数器恒 0 = 宿主根本没调这个钩子，写法再对也是空转。 */
+   计数器恒 0 = 宿主根本没调这个钩子，写法再对也是空转。
+   【注意调用位置】必须在开关判断之前调用，否则「没触发」和「开关关了」无法区分。 */
 function bumpCalls() {
   try {
     if (typeof Java === "undefined" || !Java) return;
@@ -91,7 +119,22 @@ function bumpCalls() {
     var p = ctx.getSharedPreferences(SP_NAME, 0);
     if (!p) return;
     var n = Number(p.getInt(SP_CALLS, 0)) + 1;
-    p.edit().putInt(SP_CALLS, n).apply();
+    p.edit().putInt(SP_CALLS, n).putLong(SP_LAST_AT, Date.now()).apply();
+  } catch (e) {}
+}
+
+/* 埋点：钩子被调用但因开关关闭而跳过时 +1。
+   为什么单独记：只有 calls 时，calls 恒 0 分不清是「宿主没调」还是「开关关了」。
+   有了 skips，三种情形可区分（见 SP_SKIPS 注释）。 */
+function bumpSkipped() {
+  try {
+    if (typeof Java === "undefined" || !Java) return;
+    var ctx = Java.getApplicationContext();
+    if (!ctx) return;
+    var p = ctx.getSharedPreferences(SP_NAME, 0);
+    if (!p) return;
+    var n = Number(p.getInt(SP_SKIPS, 0)) + 1;
+    p.edit().putInt(SP_SKIPS, n).apply();
   } catch (e) {}
 }
 
@@ -101,17 +144,26 @@ function clipText(s, n) {
   return t.slice(0, n) + "…";
 }
 
-/* 收件箱片段：条数与正文都截断，避免撑爆上下文 */
-function buildInboxBlock(arr) {
+/* 收件箱片段：条数与正文都截断，避免撑爆上下文。
+   按 useEnglish 分支：英文模式下不能混中文标题与提示语。 */
+function buildInboxBlock(arr, en) {
   var list = arr.slice(0, MAX_ITEMS);
-  var lines = ["[子代理收件箱] 有 " + arr.length + " 条未读结论（只列前 " + list.length + " 条，取完自动出箱）："];
+  var lines;
+  if (en) {
+    lines = ["[Subagent inbox] " + arr.length + " unread conclusion(s) (showing first " + list.length + ", each is removed once taken):"];
+  } else {
+    lines = ["[子代理收件箱] 有 " + arr.length + " 条未读结论（只列前 " + list.length + " 条，取完自动出箱）："];
+  }
   for (var i = 0; i < list.length; i++) {
     var it = list[i] || {};
     lines.push("- " + String(it.id || "") + " | " + clipText(it.title || it.task_title || "", 60)
       + " | " + clipText(it.text || it.conclusion || "", MAX_TEXT));
   }
-  if (arr.length > list.length) lines.push("（还有 " + (arr.length - list.length) + " 条，调 subagent_inbox 看全量）");
-  lines.push("取用：subagent_result(id=...)。");
+  if (arr.length > list.length) {
+    if (en) lines.push("(" + (arr.length - list.length) + " more; call subagent_inbox for the full list)");
+    else lines.push("（还有 " + (arr.length - list.length) + " 条，调 subagent_inbox 看全量）");
+  }
+  lines.push(en ? "Take one: subagent_result(id=...)." : "取用：subagent_result(id=...)。");
   return lines.join(String.fromCharCode(10));
 }
 
@@ -123,22 +175,24 @@ function subagentInboxHook(event) {
     /* ① 只处理 after_compose_system_prompt，其它阶段一律不插手 */
     if (String(ev.eventName || "") !== EVENT_NAME) return;
 
-    /* ② 开关关掉时 return（undefined），系统提示词原样保留。
-       注意：这一步在埋点之前 —— 关掉是用户主动行为，不该算进「钩子被调用」。
-       但这样也意味着「开关关着 + 计数器 0」无法区分「没触发」和「关掉了」，
-       所以计数放在开关判断之后、事件名判断之后：
-       事件名对 = 宿主确实调了这个钩子；开关关 = 我们主动不注入。 */
-    if (!hookEnabled()) return;
-
-    /* 埋点：走到这里说明宿主确实调用了这个钩子，且开关是开的 */
+    /* ② 埋点放在开关判断【之前】。
+       为什么：如果先判开关再埋点，calls 恒 0 有两种解释——宿主没调 / 开关关着，
+       排查时分不清到底是哪种。前置后：
+         calls=0, skips=0  → 宿主根本没调钩子
+         calls>0, skips>0  → 钩子在调，但开关关着
+         calls>0, skips=0  → 钩子在调，开关开着（正常） */
     bumpCalls();
 
+    /* ③ 开关关掉时 return（undefined），系统提示词原样保留 */
+    if (!hookEnabled()) { bumpSkipped(); return; }
+
     var payload = ev.eventPayload || {};
-    /* ③ 原始系统提示词：必须原样保留，我们的内容只能追加在后面 */
+    /* ④ 原始系统提示词：必须原样保留，我们的内容只能追加在后面 */
     var base = String(payload.systemPrompt || "");
 
+    var en = payload.useEnglish === true;
     var arr = readInbox();
-    var addon = arr.length ? buildInboxBlock(arr) : CAPABILITY_HINT;
+    var addon = arr.length ? buildInboxBlock(arr, en) : pickHint(payload);
 
     /* 空 base 时也要返回 addon（有些调用方 systemPrompt 为空），
        但不能返回空串 —— 空串等于把系统提示词清空。 */
@@ -154,9 +208,13 @@ function subagentInboxHook(event) {
 }
 
 exports.subagentInboxHook = subagentInboxHook;
-exports.CAPABILITY_HINT = CAPABILITY_HINT;
+exports.CAPABILITY_HINT_ZH = CAPABILITY_HINT_ZH;
+exports.CAPABILITY_HINT_EN = CAPABILITY_HINT_EN;
+exports.pickHint = pickHint;
 exports.EVENT_NAME = EVENT_NAME;
 exports.SP_NAME = SP_NAME;
 exports.SP_CALLS = SP_CALLS;
+exports.SP_LAST_AT = SP_LAST_AT;
+exports.SP_SKIPS = SP_SKIPS;
 exports.ENV_ENABLED = ENV_ENABLED;
 exports.hookEnabled = hookEnabled;

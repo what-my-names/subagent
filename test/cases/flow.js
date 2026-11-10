@@ -149,6 +149,32 @@ var hookCode = HOOK.replace(/\/\*[\s\S]*?\*\//g, '')
     .join('\n');
 A.nomatch('hook 代码里不调 Tools 系列（铁律）', hookCode, /Tools\.\w+/);
 A.match('hook 注册在 main.js', A.src('main.js'), /registerSystemPromptComposeHook/);
+/* ── 第二十七轮：钩子三项 P2 改进 ── */
+/* P2-1 英文模式：中英双份提示词，按 payload.useEnglish 选 */
+A.match('提示词拆中英两份', HOOK, /CAPABILITY_HINT_ZH/);
+A.match('英文提示词存在', HOOK, /CAPABILITY_HINT_EN/);
+A.match('有 pickHint 按语言选', HOOK, /function pickHint\(payload\)/);
+A.match('pickHint 只在 useEnglish===true 时用英文', HOOK, /payload\.useEnglish === true\) \? CAPABILITY_HINT_EN : CAPABILITY_HINT_ZH/);
+A.nomatch('英文提示词不含中文标题', HOOK, /\[Subagent capability\][^\n]*[子代理]/);
+A.match('收件箱块支持英文分支', HOOK, /function buildInboxBlock\(arr, en\)/);
+A.match('英文收件箱标题', HOOK, /\[Subagent inbox\] /);
+/* P2-2 时间戳：只记次数分不清「刚调的」还是「三天前调的」 */
+A.match('埋点记时间戳键', HOOK, /var SP_LAST_AT = "hook_last_at"/);
+A.match('bumpCalls 写时间戳', HOOK, /putLong\(SP_LAST_AT, Date\.now\(\)\)/);
+/* P2-3 埋点位置：必须在开关判断之前，否则「没触发」和「开关关了」分不清 */
+A.match('有跳过计数键', HOOK, /var SP_SKIPS = "hook_disabled_skips"/);
+A.match('有 bumpSkipped 函数', HOOK, /function bumpSkipped\(\)/);
+A.match('开关关闭时记跳过', HOOK, /if \(!hookEnabled\(\)\) \{ bumpSkipped\(\); return; \}/);
+/* 顺序断言：bumpCalls() 必须出现在 hookEnabled() 判断之前 */
+var posBump = HOOK.indexOf('bumpCalls();');
+var posSw = HOOK.indexOf('if (!hookEnabled())');
+A.chk('埋点在开关判断之前（顺序正确）', posBump > 0 && posSw > 0 && posBump < posSw);
+/* 观测字段：subagent_inbox 要把三个新指标都报出来 */
+var SA = A.src('packages/subagent.js');
+A.match('inbox 报 hook_disabled_skips', SA, /hook_disabled_skips: skips/);
+A.match('inbox 报 hook_last_at', SA, /hook_last_at: lastAt/);
+A.match('inbox 读 hook_last_at 用 getLong', SA, /p\.getLong\("hook_last_at", 0\)/);
+A.match('inbox message 含上次调用时间', SA, /上次 " \+ agoTxt/);
 
 
 /* ── 第十五轮：可靠性修复 ── */

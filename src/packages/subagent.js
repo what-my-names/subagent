@@ -1135,22 +1135,46 @@ exports.subagent_inbox = async function (params) {
        - count：收件箱未读条数
        - hook_calls：钩子被宿主真正调用的次数（写在 SharedPreferences，跨引擎可读）
          这个数是判断「提示词钩子到底会不会被触发」的唯一依据。
-         恒 0 = 宿主没调这个钩子，写法再对也是空转。
+         恒 0 且 skips 也为 0 = 宿主没调这个钩子，写法再对也是空转。
+       - hook_disabled_skips：钩子被调了但开关关着而跳过的次数
+         calls>0 且 skips>0 = 钩子在调，是用户主动关掉的，不是坏了
+       - hook_last_at：上次钩子被调用的时间戳（毫秒，0 = 从未调用）
        - hook_enabled：钩子开关当前状态 */
     var st = BUS.stat();
-    var calls = 0, enabled = true;
+    var calls = 0, skips = 0, lastAt = 0, enabled = true;
     try {
         var p = Java.getApplicationContext().getSharedPreferences("subagent_inbox", 0);
-        if (p) calls = Number(p.getInt("hook_calls", 0)) || 0;
-    } catch (eC) { calls = 0; }
+        if (p) {
+            calls = Number(p.getInt("hook_calls", 0)) || 0;
+            skips = Number(p.getInt("hook_disabled_skips", 0)) || 0;
+            lastAt = Number(p.getLong("hook_last_at", 0)) || 0;
+        }
+    } catch (eC) { calls = 0; skips = 0; lastAt = 0; }
     try {
         var HK = require("./sb_hook.js");
         enabled = HK.hookEnabled();
     } catch (eH) { enabled = true; }
+    /* 上次调用距今多久：比裸时间戳直观，排查时一眼能看出钩子是不是还活着 */
+    var agoTxt = "从未";
+    if (lastAt > 0) {
+        var sec = Math.floor((Date.now() - lastAt) / 1000);
+        if (sec < 60) agoTxt = sec + " 秒前";
+        else if (sec < 3600) agoTxt = Math.floor(sec / 60) + " 分钟前";
+        else if (sec < 86400) agoTxt = Math.floor(sec / 3600) + " 小时前";
+        else agoTxt = Math.floor(sec / 86400) + " 天前";
+    }
     complete({
-        success: true,
-        message: "未读 " + st.count + " 条；钩子调用 " + calls + " 次（" + (enabled ? "已开启" : "已关闭") + "）",
-        data: { count: st.count, hook_calls: calls, hook_enabled: enabled, items: BUS.list() }
+success: true,
+        message: "未读 " + st.count + " 条；钩子调用 " + calls + " 次（上次 " + agoTxt
+            + "，开关" + (enabled ? "已开启" : "已关闭") + (skips > 0 ? "，关闭期间跳过 " + skips + " 次" : "") + "）",
+        data: {
+            count: st.count,
+            hook_calls: calls,
+            hook_disabled_skips: skips,
+            hook_last_at: lastAt,
+            hook_enabled: enabled,
+            items: BUS.list()
+        }
     });
 };
 exports.subagent_list = async function (params) {

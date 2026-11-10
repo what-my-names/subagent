@@ -194,13 +194,53 @@ A.match('main.js 注释说明注册了钩子', A.src('main.js'), /注册系统�
 /* 钩子必须有开关（上游 moodlet 是双开关设计）：关掉时 return undefined，不注入 */
 A.match('钩子有开关', HOOK, /function hookEnabled\(\)/);
 A.match('开关读环境变量', HOOK, /getEnv\(ENV_ENABLED\)/);
-A.match('开关关掉时 return', HOOK, /if \(!hookEnabled\(\)\) return;/);
+/* 【第二十七轮修正】原来锁「if (!hookEnabled()) return;」，但那样 calls 恒 0 分不清
+   「宿主没调」和「开关关了」。改成锁「关闭时先记 skips 再 return」。 */
+A.match('开关关掉时记跳过再 return', HOOK, /if \(!hookEnabled\(\)\) \{ bumpSkipped\(\); return; \}/);
 /* 钩子必须有真埋点：写 SP 计数器，工具侧能读到（原 bump 是 globalThis 假指标） */
 A.match('钩子埋点写 SP', HOOK, /p\.edit\(\)\.putInt\(SP_CALLS, n\)/);
 A.match('埋点在事件名判断之后', HOOK, /!== EVENT_NAME\) return;[\s\S]{0,300}?bumpCalls\(\);/);
 /* 工具侧报真指标 */
 A.match('inbox 报 hook_calls', A.src('packages/subagent.js'), /hook_calls: calls/);
 A.match('inbox 报 hook_enabled', A.src('packages/subagent.js'), /hook_enabled: enabled/);
+/* ── 第二十七轮：三项 P2 改进的语义断言（真调函数，不是字符串匹配） ── */
+var HK2 = require('../../src/packages/sb_hook.js');
+/* P2-1 语言选择：三种输入都要对 */
+A.chk('useEnglish=true 选英文提示词', HK2.pickHint({ useEnglish: true }) === HK2.CAPABILITY_HINT_EN);
+A.chk('useEnglish=false 选中文提示词', HK2.pickHint({ useEnglish: false }) === HK2.CAPABILITY_HINT_ZH);
+A.chk('useEnglish 缺失时默认中文（不能默认英文）', HK2.pickHint({}) === HK2.CAPABILITY_HINT_ZH);
+A.chk('payload 为 null 时不抛异常且默认中文', HK2.pickHint(null) === HK2.CAPABILITY_HINT_ZH);
+A.chk('useEnglish 是字符串 "true" 时不误判为英文', HK2.pickHint({ useEnglish: 'true' }) === HK2.CAPABILITY_HINT_ZH);
+/* 中英两份内容不同，且英文版不含中文 */
+A.chk('中英提示词内容不同', HK2.CAPABILITY_HINT_ZH !== HK2.CAPABILITY_HINT_EN);
+A.chk('英文提示词不含中日韩字符', !/[\u4e00-\u9fa5]/.test(HK2.CAPABILITY_HINT_EN));
+A.chk('中文提示词含中文', /[\u4e00-\u9fa5]/.test(HK2.CAPABILITY_HINT_ZH));
+/* 两份都要教对用法：不能用 sync=true（桥 20 秒硬超时） */
+A.chk('中文提示词警告 sync 超时', /sync=true/.test(HK2.CAPABILITY_HINT_ZH));
+A.chk('英文提示词警告 sync 超时', /sync=true/.test(HK2.CAPABILITY_HINT_EN));
+/* P2-2/P2-3 常量键名必须与 subagent_inbox 读的一致，写错就读不到 */
+A.chk('时间戳键名一致', HK2.SP_LAST_AT === 'hook_last_at');
+A.chk('跳过计数键名一致', HK2.SP_SKIPS === 'hook_disabled_skips');
+/* 钩子行为：其它阶段必须 return undefined（不能返回空串） */
+var r1 = HK2.subagentInboxHook({ eventName: 'before_compose_system_prompt', eventPayload: {} });
+A.chk('其它阶段返回 undefined 而非空串', r1 === undefined);
+/* 目标阶段必须返回「原文 + 追加」，且原文完整保留 */
+var BASE = 'BASE-PROMPT-MUST-SURVIVE';
+var r2 = HK2.subagentInboxHook({
+    eventName: 'after_compose_system_prompt',
+    eventPayload: { systemPrompt: BASE, useEnglish: false }
+});
+A.chk('目标阶段返回字符串', typeof r2 === 'string');
+A.chk('原文完整保留在前', r2.indexOf(BASE) === 0);
+A.chk('追加内容非空', r2.length > BASE.length);
+/* 英文模式注入的必须是英文片段 */
+var r3 = HK2.subagentInboxHook({
+    eventName: 'after_compose_system_prompt',
+    eventPayload: { systemPrompt: BASE, useEnglish: true }
+});
+A.chk('英文模式原文仍完整保留', typeof r3 === 'string' && r3.indexOf(BASE) === 0);
+var tail3 = r3.slice(BASE.length);
+A.chk('英文模式追加段不含中文（除收件箱条目本身）', !/子代理收件箱|子代理能力/.test(tail3));
 /* conclusion 冗余字段已清（sb_bus 只存 text，传两份是误导） */
 A.nomatch('notifyDone 不再传 conclusion', A.src('packages/subagent.js'), /text: text, conclusion: text/);
 

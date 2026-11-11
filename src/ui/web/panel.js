@@ -1243,36 +1243,73 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   }
   function kv(k, v) { return '<div class="kv"><b>' + esc(k) + '</b><span>' + esc(v) + '</span></div>'; }
 
-  /* 两态切换：0 收起 / 1 展开全部（不截断）。
-   参数：tb 为 .thinkbox 元素，st 为目标档位 0/1。
-   整个卡片任意位置都可点，滚动由整页承担，不再有内层滚动区 */
+  /* 三态切换（2026-11-07 用户定稿，第二十八轮）
+   【历史】这个三态 6df560b 做过并能用，4ddd34a 被我删成两态。现在恢复。
+   0 = 收起 / 流式中：限高 120px，容器内滚，自动贴底（跟手）
+   1 = 部分展开：限高 320px，容器内滚，不自动滚
+   2 = 全部展开：不限高，滚动交给整页，不自动滚
+   高度挂在 .thk-body 的 h1/h2 class（沿用原版，与 data-state 解耦），
+   data-state 只管箭头与角标文案。 */
+  var THINK_TIPS = ['展开', '全部', '收起'];
   function setThinkState(tb, st) {
     if (!tb) return;
-    var n = (st === 1) ? 1 : 0;
+    var n = (st === 1 || st === 2) ? st : 0;
     tb.setAttribute('data-state', String(n));
+    /* 高度 class：0 档两个都不加，1 档 h1，2 档 h2 */
+    var body = tb.querySelector('.thk-body');
+    if (body && body.classList) {
+      if (n === 0) body.classList.remove('h1', 'h2');
+      else if (n === 1) { body.classList.remove('h2'); body.classList.add('h1'); }
+      else { body.classList.add('h2'); }
+    }
     var tip = tb.querySelector('.thk-tip');
-    if (tip) tip.textContent = (n === 0) ? '展开' : '已展开';
+    if (tip) tip.textContent = THINK_TIPS[n];
+    /* 只有 0 档自动跟到底；1/2 档是用户主动展开的，不抢他的滚动位置 */
+    if (n === 0) thinkScrollBottom(tb);
     syncThinkFloat();
   }
-  /* 悬浮按钮在有展开的思考块时显示，方便滑到深处一键收回 */
+  /* 把思考容器滚到底。0 档可滚（限高 120px）；1/2 档不抢位置。 */
+  function thinkScrollBottom(tb) {
+    try {
+      var body = tb.querySelector('.thk-body');
+      if (body) body.scrollTop = body.scrollHeight;
+      else if (tb.classList && tb.classList.contains('sb-think')) tb.scrollTop = tb.scrollHeight;
+    } catch (e) {}
+  }
+  /* 悬浮按钮在有任何非收起档（1 或 2）的思考块时显示，方便滑到深处一键收回 */
   function syncThinkFloat() {
     var host = $('dtChat');
     if (!host) return;
     var box = $('thinkFloat');
     if (!box) return;
-    var any1 = host.querySelector ? host.querySelector('.thinkbox[data-state="1"]') : null;
+    var any1 = host.querySelector ? host.querySelector('.thinkbox:not([data-state="0"])') : null;
     box.style.display = any1 ? '' : 'none';
   }
-  /* 收起所有展开的思考块（悬浮按钮入口） */
+  /* 收起所有非收起档的思考块（悬浮按钮入口） */
   function collapseThinkAll() {
     var host = $('dtChat');
     if (!host || !host.querySelectorAll) return;
-    var boxes = host.querySelectorAll('.thinkbox[data-state="1"]');
+    var boxes = host.querySelectorAll('.thinkbox:not([data-state="0"])');
     for (var i = 0; i < boxes.length; i++) setThinkState(boxes[i], 0);
   }
-  /* 渲染后：刷新悬浮按钮显隐 */
+  /* 渲染后统一把 0 档思考块滚到底部 + 刷新悬浮按钮显隐。
+   【为什么必须有】历史消息每次重新渲染（切换任务、轮询刷新）都会重建 DOM，
+   重建后的 .thk-body 滚动位置回到顶部。0 档只有 120px 高，
+   不贴底就永远看到最上面那几行，用户会以为内容没写完。 */
   function syncThinkScroll() {
-    try { syncThinkFloat(); } catch (e) {}
+    try {
+      var host = $('dtChat');
+      if (host && host.querySelectorAll) {
+        var boxes = host.querySelectorAll('.thinkbox');
+        for (var i = 0; i < boxes.length; i++) {
+          if (boxes[i].getAttribute('data-state') === '0') {
+            var b = boxes[i].querySelector('.thk-body');
+            if (b) b.scrollTop = b.scrollHeight;
+          }
+        }
+      }
+    } catch (e) {}
+    try { syncThinkFloat(); } catch (e2) {}
   }
   /* 工具调用 + 紧随其后的返回，合成一个可点击块；点开是弹窗，不是二级展开 */
   function toolBlock(tc, res) {
@@ -1424,7 +1461,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
       if (d.pending.body) {
         h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(d.pending.body) + '</div></div>';
       }
-      h += '<div class="streambox" data-pending="1"><div class="sb-think" style="display:none"></div>'
+      h += '<div class="streambox" data-pending="1"><div class="sb-think" data-state="0" style="display:none"></div>'
         + '<div class="sb-body md-body" style="opacity:.55">（已暂停，点「继续推进」接着生成）</div></div>';
     }
     /* 【关键】流式进行中绝不能重建 dtChat。
@@ -1438,8 +1475,30 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
        用整串 HTML 做等值比较（几 KB 字符串比较，比 DOM 重建便宜几个量级）。 */
     var _h = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
     if (!STREAM.busy && _h !== S.chatSig) {
+      /* 【展开态保持】重建前按「第几个思考块」记录档位，重建后还原。
+         内容一变就重建（新增一步、工具返回），不记录的话用户刚展开的块立刻被弹回收起。
+         用序号而不是内容做 key：同一任务里思考块顺序稳定，内容会变（流式追加）。 */
+      var _keep = {};
+      try {
+        var _oldBoxes = $('dtChat') ? $('dtChat').querySelectorAll('.thinkbox') : [];
+        for (var _ki = 0; _ki < _oldBoxes.length; _ki++) {
+          var _ks = _oldBoxes[_ki].getAttribute('data-state') || '0';
+          if (_ks !== '0') _keep[_ki] = _ks;
+        }
+      } catch (eK) {}
       S.chatSig = _h;
       $('dtChat').innerHTML = _h;
+      /* 还原：只对非 0 档调用 setThinkState，0 档交给 syncThinkScroll 统一贴底 */
+      try {
+        if (_keep) {
+          var _newBoxes = $('dtChat') ? $('dtChat').querySelectorAll('.thinkbox') : [];
+          for (var _kj in _keep) {
+            if (!Object.prototype.hasOwnProperty.call(_keep, _kj)) continue;
+            var _bi = parseInt(_kj, 10);
+            if (_newBoxes[_bi]) setThinkState(_newBoxes[_bi], parseInt(_keep[_kj], 10) || 0);
+          }
+        }
+      } catch (eR) {}
     }
     /* 思考块默认 0 档，渲染后统一滚到底跟随最新输出 */
     syncThinkScroll();
@@ -2344,7 +2403,7 @@ document.addEventListener('visibilitychange', function () {
     if (!host) { STREAM.busy = false; S.streaming = false; return; }
     var holder = document.createElement('div');
     holder.className = 'streambox';
-    holder.innerHTML = '<div class="sb-think" style="display:none"></div>'
+    holder.innerHTML = '<div class="sb-think" data-state="0" style="display:none"></div>'
       + '<div class="sb-body md-body"></div>';
     host.appendChild(holder);
     var thinkEl = holder.querySelector('.sb-think');
@@ -2380,13 +2439,24 @@ document.addEventListener('visibilitychange', function () {
     function doPaint() {
       if (thinkBuf) {
         thinkEl.style.display = '';
+        /* 【滚动位置保持】textContent 赋值会清空子节点，scrollTop 归零。
+           0 档要贴底（跟手），1/2 档要保住用户当前翻到的位置。
+           所以先记下旧位置，赋值后按档位恢复。 */
+        var _st = parseInt(thinkEl.getAttribute('data-state') || '0', 10) || 0;
+        var _prevTop = thinkEl.scrollTop;
         thinkEl.textContent = thinkBuf;
+        if (_st === 0) {
+          /* 0 档：始终贴底，看最新思考 */
+          thinkEl.scrollTop = thinkEl.scrollHeight;
+        } else {
+          /* 1/2 档：恢复用户位置，不抢他的滚动 */
+          thinkEl.scrollTop = _prevTop;
+        }
       }
       if (bodyBuf) bodyEl.innerHTML = md(bodyBuf);
       var c = $('dtChat');
       if (c) c.scrollTop = c.scrollHeight;
     }
-
     /* 流式增量落盘：独立定时器驱动，不挂在绘制路径上。
         【为什么必须有】原来 thinkBuf/bodyBuf 只活在页面内存里，
         用户退出面板再进来，内容全丢、后端状态还是 queued（显示「待开始」），
@@ -2495,12 +2565,16 @@ document.addEventListener('visibilitychange', function () {
           if (out.reasoning) {
             var tb2 = document.createElement('div');
             tb2.className = 'thinkbox';
-            tb2.setAttribute('data-state', '0');
+            /* 继承流式区的当前档位：用户流式时展开了，结束后不该跳回收起 */
+            var _keepSt = parseInt((thinkEl && thinkEl.getAttribute('data-state')) || '0', 10) || 0;
+            tb2.setAttribute('data-state', String(_keepSt));
             tb2.innerHTML = '<div class="thk-head">' + SVG_CHEV
               + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
               + '<span class="thk-len">' + out.reasoning.length + ' 字</span></div>'
               + '<div class="thk-body">' + esc(out.reasoning) + '</div>';
             host.appendChild(tb2);
+            /* 档位非 0 时补上高度 class 与角标（HTML 里默认写的是 0 档） */
+            if (_keepSt !== 0) setThinkState(tb2, _keepSt);
           }
           if (out.content) {
             var fin = document.createElement('div');
@@ -2554,7 +2628,7 @@ document.addEventListener('visibilitychange', function () {
               host.insertBefore(_th, holder);
             }
             thinkBuf = ''; bodyBuf = '';
-            holder.innerHTML = '<div class="sb-think" style="display:none"></div>'
+            holder.innerHTML = '<div class="sb-think" data-state="0" style="display:none"></div>'
               + '<div class="sb-body md-body"></div>';
             thinkEl = holder.querySelector('.sb-think');
             bodyEl = holder.querySelector('.sb-body');
@@ -3458,27 +3532,34 @@ document.addEventListener('visibilitychange', function () {
   if ($('sheet-mask')) $('sheet-mask').addEventListener('click', closeSheet);
   if ($('mask')) $('mask').addEventListener('click', function () { closeDlg(); closeCfm(); });
 
-  /* 思考块交互（用户定稿）：
-       整张卡片任意位置单击 = 切换 收起 ⇄ 展开全部（不截断）
-       双击 = 同样切换（保留，防用户习惯性双击）
-       不再区分「一小部分/全部」两档 */
-  var _thinkTapEl = null, _thinkTapT = 0;
+  /* 思考块交互（2026-11-07 用户定稿，第二十八轮）：
+       每次点击前进一档 0 → 1 → 2 → 0（累进循环）
+       0 = 收起/流式中（限高 120px，自动滚到底）
+       1 = 部分展开（限高 320px）
+       2 = 全部展开（不限高）
+       双击自然等于两次点击，从 0 直接到 2，满足「点两次才全部展开」。
+       不再拦截双击 —— 原来那个 300ms 判定会把第二次点击吃掉，导致永远到不了 2 档。
+   【触发范围】历史块只认 .thk-head（标题行），不认正文。
+   正文区域要留给长按选词复制，点一下就换档会让用户没法选文字。
+   流式区 .sb-think 没有标题行，整块可点。 */
   document.addEventListener('click', function (e) {
     if (!e.target || typeof e.target.closest !== 'function') return;
-    var tb = e.target.closest('.thinkbox');
+    var tb = null;
+    /* 先看是不是历史块的标题行 */
+    var head = e.target.closest('.thk-head');
+    if (head) tb = head.closest('.thinkbox');
+    /* 再看是不是流式区（它没有 thk-head，整块可点） */
+    if (!tb) tb = e.target.closest('.sb-think');
     if (!tb) return;
-    /* 卡片内的正文选中文字时不触发，避免想复制却把它收起 */
+    /* 双保险：正文选中文字时不触发 */
     try {
       var sel = window.getSelection && window.getSelection();
       if (sel && String(sel).length) return;
     } catch (eS) {}
-    var now = Date.now();
-    if (_thinkTapEl === tb && (now - _thinkTapT) < 300) { _thinkTapT = 0; _thinkTapEl = null; return; }
-    _thinkTapEl = tb; _thinkTapT = now;
     var st0 = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
-    setThinkState(tb, st0 === 1 ? 0 : 1);
+    setThinkState(tb, (st0 + 1) % 3);
   });
-  /* 移除 data-act=think 的直接切换，交给上面的双击/单击判定 */
+  /* 思考块点击已统一到上面的累进循环处理 */
 
   /* ── 启动 ── */
 show('welcome');

@@ -152,9 +152,11 @@ A.match('落盘由独立定时器驱动', P, /var flushTimer = setInterval\(func
 A.nomatch('paint 里不许落盘', P, /doPaint\(\);[\s\S]{0,160}?flushStream\(false\)/);
 /* 看门狗已删：固定秒数必然误杀长思考，连接死活交给 XHR 自身的 onerror/ontimeout */
 A.nomatch('没有臆想的看门狗', P, /IDLE_MS|idleTimer/);
-/* 流式思考区不许限高：限高会让超出部分藏在滚动区，用户以为流式卡住。 */
-A.nomatch('流式思考区不设 max-height', A.src('ui/web/panel.css'), /\.sb-think\{[^}]*max-height/);
-A.nomatch('流式思考区不设 overflow', A.src('ui/web/panel.css'), /\.sb-think\{[^}]*overflow/);
+/* 【第二十八轮语义变更】原来锁「流式思考区不许限高」，理由是限高会让超出部分
+   藏在滚动区、用户以为流式卡住。
+   但真正的原因是「限高却不滚到底」，不是限高本身。
+   用户定稿要的是：限高 120px + 自动贴底 = 小窗口跟手。
+   相关断言已移到文件末尾第二十八轮段落，那里同时锁「有限高」+「有贴底」。 */
 /* 落盘定时器必须被 abortStream 清掉，否则停止后 8 秒内还会把任务写回 running */
 A.match('abortStream 清落盘定时器', P, /if \(STREAM\._flushTimer\) \{[\s\S]{0,80}?clearInterval\(STREAM\._flushTimer\)/);
 A.match('退出时同步落盘', P, /SBNative\.call\(JSON\.stringify\(\{[\s\S]{0,120}?subagent:subagent_stream_flush/);
@@ -243,5 +245,57 @@ var tail3 = r3.slice(BASE.length);
 A.chk('英文模式追加段不含中文（除收件箱条目本身）', !/子代理收件箱|子代理能力/.test(tail3));
 /* conclusion 冗余字段已清（sb_bus 只存 text，传两份是误导） */
 A.nomatch('notifyDone 不再传 conclusion', A.src('packages/subagent.js'), /text: text, conclusion: text/);
-
+/* ── 第二十八轮：思考块三态（用户定稿，恢复 6df560b 的设计）── */
+var CSS2 = A.src('ui/web/panel.css');
+/* 三档高度必须都存在：基础=0档，h1=1档，h2=2档。缺一档就退化回两态。 */
+A.match('0 档基础限高 120', CSS2, /\.thk-body\{[^}]*max-height:120px/);
+A.match('1 档 h1 限高 320', CSS2, /\.thk-body\.h1\{max-height:320px\}/);
+A.match('2 档 h2 不限高', CSS2, /\.thk-body\.h2\{max-height:none;overflow:visible\}/);
+/* 基础态必须容器内滚（这是 0 档能跟手的前提） */
+A.match('0 档容器内滚', CSS2, /\.thk-body\{[^}]*overflow-y:auto/);
+/* 嵌套滚动必须 contain，否则「划到最下面」会突然跳到整页 */
+A.match('防滚动穿透', CSS2, /\.thk-body\{[^}]*overscroll-behavior:contain/);
+/* 流式区三态也要有 */
+A.match('流式区 0 档限高', CSS2, /\.sb-think\{[^}]*max-height:120px/);
+A.match('流式区 1 档 320', CSS2, /\.sb-think\[data-state="1"\]\{max-height:320px/);
+A.match('流式区 2 档不限高', CSS2, /\.sb-think\[data-state="2"\]\{max-height:none/);
+/* 角标文案三档 */
+A.match('三档角标文案', P, /var THINK_TIPS = \['展开', '全部', '收起'\]/);
+/* 高度 class 必须由 JS 挂上（只写 CSS 不挂 class 等于没生效） */
+A.match('JS 挂 h1/h2 class', P, /body\.classList\.add\('h1'\)/);
+A.match('JS 清 h1/h2 class', P, /body\.classList\.remove\('h1', 'h2'\)/);
+/* 点击必须累进循环，不能是两态互换 */
+A.match('点击累进到下一档', P, /setThinkState\(tb, \(st0 \+ 1\) % 3\)/);
+/* 双击拦截必须删掉，否则第二次点击被吃掉，永远到不了 2 档 */
+A.nomatch('不再拦截双击', P, /_thinkTapEl/);
+/* setThinkState 必须接受 2 档（原来只认 0/1） */
+A.match('setThinkState 接受三档', P, /var n = \(st === 1 \|\| st === 2\) \? st : 0/);
+/* 悬浮按钮与全部收起要覆盖 1/2 两档，不能只看 1 */
+A.match('悬浮按钮看非 0 档', P, /querySelector\('\.thinkbox:not\(\[data-state="0"\]\)'\)/);
+A.match('全部收起覆盖非 0 档', P, /querySelectorAll\('\.thinkbox:not\(\[data-state="0"\]\)'\)/);
+/* 流式区也要能被点到（原来只匹配 .thinkbox） */
+A.match('点击同时匹配流式区', P, /if \(!tb\) tb = e\.target\.closest\('\.sb-think'\)/);
+/* 历史块只认标题行，正文留给长按选词 —— 点正文换档会让用户选不了文字 */
+A.match('历史块只认标题行触发', P, /var head = e\.target\.closest\('\.thk-head'\)/);
+A.match('标题行再找所属 thinkbox', P, /if \(head\) tb = head\.closest\('\.thinkbox'\)/);
+A.nomatch('整卡不再统一 pointer', CSS2, /\.thinkbox\{[^}]*cursor:pointer/);
+A.match('流式区可点有 pointer', CSS2, /\.sb-think\{[^}]*cursor:pointer/);
+/* 历史块重新渲染后必须把 0 档贴底，否则重建 DOM 滚动位置回到顶部 */
+A.match('渲染后 0 档统一贴底', P, /function syncThinkScroll\(\)[\s\S]{0,400}?data-state'\) === '0'[\s\S]{0,160}?scrollTop = b\.scrollHeight/);
+/* 流式结束后历史块要继承当前档位，不能跳回收起 */
+A.match('历史块继承流式档位', P, /var _keepSt = parseInt\(\(thinkEl && thinkEl\.getAttribute\('data-state'\)\)/);
+A.match('继承档位后补设状态', P, /if \(_keepSt !== 0\) setThinkState\(tb2, _keepSt\)/);
+/* 重建 DOM 时必须保住用户展开的档位：轮询每 1.5s 一次，内容一变就重建，
+   不保住的话用户刚展开的块立刻被弹回收起 */
+A.match('重建前记录档位', P, /var _oldBoxes = \$\('dtChat'\) \? \$\('dtChat'\)\.querySelectorAll\('\.thinkbox'\)/);
+A.match('重建后还原档位', P, /if \(_newBoxes\[_bi\]\) setThinkState\(_newBoxes\[_bi\], parseInt\(_keep\[_kj\], 10\) \|\| 0\)/);
+/* 三处创建都要带 data-state=0，否则流式区三态选择器全不命中 */
+var thinkCreate = (P.match(/sb-think" data-state="0"/g) || []).length;
+A.chk('三处流式区创建都带 data-state', thinkCreate === 3);
+/* 自动贴底必须只对 0 档生效，1/2 档不能抢用户滚动位置 */
+A.match('setThinkState 只在 0 档贴底', P, /if \(n === 0\) thinkScrollBottom\(tb\)/);
+A.match('流式绘制只在 0 档贴底', P, /if \(_st === 0\) \{[\s\S]{0,120}?thinkEl\.scrollTop = thinkEl\.scrollHeight/);
+/* textContent 赋值会清空子节点导致 scrollTop 归零，1/2 档必须恢复用户位置 */
+A.match('赋值前记下滚动位置', P, /var _prevTop = thinkEl\.scrollTop/);
+A.match('1/2 档恢复用户滚动位置', P, /thinkEl\.scrollTop = _prevTop/);
 A.finish();

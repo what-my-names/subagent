@@ -119,7 +119,9 @@ A.nomatch('goList 不重复渲染', P, /function goList\(\) \{[^}]*renderList\(S
 A.nomatch('backList 不重复渲染', P, /backList'\] \{[^}]*show\('list'\); renderList/);
 A.nomatch('删除后切列表不重复渲染', P, /S\.cur === id\) \{ S\.cur = null; show\('list'\); renderList/);
 /* ── 第十八轮：流式期间不许重建 DOM ── */
-A.match('fillTrace 流式期间不重建 DOM', P, /if \(!STREAM\.busy && _h !== S\.chatSig\) \{[\s\S]{0,120}?dtChat'\)\.innerHTML/);
+/* 【第二十八轮】重建前要记录思考块展开档位，所以 if 到 innerHTML 之间多了约 600 字符，
+   窗口从 120 放宽到 900。锁的仍然是「流式期间不重建 + 内容没变不重建」这个能力。 */
+A.match('fillTrace 流式期间不重建 DOM', P, /if \(!STREAM\.busy && _h !== S\.chatSig\) \{[\s\S]{0,900}?dtChat'\)\.innerHTML/);
 A.match('openTask 流式期间不清 DOM', P, /else if \(\$\('dtChat'\) && !STREAM\.busy\)/);
 A.match('流式期间状态行显示 running', P, /if \(STREAM\.busy && \(d\.status === 'queued' \|\| !d\.status\)\) _stShown = 'running'/);
 A.match('状态行显示通道诊断', P, /if \(STREAM && STREAM\.diag\) bits\.push\(STREAM\.diag\)/);

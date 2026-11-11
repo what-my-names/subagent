@@ -355,28 +355,41 @@ textarea{resize:vertical;min-height:72px}
 @keyframes dtpulse{0%,100%{opacity:.25;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
 .bubble.think{align-self:stretch;background:transparent;border:0;padding:0;margin:5px 0}
 
-/* 思考块：两态
-   0 = 收起（不渲染正文高度）
-   1 = 展开（全部内容，不截断；滚动交给整页，不再套内层滚动条）
-   交互：整个卡片任意位置单击/双击都切换，不再区分「一小部分/全部」 */
-.thinkbox{margin:6px 0;border-left:2px solid #7f8db3;border-radius:0 9px 9px 0;background:rgba(127,141,179,.05);cursor:pointer;-webkit-tap-highlight-color:transparent;transition:border-color .3s,background .3s}
-/* 展开态：左竖线在蓝→青→紫之间缓慢换色，暗示「这条思考是活的」。
-   hueflow 只改 border-color 与 box-shadow，不碰布局，展开/收起都不会跳。 */
-.thinkbox[data-state="1"]{border-left-color:rgba(74,141,255,.55)}
+/* 思考块三态（2026-11-07 用户定稿，第二十八轮）
+   【历史】这个三态在 6df560b 就做过并能用，是我在 4ddd34a(v1.0.0)
+   以「展开即全部、取消内层滚动」为名删掉的。用户要的正是原来那版。
+   现在恢复，并按用户补充的「划到最下面可以开始滚动」做了对齐。
+   0 = 收起（流式跟手）：限高 120px，容器内滚，JS 自动贴底
+   1 = 部分展开：限高 320px，容器内滚，不自动滚
+   2 = 全部展开：不限高，滚动交给整页，不自动滚
+   交互：每次点击前进一档 0 → 1 → 2 → 0；双击等于两次点击，直接到 2
+   实现沿用原版思路：高度挂在 .thk-body 的 h1/h2 class 上，
+   data-state 只负责箭头旋转与角标文案，两者解耦。 */
+/* cursor 只加在真正可点的地方：标题行 + 流式区。
+   整卡 pointer 会误导用户以为正文也能点，实际正文留给长按选词。 */
+.thinkbox{margin:6px 0;border-left:2px solid #7f8db3;border-radius:0 9px 9px 0;background:rgba(127,141,179,.05);-webkit-tap-highlight-color:transparent;transition:border-color .3s,background .3s}
+/* 展开态（1/2）：左竖线换色，暗示「这条思考是活的」。
+   hueflow 只改 border-color 与 box-shadow，不碰布局，切换档位都不会跳。 */
+.thinkbox[data-state="1"],.thinkbox[data-state="2"]{border-left-color:rgba(74,141,255,.55)}
 .thk-head{display:flex;align-items:center;gap:7px;padding:6px 10px;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .thk-head:active{background:rgba(127,141,179,.12)}
 .thk-head .chv{width:12px;height:12px;flex-shrink:0;fill:none;stroke:#7f8db3;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
-.thinkbox[data-state="1"] .chv{transform:rotate(90deg)}
+.thinkbox[data-state="1"] .chv,.thinkbox[data-state="2"] .chv{transform:rotate(90deg)}
 .thk-tx{font-size:12.5px;font-style:italic;color:#9aa7c7}
-/* 状态角标：展开/已展开，让用户一眼知道现在在哪一档 */
+/* 状态角标：收起 / 展开 / 全部，让用户一眼知道现在在哪一档 */
 .thk-tip{margin-left:auto;font-size:10.5px;color:#7f8db3;padding:1px 6px;border-radius:9px;
   background:rgba(127,141,179,.14);font-style:normal}
 .thk-len{margin-left:8px;font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
-/* 展开即全部：max-height 直接放开，不做二次截断；不设内部滚动，避免滑到底还在小窗里打转 */
+/* 三档高度：基础 = 0 档（120px + 容器内滚）；h1 = 1 档；h2 = 2 档。
+   overscroll-behavior:contain 防止手指在「内层滚动」与「dtChat 滚动」之间来回跳。
+   用户说的「划到最下面可以开始滚动」就靠这个：内层滚到底后继续滑，
+   contain 会把剩余手势留在内层，不会突然跳到整页。 */
 .thk-body{padding:0 10px 8px 24px;font-family:ui-monospace,monospace;font-size:11.5px;line-height:1.62;color:#94a0bb;
   white-space:pre-wrap;word-break:break-word;
-  max-height:0;padding-top:0;padding-bottom:0;overflow:hidden;transition:max-height .18s ease,padding .18s ease}
-.thinkbox[data-state="1"] .thk-body{max-height:none;padding-top:0;padding-bottom:8px;overflow:visible}
+  max-height:120px;overflow-y:auto;overscroll-behavior:contain;
+  transition:max-height .18s ease,padding .18s ease}
+.thk-body.h1{max-height:320px}
+.thk-body.h2{max-height:none;overflow:visible}
 .bubble.tool{align-self:stretch;background:transparent;border:0;padding:0;margin:5px 0}
 
 /* 工具调用块：调用与返回紧贴，整块可点开弹窗 */
@@ -794,14 +807,20 @@ textarea{resize:vertical;min-height:72px}
 .fulltip{font-size:11.5px;color:var(--mut);padding-right:4px}
 /* 流式输出区域：贴合气泡样式，思考与正文分开显示 */
 .streambox{align-self:stretch;margin:6px 0}
-/* 流式中的思考区：完整显示，不设高度上限。
-   原来写 max-height:120px + overflow-y:auto，超出部分藏在滚动区里，
-   用户看到的就是「思考写到这里就不动了」，其实后面还在写 —— 被误判成流式卡住。
-   流式阶段就该让它自然生长，滚动交给整个 dtChat。 */
+/* 流式中的思考区：三态与历史块一致。
+   0（流式默认）= 限高 120px + 容器内滚 + JS 自动滚到底，小窗口跟手，不占满屏
+   1 = 限高 320px，容器内滚，不自动滚
+   2 = 不限高，滚动交给整页
+   注意：不能像 2026-11-07 之前那样写死 max-height:120px 却不滚到底，
+   那样用户看到「思考写到这里就不动了」，会误判成流式卡住。 */
 .sb-think{font-family:ui-monospace,monospace;font-size:11.5px;line-height:1.62;color:#8d9ab6;
   white-space:pre-wrap;word-break:break-word;
   padding:8px 11px;border-left:2px solid #7f8db3;border-radius:0 8px 8px 0;
-  background:rgba(127,141,179,.06);margin-bottom:6px}
+  background:rgba(127,141,179,.06);margin-bottom:6px;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+  max-height:120px;overflow-y:auto;overscroll-behavior:contain}
+.sb-think[data-state="1"]{max-height:320px;overflow-y:auto;overscroll-behavior:contain}
+.sb-think[data-state="2"]{max-height:none;overflow:visible}
 .streambox .sb-body{border-radius:12px;background:var(--bg3);padding:10px 12px;
   border:1px solid var(--ln)}
 /* ── 收件箱（邮件式，2026-11-05）── */

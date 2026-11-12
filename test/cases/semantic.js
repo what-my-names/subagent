@@ -410,4 +410,22 @@ A.match('流式绘制只在 0 档贴底', P, /if \(_st === 0\) \{[\s\S]{0,120}?t
 /* textContent 赋值会清空子节点导致 scrollTop 归零，1/2 档必须恢复用户位置 */
 A.match('赋值前记下滚动位置', P, /var _prevTop = thinkEl\.scrollTop/);
 A.match('1/2 档恢复用户滚动位置', P, /thinkEl\.scrollTop = _prevTop/);
+
+/* ── 第三十八轮：更新面板可用性 ── */
+/* 更新说明必须可折叠：长 changelog 折起，想看再展开 */
+A.match('更新说明有展开按钮', H2, /id="updMore"/);
+A.match('折叠态默认限高裁切', CSS2, /\.upd-notes\{[^}]*max-height:5\.2em[^}]*overflow:hidden/);
+A.match('展开态解除限高', CSS2, /\.upd-notes\.open\{[^}]*max-height:none/);
+A.match('折叠渐变遮罩', CSS2, /mask-image:linear-gradient\(180deg,#000 60%,transparent\)/);
+A.match('展开逻辑用 toggle', P, /var open = el\.classList\.toggle\('open'\)/);
+A.match('展开按钮文案会切换', P, /btn\.textContent = open \? '收起' : '展开更新说明'/);
+A.match('超长才显示展开按钮', P, /needMore = fullH > \(noteEl\.clientHeight \+ 4\)/);
+/* 官网下载入口：本机 github.com 不可达，只能交给系统浏览器 */
+A.match('有官网下载按钮', H2, /id="updOpenSite"/);
+A.match('官网地址取后端 url 字段', P, /UPD\.release && UPD\.release\.url/);
+A.match('官网有兜底地址', P, /github\.com\/what-my-names\/subagent\/releases/);
+/* 下载主链路必须保留：进度条 + 轮询 + 自动安装 */
+A.match('有进度条', H2, /id="updBarIn"/);
+A.match('轮询下载状态', P, /call\('subagent:subagent_download_status', \{\}, 'updStatus'\)/);
+A.match('下载后自动安装', A.src('packages/sb_update.js'), /params\.auto_install !== false/);
 A.finish();

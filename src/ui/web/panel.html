@@ -369,10 +369,13 @@
       <!-- 有新版本时才显示 -->
       <div class="cfg-block" id="updNew" style="display:none">
         <div class="cb-lb">发现新版本 <span class="upd-tag" id="updTag"></span></div>
+        <!-- 更新说明默认折起（3 行），点「展开」看全部 -->
         <div class="upd-notes" id="updNotes"></div>
+        <button class="upd-more" id="updMore" data-act="updToggleNotes" style="display:none">展开更新说明</button>
         <div class="upd-size" id="updSize"></div>
         <button class="btn pri" data-act="updDownload" id="updDlBtn">下载更新包</button>
         <button class="btn" data-act="updInstall" id="updInstall" style="display:none">立即安装</button>
+        <button class="btn" data-act="updOpenSite" id="updOpenSite">打开官网下载</button>
       </div>
 
       <!-- 下载进度 / 结果 -->

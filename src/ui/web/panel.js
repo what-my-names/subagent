@@ -2979,7 +2979,27 @@ document.addEventListener('visibilitychange', function () {
     /* 有新版本：填卡片 */
     updMsg('发现新版本 ' + d.latest, 'ok');
     if ($('updTag')) $('updTag').textContent = d.latest || '';
-    if ($('updNotes')) $('updNotes').textContent = d.notes || d.notes_full || '（该版本没有写更新说明）';
+    /* 更新说明默认折起：超过 3 行的才给「展开」按钮 */
+    if ($('updNotes')) {
+      var noteEl = $('updNotes');
+      var txt = d.notes || d.notes_full || '（该版本没有写更新说明）';
+      noteEl.textContent = txt;
+      noteEl.classList.remove('open');
+      /* 判断是否超长：临时撑开量高度，超过 3 行才显示展开按钮 */
+      var needMore = false;
+      try {
+        var wasOpen = noteEl.classList.contains('open');
+        noteEl.classList.add('open');
+        var fullH = noteEl.scrollHeight;
+        noteEl.classList.remove('open');
+        needMore = fullH > (noteEl.clientHeight + 4);
+        if (wasOpen) noteEl.classList.add('open');
+      } catch (eN) { needMore = String(txt).length > 90; }
+      if ($('updMore')) {
+        $('updMore').style.display = needMore ? '' : 'none';
+        $('updMore').textContent = '展开更新说明';
+      }
+    }
     if ($('updSize')) {
       var sz = Number(d.asset_size) || 0;
       $('updSize').textContent = d.has_asset
@@ -2991,6 +3011,25 @@ document.addEventListener('visibilitychange', function () {
       $('updDlBtn').textContent = '下载更新包';
     }
     if ($('updNew')) $('updNew').style.display = '';
+  }
+
+  /* 展开 / 收起更新说明 */
+  function updToggleNotes() {
+    var el = $('updNotes'), btn = $('updMore');
+    if (!el) return;
+    var open = el.classList.toggle('open');
+    if (btn) btn.textContent = open ? '收起' : '展开更新说明';
+  }
+
+  /* 打开官网下载页：本机 github.com 不可达，但系统浏览器可以，交给系统打开。
+       后端字段是 url（对应 Release 的 html_url），不是 html_url。 */
+  function updOpenSite() {
+    var url = (UPD.release && UPD.release.url) || 'https://github.com/what-my-names/subagent/releases';
+    try {
+      window.open(url, '_blank');
+    } catch (e1) {
+      try { window.location.href = url; } catch (e2) { toast('官网：' + url, 'ok'); }
+    }
   }
 
   function fmtBytes(n) {
@@ -3623,6 +3662,8 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'updCheck') { hf(); return updCheck(true); }
     if (act === 'updDownload') { hf(); return updDownload(); }
     if (act === 'updInstall') { hf(); return updInstall(); }
+    if (act === 'updToggleNotes') { hf(); return updToggleNotes(); }
+    if (act === 'updOpenSite') { hf(); return updOpenSite(); }
     if (act === 'saveKey') return saveKey();
     if (act === 'doCreate') return createTask();
     if (act === 'openTools') return openTools();

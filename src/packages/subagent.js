@@ -550,8 +550,8 @@ METADATA
         {
             "name": "subagent_install_update",
             "description": {
-                "zh": "把已下载的 .toolpkg 写入宿主包目录完成安装。装完必须重启 Operit 生效（宿主只在启动时加载包文件）。会备份旧包到 .bak-update",
-                "en": "Install the downloaded .toolpkg into the host package dir. Restart Operit to take effect"
+                "zh": "把已下载的 .toolpkg 写入宿主包目录完成安装，装完即生效（不需重启）。会备份旧包到 .bak-update",
+                "en": "Install the downloaded .toolpkg into the host package dir. Takes effect immediately, no restart needed"
             },
             "parameters": [
                 {

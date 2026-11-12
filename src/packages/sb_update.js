@@ -374,8 +374,7 @@ async function downloadUpdate(params) {
                     data: {
                         path: path, size: realSize, total: finTotal, version: rel.tag, attempts: attempt,
                         installed: !!(inst && inst.ok),
-                        install_msg: inst ? inst.msg : "",
-                        need_restart: !!(inst && inst.ok && inst.data && inst.data.need_restart)
+                        install_msg: inst ? inst.msg : ""
                     }
                 };
             } catch (e) {
@@ -460,7 +459,8 @@ var PKG_ID = "com.whatsmynames.subagent";
    【不要试的两条路】
    1) Tools.System.intent + file:// → Android 7+ 报 FileUriExposedException
    2) shell 自建广播 DEBUG_INSTALL_TOOLPKG → 需签名级调用方，extra 各种名字全无效
-   【生效条件】必须重启 Operit。宿主只在启动时加载包文件，关界面不够。 */
+   【生效条件】装完不需重启。宿主有包目录重载机制，写入后会自己生效。
+   （2026-11-12 用户纠正：原先写的「必须重启」是错的） */
 
 async function installUpdate(params) {
     params = params || {};
@@ -513,15 +513,14 @@ async function installUpdate(params) {
             return { ok: false, msg: "写入后校验失败，包文件不存在" };
         }
         var newSize = Number(ve.size) || 0;
-        writeDl({ status: "installed", message: "已安装，重启 Operit 生效", installed_size: newSize });
+        writeDl({ status: "installed", message: "已安装", installed_size: newSize });
         return {
             ok: true,
-            msg: "已安装（" + fmtSize(newSize) + "），请重启 Operit 生效",
+            msg: "已安装（" + fmtSize(newSize) + "）",
             data: {
                 path: dst,
                 size: newSize,
-                backup: oldExists ? dstBak : "",
-                need_restart: true
+                backup: oldExists ? dstBak : ""
             }
         };
     } catch (e) {

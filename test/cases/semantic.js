@@ -317,10 +317,10 @@ A.match('面板有检查更新按钮', A.src('ui/web/panel.html'), /data-act="up
 A.match('面板有下载按钮', A.src('ui/web/panel.html'), /data-act="updDownload"/);
 A.match('面板有进度条', A.src('ui/web/panel.html'), /id="updBarIn"/);
 A.match('检查结果按 has_update 分支', P, /if \(!d\.has_update\)/);
-/* 【第三十一轮语义变更】原来锁「下载后提示去包管理导入」，那是只能手动装的时代。
-   现在下载完默认自动装进宿主包目录，所以锁「提示重启生效」。 */
-A.match('下载后提示重启生效', P, /重启 Operit 生效/);
-A.nomatch('不再提示去包管理手动导入', P, /打开 Operit 包管理导入这个 \.toolpkg/);
+/* 【第三十二轮语义变更】2026-11-12 用户纠正：装完不需重启。
+   原来锁「提示重启生效」是错的，现在锁「不提重启」。 */
+A.match('安装后提示已生效', P, /→ 已生效/);
+A.nomatch('不再提示重启', P, /重启 Operit 生效/);
 A.match('终态停轮询', P, /st === 'done' \|\| st === 'failed' \|\| st === 'missing'/);
 /* 工具注册 */
 var SA2 = A.src('packages/subagent.js');
@@ -342,14 +342,15 @@ A.match('删旧包再移新包', UPDM, /deleteFile\(dst, "android"\)[\s\S]{0,120
 A.match('写完再校验存在', UPDM, /if \(!ve \|\| !ve\.exists\)/);
 A.match('失败清掉 .new 不留垃圾', UPDM, /deleteFile\(dstNew, "android"\)[\s\S]{0,120}?安装失败/);
 A.match('源包太小拒装', UPDM, /if \(srcSize < 4096\)/);
-A.match('返回 need_restart', UPDM, /need_restart: true/);
+/* 【第三十二轮】need_restart 字段已删（不需重启），改为锁「返回里不含它」 */
+A.nomatch('返回不再带 need_restart', UPDM, /need_restart: true/);
 /* 下载完默认自动安装 */
 A.match('下载后默认自动安装', UPDM, /if \(params\.auto_install !== false\)/);
 A.match('自动安装调 installUpdate', UPDM, /inst = await installUpdate\(\{ path: path \}\)/);
 /* 工具与面板 */
 A.match('注册 install_update 工具', SA2, /"name": "subagent_install_update"/);
 A.match('面板有立即安装按钮', A.src('ui/web/panel.html'), /data-act="updInstall"/);
-A.match('安装后提示重启', P, /重启 Operit 生效/);
+A.match('安装后提示已生效', P, /已写入 ' \+ d\.path/);
 A.match('未装上时显示手动安装', P, /ok && !installed/);
 /* 自动贴底必须只对 0 档生效，1/2 档不能抢用户滚动位置 */
 A.match('setThinkState 只在 0 档贴底', P, /if \(n === 0\) thinkScrollBottom\(tb\)/);

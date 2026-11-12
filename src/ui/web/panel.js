@@ -3027,7 +3027,7 @@ document.addEventListener('visibilitychange', function () {
     if ($('updBarIn') && ok) $('updBarIn').style.width = '100%';
     if ($('updPath')) {
       if (installed) {
-        $('updPath').textContent = '已写入 ' + (d.path || '') + '　→ 重启 Operit 生效';
+        $('updPath').textContent = '已写入 ' + (d.path || '') + '　→ 已生效';
       } else if (d.path) {
         $('updPath').textContent = '文件：' + d.path + '（未自动安装，可点「立即安装」）';
       } else {
@@ -3056,7 +3056,7 @@ document.addEventListener('visibilitychange', function () {
     if ($('updProgMsg')) $('updProgMsg').textContent = msg;
     var d = (r && r.data) || {};
     if ($('updPath') && d.path) {
-      $('updPath').textContent = '已写入 ' + d.path + (d.need_restart ? '　→ 重启 Operit 生效' : '');
+      $('updPath').textContent = '已写入 ' + d.path;
     }
     if (ok && $('updInstall')) $('updInstall').style.display = 'none';
   }

@@ -359,27 +359,46 @@ A.match('README 工具数写 34', A.src('../README.md'), /## 工具（34 个）/
 A.match('README 文件说明写 34', A.src('../README.md'), /subagent\.js\s+34 个工具的导出与声明/);
 A.chk('实际工具数就是 34', realToolCount === 34);
 A.chk('README 数字与代码一致', A.src('../README.md').indexOf('## 工具（' + realToolCount + ' 个）') >= 0);
-/* ── 第三十五轮：主页上滑彩蛋 ── */
+/* ── 第三十七轮：主页上滑彩蛋改为「整页上推」──
+   旧版是从底部拉出一块板（egg-mask + egg-open），已整体废弃。
+   新版是 viewport 裁切 + track 200% 两屏，track 上移 50% 露出彩蛋。 */
 var H2 = A.src('ui/web/panel.html');
 A.match('有彩蛋面板', H2, /id="eggPanel"/);
-A.match('有彩蛋遮罩', H2, /id="eggMask"/);
 A.match('彩蛋含头像', H2, /class="egg-avatar"/);
 A.match('彩蛋含一句话', H2, /class="egg-quote"/);
 A.match('彩蛋含邮箱入口', H2, /id="eggMail"/);
 A.match('彩蛋含版本号位', H2, /id="eggVer"/);
-/* CSS：默认藏起 + 打开态归位 */
-A.match('彩蛋默认藏起', CSS2, /\.egg-panel\{[^}]*transform:translateY\(100%\)/);
-A.match('打开态归位', CSS2, /\.egg-open \.egg-panel\{transform:translateY\(0\)\}/);
-A.match('拖拽中关过渡', CSS2, /\.egg-drag \.egg-panel\{transition:none\}/);
-/* page 必须 relative，否则 absolute 彩蛋跑出容器 */
+/* 结构：viewport > track > (homescroll + eggPanel) */
+A.match('有 viewport 容器', H2, /id="homeViewport"/);
+A.match('有 track 容器', H2, /id="homeTrack"/);
+A.match('彩蛋在 track 内', H2, /id="homeTrack"[\s\S]{0,3000}?id="eggPanel"/);
+/* 旧版结构必须彻底清掉，防止两套并存 */
+A.nomatch('旧遮罩已删', H2, /id="eggMask"/);
+A.nomatch('旧遮罩样式已删', CSS2, /\.egg-mask\{/);
+A.nomatch('旧打开类已删', CSS2, /\.egg-open/);
+A.nomatch('旧拖拽类已删', CSS2, /\.egg-drag/);
+
+/* CSS：viewport 裁切 + track 200% + 打开态上移 50% */
+A.match('viewport 裁掉溢出', CSS2, /\.home-viewport\{[^}]*overflow:hidden/);
+A.match('track 高 200%', CSS2, /\.home-track\{[^}]*height:200%/);
+A.match('两屏各占一半', CSS2, /\.home-track > \.homescroll\{[^}]*height:50%/);
+A.match('打开态上移 50%', CSS2, /\.home-open \.home-track\{transform:translate3d\(0,-50%,0\)\}/);
+A.match('拖拽中关过渡', CSS2, /\.home-drag \.home-track\{transition:none\}/);
+/* page 必须 relative，否则绝对定位元素跑出容器 */
 A.match('page 是 relative 容器', CSS2, /\.page\{[^}]*position:relative/);
-/* JS：只在顶部接管，且判方向 */
-A.match('只在 scrollTop<=0 接管', P, /startTop <= 0 && ddy > 0/);
-A.match('判方向防横向误触', P, /Math\.abs\(ddy\) > Math\.abs\(ddx\)/);
+
+/* JS：判据必须是「已滚到底 + 往上滑」，方向与旧版相反 */
+A.match('判据是已滚到底', P, /atBottom = \(host\.scrollTop \+ host\.clientHeight\) >= \(host\.scrollHeight - 1\)/);
+A.match('判据是往上滑 ddy<0', P, /atBottom && ddy < 0 && Math\.abs\(ddy\) > Math\.abs\(ddx\)/);
+A.nomatch('旧判据 startTop<=0 已删', P, /startTop <= 0 && ddy > 0/);
 A.match('接管后阻止页面滚动', P, /try \{ e\.preventDefault\(\); \} catch \(eP\)/);
-A.match('超阈值才打开', P, /if \(dy >= THRESHOLD\) openEgg\(\)/);
-A.match('点遮罩收回', P, /mask\.addEventListener\('click', closeEgg\)/);
-/* 头像与邮箱（第三十五轮）*/
+A.match('超阈值才打开', P, /if \(-dy >= THRESHOLD\) openEgg\(\)/);
+A.match('打开态可下滑收回', P, /bindClose\(\$\('eggPanel'\)\)/);
+/* 跟手位移按屏幕高换算成百分比，不能用固定 px */
+A.match('跟手走百分比', P, /track\.style\.transform = 'translate3d\(0,' \+ \(-\(move \/ h\) \* 50\) \+ '%,0\)'/);
+A.match('收回也走百分比', P, /translate3d\(0,' \+ \(-50 \+ \(move \/ h\) \* 50\) \+ '%,0\)'/);
+
+/* 头像与邮箱 */
 A.match('头像是 base64 内联', P, /img\.src = 'data:image\/jpeg;base64,/);
 A.match('头像撑满圆形', CSS2, /\.egg-avatar img\{width:100%;height:100%;object-fit:cover/);
 A.match('头像容器裁掉溢出', CSS2, /\.egg-avatar\{[^}]*overflow:hidden/);

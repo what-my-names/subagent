@@ -868,23 +868,30 @@ textarea{resize:vertical;min-height:72px}
 /* 检查中的旋转 */
 .cb-ico.spin svg{animation:updspin 1s linear infinite}
 @keyframes updspin{to{transform:rotate(360deg)}}
-/* ── 上滑彩蛋（第三十五轮）──
-   从主页底部往上拉出，露出作者信息。
-   不用 fixed：page 是独立容器，absolute 跟着 page 走，切页自动隐藏。 */
-.egg-mask{position:absolute;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;
-  transition:opacity .22s ease;z-index:8}
-.egg-panel{position:absolute;left:0;right:0;bottom:0;z-index:9;
+/* ── 上滑彩蛋（第三十七轮改版：整页上推）──
+   用户要的是：页面滚到底后继续上滑，整个内容往上推走，露出下面一屏彩蛋。
+   顶部搜索栏在 viewport 之外，钉住不动。
+
+   实现：viewport 裁切，track 高 200% 装两屏（主页 + 彩蛋）。
+   track 上移 50% 即打开。用 translate3d 走 GPU 合成层，滚动不抖。 */
+.home-viewport{flex:1;overflow:hidden;position:relative}
+.home-track{height:200%;display:flex;flex-direction:column;
+  transform:translate3d(0,0,0);
+  transition:transform .32s cubic-bezier(.22,.61,.36,1);
+  will-change:transform}
+/* 拖拽中关过渡，否则跟手滞后 */
+.home-drag .home-track{transition:none}
+/* 打开态：整体上移一屏 */
+.home-open .home-track{transform:translate3d(0,-50%,0)}
+/* 两屏各占 track 的一半 = 正好一屏高 */
+.home-track > .homescroll{height:50%;flex:none}
+.egg-panel{height:50%;flex:none;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
   background:var(--bg2);border-top:1px solid var(--ln);
-  border-radius:16px 16px 0 0;padding:10px 20px 26px;
-  transform:translateY(100%);transition:transform .26s cubic-bezier(.22,.61,.36,1);
-  text-align:center;will-change:transform}
-/* 打开态：遮罩可见可点，面板归位 */
-.egg-open .egg-mask{opacity:1;pointer-events:auto}
-.egg-open .egg-panel{transform:translateY(0)}
-/* 拖拽中不要过渡，否则跟手会滞后 */
-.egg-drag .egg-panel{transition:none}
+  padding:10px 20px 26px;text-align:center;box-sizing:border-box}
+/* 拖拽条：提示这里能上下滑 */
 .egg-grip{width:36px;height:4px;border-radius:2px;background:rgba(127,141,179,.4);
-  margin:0 auto 14px}
+  margin:0 auto 18px}
 .egg-avatar{width:56px;height:56px;border-radius:50%;margin:0 auto 10px;
   background:rgba(127,141,179,.12);display:flex;align-items:center;justify-content:center;
   border:1px solid rgba(127,141,179,.22);overflow:hidden}

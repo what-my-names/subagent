@@ -3745,74 +3745,145 @@ document.addEventListener('visibilitychange', function () {
   });
   /* 思考块点击已统一到上面的累进循环处理 */
 
-  /* ── 上滑彩蛋（第三十五轮）──
-     主页内容滑到顶后继续往上拉，露出作者信息。
-     判据：scrollTop === 0 且手指在往下走（clientY 变大 = 内容往下 = 视觉上往上拉）。
-     不接管的情况：没滑到顶、横向手势、位移太小。 */
+  /* ── 上滑彩蛋（第三十七轮改版：整页上推）──
+     用户要的是：主页滚到底后继续上滑，整个内容往上推走，露出下面一屏彩蛋。
+     顶部搜索栏在 viewport 外，钉住不动。
+
+     结构：#homeViewport（裁切）> #homeTrack（200% 高，两屏）> homescroll + eggPanel
+     打开 = track 上移 50%。
+
+     判据（四条同时满足才接管）：
+       1. 已滚到底 —— scrollTop + clientHeight >= scrollHeight - 1
+       2. ddy < 0  —— 手指往上走（内容往上推）
+       3. |ddy| > |ddx| —— 竖向为主，排除横滑
+       4. 未在打开态（打开态走反向收回逻辑）
+     不接管时页面滚动完全原生，不抢手势。 */
   (function () {
-    var panel = $('eggPanel'), mask = $('eggMask'), host = $('homescroll'), home = $('page-home');
-    if (!panel || !host || !home) return;
+    var track = $('homeTrack'), host = $('homescroll'), home = $('page-home');
+    if (!track || !host || !home) return;
 
     var START_Y = 0, START_X = 0;
-    var dragging = false;      /* 是否已确认是「上拉彩蛋」手势 */
+    var dragging = false;      /* 是否已确认是「整页上推」手势 */
     var decided = false;       /* 是否已判定过方向 */
-    var startTop = 0;          /* 按下时的 scrollTop */
-    var dy = 0;                /* 累计下移量（正 = 往下拖 = 拉出面板） */
-    var THRESHOLD = 56;        /* 超过这个位移就拉出 */
+    var atBottom = false;      /* 按下时是否已滚到底 */
+    var dy = 0;                /* 累计位移（负 = 往上推 = 打开方向） */
+    var THRESHOLD = 56;        /* 超过这个位移就切换状态 */
     var DECIDE_PX = 8;         /* 位移超过它才判方向 */
+    var opened = false;        /* 当前是否已打开彩蛋 */
+
+    /* 容器实际可见高度 = 一屏。track 是它的 200%。 */
+    function screenH() {
+      var vp = $('homeViewport');
+      return (vp && vp.offsetHeight) || 0;
+    }
 
     function openEgg() {
-      home.classList.add('egg-open');
-      panel.style.transform = '';
+      opened = true;
+      home.classList.add('home-open');
+      track.style.transform = '';
     }
     function closeEgg() {
-      home.classList.remove('egg-open', 'egg-drag');
-      panel.style.transform = '';
+      opened = false;
+      home.classList.remove('home-open', 'home-drag');
+      track.style.transform = '';
+    }
+
+    /* 打开态下在彩蛋屏上往下滑，收回 */
+    function bindClose(hostEl) {
+      if (!hostEl) return;
+      hostEl.addEventListener('touchstart', function (e) {
+        if (!e.touches || e.touches.length !== 1) return;
+        if (!opened) return;
+        START_Y = e.touches[0].clientY;
+        START_X = e.touches[0].clientX;
+        dragging = false;
+        decided = false;
+        dy = 0;
+      }, { passive: true });
+
+      hostEl.addEventListener('touchmove', function (e) {
+        if (!opened || !e.touches || e.touches.length !== 1) return;
+        var ddy = e.touches[0].clientY - START_Y;
+        var ddx = e.touches[0].clientX - START_X;
+
+        if (!decided) {
+          if (Math.abs(ddy) < DECIDE_PX && Math.abs(ddx) < DECIDE_PX) return;
+          decided = true;
+          /* 打开态只接管「往下拉（ddy > 0）且竖向为主」 */
+          if (ddy > 0 && Math.abs(ddy) > Math.abs(ddx)) {
+            dragging = true;
+            home.classList.add('home-drag');
+          }
+        }
+        if (!dragging) return;
+        try { e.preventDefault(); } catch (eP) {}
+        dy = Math.max(0, ddy);
+        var h = screenH() || 1;
+        var move = Math.min(dy, h);
+        /* 从 -50% 位置往回退，按拖拽距离换算成百分比 */
+        track.style.transform = 'translate3d(0,' + (-50 + (move / h) * 50) + '%,0)';
+      }, { passive: false });
+
+      hostEl.addEventListener('touchend', function () {
+        if (!dragging) { decided = false; return; }
+        dragging = false;
+        home.classList.remove('home-drag');
+        if (dy >= THRESHOLD) closeEgg();
+        else openEgg();   /* 没拉够，回弹到打开态 */
+        decided = false;
+        dy = 0;
+      }, { passive: true });
+
+      hostEl.addEventListener('touchcancel', function () {
+        if (dragging) openEgg();
+        dragging = false;
+        decided = false;
+        dy = 0;
+      }, { passive: true });
     }
 
     host.addEventListener('touchstart', function (e) {
       if (!e.touches || e.touches.length !== 1) return;
-      startTop = host.scrollTop;
       START_Y = e.touches[0].clientY;
       START_X = e.touches[0].clientX;
       dragging = false;
       decided = false;
       dy = 0;
+      /* 容差 1px：某些 WebView 的 scrollHeight 取整会差一点 */
+      atBottom = (host.scrollTop + host.clientHeight) >= (host.scrollHeight - 1);
     }, { passive: true });
 
     host.addEventListener('touchmove', function (e) {
       if (!e.touches || e.touches.length !== 1) return;
-      var y = e.touches[0].clientY;
-      var x = e.touches[0].clientX;
-      var ddy = y - START_Y;
-      var ddx = x - START_X;
+      var ddy = e.touches[0].clientY - START_Y;
+      var ddx = e.touches[0].clientX - START_X;
 
       if (!decided) {
         if (Math.abs(ddy) < DECIDE_PX && Math.abs(ddx) < DECIDE_PX) return;
         decided = true;
-        /* 只有「在顶部 + 往下拖（ddy > 0）」才接管；横向或上滑一律放过 */
-        if (startTop <= 0 && ddy > 0 && Math.abs(ddy) > Math.abs(ddx)) {
+        /* 只有「已到底 + 往上滑 + 竖向为主」才接管 */
+        if (atBottom && ddy < 0 && Math.abs(ddy) > Math.abs(ddx)) {
           dragging = true;
-          home.classList.add('egg-drag');
+          home.classList.add('home-drag');
         }
       }
       if (!dragging) return;
 
-      /* 接管后要阻止页面跟着滚，否则会先滚再拉，手感割裂 */
+      /* 接管后阻止页面继续滚，否则先滚再推，手感割裂 */
       try { e.preventDefault(); } catch (eP) {}
-      dy = Math.max(0, ddy);
-      /* 跟手：面板从底部按拖拽距离上移，超过面板高度就封顶 */
-      var h = panel.offsetHeight || 220;
-      var move = Math.min(dy, h);
-      panel.style.transform = 'translateY(' + (h - move) + 'px)';
+      dy = Math.min(0, ddy);
+      var h = screenH() || 1;
+      var move = Math.min(-dy, h);
+      /* 跟手：从 0 往 -50% 走 */
+      track.style.transform = 'translate3d(0,' + (-(move / h) * 50) + '%,0)';
     }, { passive: false });
 
     host.addEventListener('touchend', function () {
       if (!dragging) { decided = false; return; }
       dragging = false;
-      home.classList.remove('egg-drag');
-      if (dy >= THRESHOLD) openEgg();
-      else closeEgg();
+      home.classList.remove('home-drag');
+      if (-dy >= THRESHOLD) openEgg();
+      else closeEgg();   /* 没推够，回弹 */
       decided = false;
       dy = 0;
     }, { passive: true });
@@ -3824,8 +3895,8 @@ document.addEventListener('visibilitychange', function () {
       dy = 0;
     }, { passive: true });
 
-    /* 点遮罩收回 */
-    if (mask) mask.addEventListener('click', closeEgg);
+    /* 打开态：在彩蛋屏上下滑可以收回 */
+    bindClose($('eggPanel'));
 
     /* 邮箱入口：mailto 交给系统处理 */
     var mail = $('eggMail');

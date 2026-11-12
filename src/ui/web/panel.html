@@ -60,34 +60,41 @@
       <button class="sb-add" data-act="goList" title="查看全部任务">
         <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
       </button>
-    </div>
-    <div class="homescroll" id="homescroll">
-      <div class="hero">
-        <div class="hero-mark">
-          <svg viewBox="0 0 24 24"><path d="M12 2.6l2.6 5.3 5.9.85-4.3 4.2 1 5.85L12 15.9l-5.2 2.9 1-5.85-4.3-4.2 5.9-.85z"/></svg>
+    <!-- 上滑彩蛋（第三十七轮改版）：整页内容往上推走，露出下面一屏彩蛋。
+         结构：viewport 固定高度且裁切，track 高 200% 装两屏。
+         track 上移 50% = 主页被推走、彩蛋露出。顶部搜索栏在 viewport 外，钉住不动。 -->
+    <div class="home-viewport" id="homeViewport">
+      <div class="home-track" id="homeTrack">
+        <!-- 第一屏：主页内容 -->
+        <div class="homescroll" id="homescroll">
+          <div class="hero">
+            <div class="hero-mark">
+              <svg viewBox="0 0 24 24"><path d="M12 2.6l2.6 5.3 5.9.85-4.3 4.2 1 5.85L12 15.9l-5.2 2.9 1-5.85-4.3-4.2 5.9-.85z"/></svg>
+            </div>
+            <div class="hero-title" data-t="子代理">子代理</div>
+            <div class="hero-sub">派一个会自己动手的子代理，回来只交结论</div>
+          </div>
+          <div class="recent-head">
+            <span>最近任务</span>
+            <span class="recent-tip">长按任务可删除</span>
+            <button class="recent-more" data-act="goList">全部</button>
+          </div>
+          <div id="homeRecent" class="home-list recent"></div>
         </div>
-        <div class="hero-title" data-t="子代理">子代理</div>
-        <div class="hero-sub">派一个会自己动手的子代理，回来只交结论</div>
+        <!-- 第二屏：彩蛋 -->
+        <div class="egg-panel" id="eggPanel">
+          <div class="egg-grip"></div>
+          <div class="egg-avatar">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c0-4.1 3.4-6.4 7.5-6.4s7.5 2.3 7.5 6.4"/></svg>
+          </div>
+          <div class="egg-name">时空指令</div>
+          <div class="egg-quote" id="eggQuote">做工具，不做玩具。</div>
+          <a class="egg-mail" id="eggMail" href="#">反馈 / 联系</a>
+          <div class="egg-ver" id="eggVer"></div>
+        </div>
       </div>
-      <div class="recent-head">
-        <span>最近任务</span>
-        <span class="recent-tip">长按任务可删除</span>
-        <button class="recent-more" data-act="goList">全部</button>
-      </div>
-      <div id="homeRecent" class="home-list recent"></div>
     </div>
-    <!-- 上滑彩蛋：从底部拉出，露出头像 / 一句话 / 邮箱反馈（第三十五轮） -->
-    <div class="egg-mask" id="eggMask"></div>
-    <div class="egg-panel" id="eggPanel">
-      <div class="egg-grip"></div>
-      <div class="egg-avatar">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c0-4.1 3.4-6.4 7.5-6.4s7.5 2.3 7.5 6.4"/></svg>
-      </div>
-      <div class="egg-name">时空指令</div>
-      <div class="egg-quote" id="eggQuote">做工具，不做玩具。</div>
-      <a class="egg-mail" id="eggMail" href="#">反馈 / 联系</a>
-      <div class="egg-ver" id="eggVer"></div>
-    </div>
+  </div>
   </div>
 
   <!-- 任务列表页 -->

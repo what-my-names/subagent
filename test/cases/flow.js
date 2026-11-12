@@ -127,7 +127,8 @@ if (RD) {
     A.match('README 说明留空 = 一个工具都用不了', RD, /allowed_tools.*留空.*一个工具都用不了/);
     A.match('README 说明 all=true 全放开', RD, /all=true/);
     A.nomatch('README 不再说留空 = 不限制', RD, /留空 = 不限制/);
-    A.match('README 工具表覆盖 29 个', RD, /## 工具（29 个）/);
+    /* 【第三十四轮】工具数从 29 改成 34（实际数量），这里跟着改 */
+    A.match('README 工具表覆盖 34 个', RD, /## 工具（34 个）/);
     A.match('README 提到 CORS 判据', RD, /access-control-allow-origin/);
     A.match('README 有测试章节', RD, /node e2e_all\.js/);
     A.nomatch('README 不再提 selfcheck_v025', RD, /selfcheck_v025/);

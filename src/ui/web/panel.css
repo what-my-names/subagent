@@ -58,7 +58,7 @@ body{overscroll-behavior:none}
 body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"HarmonyOS Sans","Noto Sans CJK SC",sans-serif;overflow:hidden}
 #app{height:100%}
 /* 用 --vh 兜住可视高度：键盘弹起时跟着缩，收起后立刻还原 */
-.page{height:100%;height:var(--vh,100%);display:flex;flex-direction:column}
+.page{height:100%;height:var(--vh,100%);display:flex;flex-direction:column;position:relative}
 
 /* 顶栏（窄条，贴宿主） */
 .bar{display:flex;align-items:center;gap:6px;padding:0 8px;background:var(--bg2);border-bottom:1px solid var(--ln);min-height:44px}
@@ -868,3 +868,35 @@ textarea{resize:vertical;min-height:72px}
 /* 检查中的旋转 */
 .cb-ico.spin svg{animation:updspin 1s linear infinite}
 @keyframes updspin{to{transform:rotate(360deg)}}
+/* ── 上滑彩蛋（第三十五轮）──
+   从主页底部往上拉出，露出作者信息。
+   不用 fixed：page 是独立容器，absolute 跟着 page 走，切页自动隐藏。 */
+.egg-mask{position:absolute;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;
+  transition:opacity .22s ease;z-index:8}
+.egg-panel{position:absolute;left:0;right:0;bottom:0;z-index:9;
+  background:var(--bg2);border-top:1px solid var(--ln);
+  border-radius:16px 16px 0 0;padding:10px 20px 26px;
+  transform:translateY(100%);transition:transform .26s cubic-bezier(.22,.61,.36,1);
+  text-align:center;will-change:transform}
+/* 打开态：遮罩可见可点，面板归位 */
+.egg-open .egg-mask{opacity:1;pointer-events:auto}
+.egg-open .egg-panel{transform:translateY(0)}
+/* 拖拽中不要过渡，否则跟手会滞后 */
+.egg-drag .egg-panel{transition:none}
+.egg-grip{width:36px;height:4px;border-radius:2px;background:rgba(127,141,179,.4);
+  margin:0 auto 14px}
+.egg-avatar{width:56px;height:56px;border-radius:50%;margin:0 auto 10px;
+  background:rgba(127,141,179,.12);display:flex;align-items:center;justify-content:center;
+  border:1px solid rgba(127,141,179,.22);overflow:hidden}
+/* 头像图片撑满圆形；SVG 兜底时保持原尺寸 */
+.egg-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.egg-avatar svg{width:30px;height:30px;fill:none;stroke:var(--acc);stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+.egg-name{font-size:15px;font-weight:600;color:var(--fg);letter-spacing:.3px}
+.egg-quote{font-size:12.5px;color:var(--mut);margin-top:6px;line-height:1.7;font-style:italic}
+.egg-mail{display:inline-block;margin-top:14px;font-size:12.5px;color:var(--acc);
+  text-decoration:none;padding:7px 18px;border-radius:9px;
+  background:rgba(74,141,255,.1);border:1px solid rgba(74,141,255,.22)}
+.egg-mail:active{background:rgba(74,141,255,.2)}
+.egg-ver{margin-top:12px;font-size:10.5px;color:var(--mut);opacity:.7;
+  font-variant-numeric:tabular-nums}

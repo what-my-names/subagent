@@ -352,6 +352,39 @@ A.match('注册 install_update 工具', SA2, /"name": "subagent_install_update"/
 A.match('面板有立即安装按钮', A.src('ui/web/panel.html'), /data-act="updInstall"/);
 A.match('安装后提示已生效', P, /已写入 ' \+ d\.path/);
 A.match('未装上时显示手动安装', P, /ok && !installed/);
+/* ── 第三十四轮：工具数必须与实际一致 ── */
+/* 这个数字错过两次（29 写死，实际 34），加断言锁死，谁再写错就红 */
+var realToolCount = (SA2.match(/"name": "subagent_/g) || []).length;
+A.match('README 工具数写 34', A.src('../README.md'), /## 工具（34 个）/);
+A.match('README 文件说明写 34', A.src('../README.md'), /subagent\.js\s+34 个工具的导出与声明/);
+A.chk('实际工具数就是 34', realToolCount === 34);
+A.chk('README 数字与代码一致', A.src('../README.md').indexOf('## 工具（' + realToolCount + ' 个）') >= 0);
+/* ── 第三十五轮：主页上滑彩蛋 ── */
+var H2 = A.src('ui/web/panel.html');
+A.match('有彩蛋面板', H2, /id="eggPanel"/);
+A.match('有彩蛋遮罩', H2, /id="eggMask"/);
+A.match('彩蛋含头像', H2, /class="egg-avatar"/);
+A.match('彩蛋含一句话', H2, /class="egg-quote"/);
+A.match('彩蛋含邮箱入口', H2, /id="eggMail"/);
+A.match('彩蛋含版本号位', H2, /id="eggVer"/);
+/* CSS：默认藏起 + 打开态归位 */
+A.match('彩蛋默认藏起', CSS2, /\.egg-panel\{[^}]*transform:translateY\(100%\)/);
+A.match('打开态归位', CSS2, /\.egg-open \.egg-panel\{transform:translateY\(0\)\}/);
+A.match('拖拽中关过渡', CSS2, /\.egg-drag \.egg-panel\{transition:none\}/);
+/* page 必须 relative，否则 absolute 彩蛋跑出容器 */
+A.match('page 是 relative 容器', CSS2, /\.page\{[^}]*position:relative/);
+/* JS：只在顶部接管，且判方向 */
+A.match('只在 scrollTop<=0 接管', P, /startTop <= 0 && ddy > 0/);
+A.match('判方向防横向误触', P, /Math\.abs\(ddy\) > Math\.abs\(ddx\)/);
+A.match('接管后阻止页面滚动', P, /try \{ e\.preventDefault\(\); \} catch \(eP\)/);
+A.match('超阈值才打开', P, /if \(dy >= THRESHOLD\) openEgg\(\)/);
+A.match('点遮罩收回', P, /mask\.addEventListener\('click', closeEgg\)/);
+/* 头像与邮箱（第三十五轮）*/
+A.match('头像是 base64 内联', P, /img\.src = 'data:image\/jpeg;base64,/);
+A.match('头像撑满圆形', CSS2, /\.egg-avatar img\{width:100%;height:100%;object-fit:cover/);
+A.match('头像容器裁掉溢出', CSS2, /\.egg-avatar\{[^}]*overflow:hidden/);
+A.match('反馈邮箱是 whoiscui', P, /whoiscui@foxmail\.com/);
+A.nomatch('旧邮箱已清', P, /whatsmynames@outlook\.com/);
 /* 自动贴底必须只对 0 档生效，1/2 档不能抢用户滚动位置 */
 A.match('setThinkState 只在 0 档贴底', P, /if \(n === 0\) thinkScrollBottom\(tb\)/);
 A.match('流式绘制只在 0 档贴底', P, /if \(_st === 0\) \{[\s\S]{0,120}?thinkEl\.scrollTop = thinkEl\.scrollHeight/);

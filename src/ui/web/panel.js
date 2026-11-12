@@ -553,17 +553,33 @@ function toast(msg, level) {
 
   var rec = { el: el, txt: txt, lv: lv, timer: null, dead: false };
 
-  /* 点击语义只保留给错误条目：点一下展开全文、再点收回。
-     其他级别点一下没有动作（划一下才是关闭）。
-     注意这里不再用 addEventListener('click')：指针事件已被滑动逻辑接管，
-     用 onTap 回调区分「点击」与「滑动」，避免两者打架。 */
+  /* 报错条目的点击语义（用户定，两档）：
+       单击 → 展开到上限（约 8 行），仍留在原位，再点收回。
+       双击 → 解除限高看全部，并在屏幕中心悬浮；悬浮态可拖动，
+              松手飞出最近边缘并消失。
+       单击要延迟 250ms 才能确认不是双击，期间二次点击则取消单击。 */
   var onTapFn = null;
+  var onDoubleFn = null;
+  var tapTimer = 0;
   if (lv === 'err') {
     onTapFn = function () {
-      el.classList.toggle('open');
-      try { clearTimeout(rec.timer); } catch (eT) {}
-      if (el.classList.contains('open')) rec.timer = setTimeout(function () { killToast(rec); }, 12000);
-      else rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE.err);
+      /* 已经在悬浮态：单击直接关掉（不用再展开/收回） */
+      if (el.classList.contains('float')) { killToast(rec); return; }
+      try { clearTimeout(tapTimer); } catch (eT) {}
+      tapTimer = setTimeout(function () {
+        el.classList.toggle('open');
+        try { clearTimeout(rec.timer); } catch (eT2) {}
+        if (el.classList.contains('open')) {
+          rec.timer = setTimeout(function () { killToast(rec); }, 12000);
+        } else {
+          rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE.err);
+        }
+      }, 250);
+    };
+    onDoubleFn = function () {
+      /* 双击：取消挂起的单击，直接进悬浮态 */
+      try { clearTimeout(tapTimer); } catch (eT) {}
+      floatToast(el, rec);
     };
   }
 
@@ -587,15 +603,10 @@ function toast(msg, level) {
         否则通知条会抢走所有竖向滑动，整页感觉「阻塞」；
      2) 飞出时不能先 reset 再 killToast —— 那会让元素先弹回原位再飞，
         必须把当前位移原样交给 killToast 接力。 */
-  function bindSwipeClose(el, rec, onTap) {
-    /* 可拖动策略（用户要求「有些不能被拖动」）：
-       err 必须可拖 —— 报错可能很长，用户要能推开看背后内容，也能随手划掉。
-       warn 可拖 —— 需要用户留意，但允许主动清掉。
-       info / ok 锁住 —— 这类是「告知已完成」，看一眼就走，拖动只会误触。 */
-    if (rec.lv !== 'err' && rec.lv !== 'warn') {
-      el.setAttribute('data-fixed', '1');
-      return;
-    }
+  function bindSwipeClose(el, rec, onTap, onDouble) {
+    /* 所有级别都可拖（用户定：即使一下就走的也要能划掉）。
+       单击/双击语义只给 err，其余级别拖动即关闭。
+       float 态（双击后悬浮）拖动逻辑不同：不判点击，松手一律飞出。 */
     var startX = 0, startY = 0, curX = 0, curY = 0;
     var tracking = false, decided = false, horiz = false;
     var pid = null;
@@ -606,15 +617,15 @@ function toast(msg, level) {
         /* 回弹：放开直接截断，用 transition 弹回去 */
         el.classList.remove('drag');
         el.style.transition = 'transform .24s cubic-bezier(.2,.9,.3,1), opacity .2s';
-        el.style.transform = 'translate3d(0,0,0)';
+        el.style.transform = rec.floatBase || 'translate3d(0,0,0)';
         el.style.opacity = '';
         setTimeout(function () {
-          if (!rec.dead) { el.style.transition = ''; el.style.transform = ''; }
+          if (!rec.dead) { el.style.transition = ''; el.style.transform = rec.floatBase || ''; }
         }, 260);
       } else {
         el.classList.remove('drag');
         el.style.transition = '';
-        el.style.transform = '';
+        el.style.transform = rec.floatBase || '';
         el.style.opacity = '';
       }
       curX = 0; curY = 0;
@@ -649,8 +660,12 @@ function toast(msg, level) {
         reset(true);
         return;
       }
-      /* 全方向跟手（仅横向判定接管后才走到这里） */
-      el.style.transform = 'translate3d(' + curX + 'px,' + curY + 'px,0)';
+      /* 全方向跟手。悬浮态要保留居中基准 -50%，只叠加手指位移 */
+      if (rec.floatBase) {
+        el.style.transform = rec.floatBase + ' translate3d(' + curX + 'px,' + curY + 'px,0)';
+      } else {
+        el.style.transform = 'translate3d(' + curX + 'px,' + curY + 'px,0)';
+      }
       var dist = Math.sqrt(curX * curX + curY * curY);
       el.style.opacity = String(Math.max(0.25, 1 - dist / 260));
       if (horiz) { try { e.preventDefault(); } catch (eP) {} }
@@ -661,6 +676,24 @@ function toast(msg, level) {
       var movedX = Math.abs(curX), movedY = Math.abs(curY);
       var dist = Math.sqrt(curX * curX + curY * curY);
       try { if (pid != null) el.releasePointerCapture(pid); } catch (eR) {}
+      var isFloat = el.classList.contains('float');
+
+      /* 悬浮态：任何位移超限都直接飞出（不判点击、不弹回） */
+      if (isFloat) {
+        if (dist >= TST_SWIPE_MIN) {
+          var fdir;
+          if (movedX >= movedY) fdir = curX < 0 ? 'left' : 'right';
+          else fdir = curY < 0 ? 'up' : 'down';
+          tracking = false; decided = false; pid = null;
+          killToast(rec, fdir, curX, curY);
+          return;
+        }
+        /* 没拖动就是单击：关闭 */
+        reset();
+        if (movedX < TST_TAP_SLOP && movedY < TST_TAP_SLOP) killToast(rec);
+        return;
+      }
+
       /* 超限：顺着拖动方向飞出。
          关键：这里不能 reset()，必须把「当前手指位置」原样交给 killToast 接力，
          由它从该位置继续推到屏外 —— 否则元素会先弹回原位再飞出去（闪一下）。 */
@@ -672,9 +705,17 @@ function toast(msg, level) {
         killToast(rec, dir, curX, curY);
         return;
       }
-      /* 没超限：位移极小算点击，否则弹回 */
+      /* 没超限：位移极小算点击 */
       if (movedX < TST_TAP_SLOP && movedY < TST_TAP_SLOP) {
         reset();
+        /* 双击判定：两次点击间隔小于 300ms 视为双击 */
+        var now = Date.now();
+        if (onDouble && rec.lastTap && (now - rec.lastTap) < 300) {
+          rec.lastTap = 0;
+          onDouble();
+          return;
+        }
+        rec.lastTap = now;
         if (onTap) onTap();
         return;
       }
@@ -684,11 +725,38 @@ function toast(msg, level) {
     el.addEventListener('pointercancel', function () { reset(true); });
   }
 
+  /* 双击：把通知条抬到屏幕中心悬浮，解除限高看全部。
+   悬浮态下：单击关闭；拖动松手飞出最近边缘。
+   用 fixed 定位 + 居中，z-index 压过容器。 */
+function floatToast(el, rec) {
+  if (!el || rec.dead) return;
+  try { clearTimeout(rec.timer); } catch (eT) {}
+  el.classList.remove('open');
+  el.classList.add('float');
+  /* 从容器里摘出来挂到 body，避免被 #toastStack 的 overflow/层叠限制 */
+  if (el.parentNode && el.parentNode !== document.body) {
+    document.body.appendChild(el);
+  }
+  el.style.position = 'fixed';
+  el.style.left = '50%';
+  el.style.top = '50%';
+  el.style.width = 'min(86vw, 420px)';
+  el.style.maxHeight = '70vh';
+  el.style.overflowY = 'auto';
+  el.style.transform = 'translate(-50%,-50%)';
+  el.style.opacity = '1';
+  el.style.zIndex = '300';
+  el.style.pointerEvents = 'auto';
+  el.style.transition = 'transform .18s ease, opacity .18s ease';
+  /* 记录基准位移，拖动时在此基础上叠加，避免覆盖掉居中用的 -50% */
+  rec.floatBase = 'translate(-50%,-50%)';
+}
+
   /* 新的插到最前面：容器在右上角，最新一条在最上面，旧的往下推。
    与 TST_NODES 顺序保持一致（数组也是 unshift），超限时删最后一个（最旧、最靠下）。 */
   box.insertBefore(el, box.firstChild);
   TST_NODES.unshift(rec);
-  bindSwipeClose(el, rec, onTapFn);
+  bindSwipeClose(el, rec, onTapFn, onDoubleFn);
 
   /* 超出上限：最旧的那条（数组最后一个 = 屏幕最下方）立刻淡出 */
   while (TST_NODES.length > TST_MAX) {

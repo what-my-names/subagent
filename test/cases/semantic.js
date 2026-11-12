@@ -445,8 +445,20 @@ A.match('超限删最旧', P, /killToast\(TST_NODES\[TST_NODES\.length - 1\]\)/)
 /* 时长加长 */
 A.match('info 时长 3.5s', P, /TST_LIFE = \{ info: 3500/);
 A.match('err 时长 8s', P, /err: 8000 \}/);
-/* 可拖动分级：err/warn 可拖，info/ok 锁住 */
-A.match('err 与 warn 才可拖', P, /if \(rec\.lv !== 'err' && rec\.lv !== 'warn'\)/);
-A.match('锁住时打标记', P, /el\.setAttribute\('data-fixed', '1'\)/);
-A.match('锁定条目禁用指针', CSS2, /\.tst\[data-fixed\]\{[^}]*pointer-events:none/);
+/* 可拖动分级：全部级别都能拖（第四十轮用户纠正，撤掉上轮的 data-fixed 锁定） */
+A.nomatch('不再按级别锁拖动', P, /if \(rec\.lv !== 'err' && rec\.lv !== 'warn'\)/);
+A.nomatch('不再打 data-fixed 标记', P, /el\.setAttribute\('data-fixed', '1'\)/);
+A.nomatch('CSS 不再有 data-fixed 锁定', CSS2, /\.tst\[data-fixed\]\{/);
+/* err 两档点击：单击展开有上限，双击悬浮看全部 */
+A.match('单击延迟 250ms 防双击误判', P, /tapTimer = setTimeout\(function \(\) \{/);
+A.match('双击走 floatToast', P, /floatToast\(el, rec\)/);
+A.match('悬浮态单击关闭', P, /if \(el\.classList\.contains\('float'\)\) \{ killToast\(rec\); return; \}/);
+A.match('双击判定 300ms 内', P, /rec\.lastTap && \(now - rec\.lastTap\) < 300/);
+A.match('单击展开限高 11.5em', CSS2, /\.tst\.open\{max-height:11\.5em/);
+A.match('默认折叠限高 4.6em', CSS2, /\.tst\{[^}]*max-height:4\.6em;overflow:hidden/);
+A.match('悬浮态解除限高', CSS2, /\.tst\.float\{[^}]*max-height:none/);
+A.match('悬浮态固定居中', P, /el\.style\.left = '50%';\s*el\.style\.top = '50%'/);
+A.match('悬浮态保留居中基准', P, /rec\.floatBase = 'translate\(-50%,-50%\)'/);
+A.match('拖动叠加基准不覆盖', P, /el\.style\.transform = rec\.floatBase \+ ' translate3d\('/);
+A.match('悬浮态拖动飞走', P, /var isFloat = el\.classList\.contains\('float'\)/);
 A.finish();

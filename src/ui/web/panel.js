@@ -517,7 +517,9 @@ function mathHtml(texEsc, display) {
    用户只能看到「闪一下」，这就是「报错太快截不到」的真正原因。
    现在每条独立节点、独立计时，互不干扰。 */
 var TST_MAX = 4;
-var TST_LIFE = { info: 3000, ok: 2600, warn: 4000, err: 6500 };
+/* 存在时长：用户反馈「有点不太长」，整体加长。
+   info/ok 3.0/2.6 → 3.5/3.5，warn 4.0 → 5.0，err 6.5 → 8.0（错误要看清再关）。 */
+var TST_LIFE = { info: 3500, ok: 3500, warn: 5000, err: 8000 };
 var TST_SVG = {
   info: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.6v.6"/></svg>',
   ok: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/></svg>',
@@ -586,6 +588,14 @@ function toast(msg, level) {
      2) 飞出时不能先 reset 再 killToast —— 那会让元素先弹回原位再飞，
         必须把当前位移原样交给 killToast 接力。 */
   function bindSwipeClose(el, rec, onTap) {
+    /* 可拖动策略（用户要求「有些不能被拖动」）：
+       err 必须可拖 —— 报错可能很长，用户要能推开看背后内容，也能随手划掉。
+       warn 可拖 —— 需要用户留意，但允许主动清掉。
+       info / ok 锁住 —— 这类是「告知已完成」，看一眼就走，拖动只会误触。 */
+    if (rec.lv !== 'err' && rec.lv !== 'warn') {
+      el.setAttribute('data-fixed', '1');
+      return;
+    }
     var startX = 0, startY = 0, curX = 0, curY = 0;
     var tracking = false, decided = false, horiz = false;
     var pid = null;
@@ -674,14 +684,15 @@ function toast(msg, level) {
     el.addEventListener('pointercancel', function () { reset(true); });
   }
 
-  /* 新的追加到末尾：容器在右下角，最新一条离底部最近，方便拇指划掉 */
-  box.appendChild(el);
-  TST_NODES.push(rec);
+  /* 新的插到最前面：容器在右上角，最新一条在最上面，旧的往下推。
+   与 TST_NODES 顺序保持一致（数组也是 unshift），超限时删最后一个（最旧、最靠下）。 */
+  box.insertBefore(el, box.firstChild);
+  TST_NODES.unshift(rec);
   bindSwipeClose(el, rec, onTapFn);
 
-  /* 超出上限：最旧的那条（数组第一个）立刻淡出 */
+  /* 超出上限：最旧的那条（数组最后一个 = 屏幕最下方）立刻淡出 */
   while (TST_NODES.length > TST_MAX) {
-    killToast(TST_NODES[0]);
+    killToast(TST_NODES[TST_NODES.length - 1]);
   }
 
   rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE[lv]);
@@ -3954,8 +3965,9 @@ document.addEventListener('visibilitychange', function () {
     }
 
     /* 头像：base64 内联，不依赖外部文件。
-       为什么内联：头像只有 8.5KB（缩到 160x160），比多一个资源文件 + manifest 声明简单。 */
-    var av = panel.querySelector('.egg-avatar');
+       为什么内联：头像只有 8.5KB（缩到 160x160），比多一个资源文件 + manifest 声明简单。
+       注意：容器从 $('eggPanel') 取，不能再用已删除的 panel 变量。 */
+    var av = $('eggPanel') && $('eggPanel').querySelector('.egg-avatar');
     if (av) {
       var img = new Image();
       img.alt = '';

@@ -556,11 +556,12 @@ textarea{resize:vertical;min-height:72px}
    3) 每条都可以横向滑动关闭：起点落在条目任意位置都算，
       横向位移超过阈值即判定为「划走」，松手后飞出并移除；
    4) 与 err 的点击展开共存：按下到抬起的位移小于阈值才算点击。 */
-/* 通知条容器：放右下角、悬浮操作按钮之上，不压顶部导航
-   1) 避开顶部搜索栏与页面标题（原来 top:10px 会挡住导航按钮）
-   2) bottom 抬到 dtfab 圆钮（44px 高 + 16px 边距）之上，留 22px 呼吸
-   3) 新的追加在末尾：配合 column 方向，视觉上最新的一条离底部最近 */
-#toastStack{position:fixed;bottom:calc(78px + env(safe-area-inset-bottom, 0px));right:8px;
+/* 通知条容器：右上角，从导航栏下方开始，不压顶部功能按钮。
+   1) top 取 44px（.bar 最小高）+ 8px 呼吸 = 52px，避开搜索栏与右侧「全部」按钮
+   2) right 8px 对齐页面右缘
+   3) 新的追加到顶部：视觉上最新一条在最上面，旧的往下推
+   4) 支持拖动：任意方向都能拖，超过阈值松手即飞走 */
+#toastStack{position:fixed;top:calc(52px + env(safe-area-inset-top, 0px));right:8px;
   width:min(74vw,268px);
   display:flex;flex-direction:column;gap:7px;
   z-index:120;pointer-events:none}
@@ -582,17 +583,20 @@ textarea{resize:vertical;min-height:72px}
      backwards 只在播放前占位，播完自动让位给 style。 */
   animation:tstIn .26s cubic-bezier(.16,1,.3,1) backwards}
 .tst.drag{animation:none;transition:none}
+/* 不可拖动的条目（info / ok）：禁用手势，点击穿透不误触。
+   注意特异性：下面还有一条 .tst{pointer-events:auto}，必须用 .tst[data-fixed] 压过它。 */
+.tst[data-fixed]{touch-action:auto;pointer-events:none;user-select:none;cursor:default}
 /* 自动消失（未手动拖动）走 tstOut；这里用 forwards 而非 both：
    动画结束后保持「已飞出」的终态直到节点被移除，避免移除前一刻闪回原位 */
 .tst.out{animation:tstOut .24s ease-in forwards}
-/* 入场：从右往前推进来（MC 挂端那种侧滑小窗） */
+/* 入场：从上方往前推进来（右上角通知，从顶边滑入） */
 @keyframes tstIn{
-  0%{opacity:0;transform:translate3d(110%,0,0)}
+  0%{opacity:0;transform:translate3d(0,-110%,0)}
   100%{opacity:1;transform:translate3d(0,0,0)}
 }
 @keyframes tstOut{
   0%{opacity:1;transform:translate3d(0,0,0)}
-  100%{opacity:0;transform:translate3d(110%,0,0)}
+  100%{opacity:0;transform:translate3d(0,-110%,0)}
 }
 /* 左侧色条指示级别，比整块变色更克制 */
 .tst::before{content:'';width:3px;border-radius:2px;flex-shrink:0;

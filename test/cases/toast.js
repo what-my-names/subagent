@@ -35,10 +35,12 @@ A.match('TST_SVG.ok 是勾形', P, /ok: '<svg[^']*M8 12\.4l2\.6 2\.6L16 9\.6/);
 A.match('TST_SVG.err 是叉形', P, /err: '<svg[^']*M8\.6 8\.6l6\.8 6\.8/);
 A.match('toast level 白名单正确', P, /level === 'ok' \|\| level === 'warn' \|\| level === 'err'/);
 
-/* ── 位置：右下角，不压导航 ── */
-A.match('容器在右下角', C, /#toastStack\{position:fixed;bottom:calc\(78px/);
+/* ── 位置：右上角，避开顶部导航（第三十九轮改，原为右下角） ── */
+A.match('容器在右上角', C, /#toastStack\{position:fixed;top:calc\(52px/);
+A.match('容器贴右缘', C, /#toastStack\{position:fixed;top:calc\(52px \+ env\(safe-area-inset-top, 0px\)\);right:8px/);
+A.nomatch('容器不再贴底', C, /#toastStack\{position:fixed;bottom:calc\(78px/);
 A.nomatch('容器不再 top:10px', C, /#toastStack\{position:fixed;top:10px/);
-A.match('有 safe-area 适配', C, /bottom:calc\(78px \+ env\(safe-area-inset-bottom/);
+A.match('有 safe-area 适配', C, /top:calc\(52px \+ env\(safe-area-inset-top/);
 
 /* ── 动画填充模式（闪回根因） ── */
 A.match('入场动画用 backwards', C, /animation:tstIn[^}]*backwards\}/);
@@ -61,9 +63,12 @@ A.match('有方向判定', P, /decided = true;[\s\S]{0,60}?horiz = ax >= ay;/);
 A.match('竖向放弃接管', P, /if \(decided && !horiz\) \{[\s\S]{0,140}?tracking = false;[\s\S]{0,60}?reset\(true\);/);
 A.match('只在横向 preventDefault', P, /if \(horiz\) \{ try \{ e\.preventDefault\(\)/);
 
-/* ── 顺序：右下角容器，新的追加到末尾 ── */
-A.match('新条目 append 到末尾', P, /box\.appendChild\(el\);[\s\S]{0,40}?TST_NODES\.push\(rec\);/);
-A.match('超限淘汰最旧（数组头）', P, /killToast\(TST_NODES\[0\]\)/);
+/* ── 顺序：右上角容器，新的插到最前（第三十九轮反转，原为右下角 append 到末尾） ── */
+A.match('新条目插到最前', P, /box\.insertBefore\(el, box\.firstChild\);/);
+A.match('数组同步 unshift', P, /TST_NODES\.unshift\(rec\);/);
+A.nomatch('不再 append 到末尾', P, /box\.appendChild\(el\);/);
+A.match('超限淘汰最旧（数组尾）', P, /killToast\(TST_NODES\[TST_NODES\.length - 1\]\)/);
+A.nomatch('不再删数组头', P, /killToast\(TST_NODES\[0\]\)/);
 
 /* ── 去重与寿命 ── */
 A.match('同文案去重', P, /nd\.txt === txt/);

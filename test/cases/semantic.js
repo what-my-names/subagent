@@ -428,4 +428,25 @@ A.match('官网有兜底地址', P, /github\.com\/what-my-names\/subagent\/relea
 A.match('有进度条', H2, /id="updBarIn"/);
 A.match('轮询下载状态', P, /call\('subagent:subagent_download_status', \{\}, 'updStatus'\)/);
 A.match('下载后自动安装', A.src('packages/sb_update.js'), /params\.auto_install !== false/);
+
+/* ── 第三十九轮：修 panel 未定义 + 通知条改右上 ── */
+/* 报错根因：panel 变量在第三十七轮被删，头像那行还在用 */
+A.nomatch('不再引用已删除的 panel 变量', P, /var av = panel\.querySelector/);
+A.match('头像从 eggPanel 取容器', P, /var av = \$\('eggPanel'\) && \$\('eggPanel'\)\.querySelector/);
+/* 通知条位置：右上，避开顶部 44px 导航栏 */
+A.match('通知条在右上', CSS2, /#toastStack\{position:fixed;top:calc\(52px \+ env\(safe-area-inset-top, 0px\)\);right:8px/);
+A.nomatch('通知条不再贴底', CSS2, /#toastStack\{position:fixed;bottom:calc\(78px/);
+/* 入场从上方滑入，不是从右侧 */
+A.match('入场从上方', CSS2, /@keyframes tstIn\{\s*0%\{opacity:0;transform:translate3d\(0,-110%,0\)\}/);
+/* 新条目插到顶部，旧的往下推 */
+A.match('新条目插到最前', P, /box\.insertBefore\(el, box\.firstChild\)/);
+A.match('数组同步 unshift', P, /TST_NODES\.unshift\(rec\)/);
+A.match('超限删最旧', P, /killToast\(TST_NODES\[TST_NODES\.length - 1\]\)/);
+/* 时长加长 */
+A.match('info 时长 3.5s', P, /TST_LIFE = \{ info: 3500/);
+A.match('err 时长 8s', P, /err: 8000 \}/);
+/* 可拖动分级：err/warn 可拖，info/ok 锁住 */
+A.match('err 与 warn 才可拖', P, /if \(rec\.lv !== 'err' && rec\.lv !== 'warn'\)/);
+A.match('锁住时打标记', P, /el\.setAttribute\('data-fixed', '1'\)/);
+A.match('锁定条目禁用指针', CSS2, /\.tst\[data-fixed\]\{[^}]*pointer-events:none/);
 A.finish();

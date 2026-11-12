@@ -330,6 +330,39 @@
       <button class="btn pri big" id="btnSaveCfg" data-act="doSaveCfg">保存全部设置</button>
       <button class="btn" data-act="doProbe">测试连通性</button>
       <div class="hint">端点 / 模型改动后点「保存全部设置」</div>
+
+      <!-- 自更新（第三十轮）：检查 GitHub Release → 下载 .toolpkg → 去包管理导入 -->
+      <div class="sec-head">
+        <svg class="sec-ico"><use href="#i-refresh"/></svg>
+        <span>版本更新</span>
+      </div>
+      <div class="cfg-block">
+        <div class="cb-lb">当前版本</div>
+        <div class="cb-row">
+          <span class="upd-cur" id="updCur">—</span>
+          <button class="cb-ico" data-act="updCheck" title="检查更新">
+            <svg><use href="#i-refresh"/></svg>
+          </button>
+        </div>
+        <div class="upd-msg" id="updMsg"></div>
+      </div>
+
+      <!-- 有新版本时才显示 -->
+      <div class="cfg-block" id="updNew" style="display:none">
+        <div class="cb-lb">发现新版本 <span class="upd-tag" id="updTag"></span></div>
+        <div class="upd-notes" id="updNotes"></div>
+        <div class="upd-size" id="updSize"></div>
+        <button class="btn pri" data-act="updDownload" id="updDlBtn">下载更新包</button>
+        <button class="btn" data-act="updInstall" id="updInstall" style="display:none">立即安装</button>
+      </div>
+
+      <!-- 下载进度 / 结果 -->
+      <div class="cfg-block" id="updProg" style="display:none">
+        <div class="cb-lb" id="updProgLb">下载中</div>
+        <div class="upd-bar"><div class="upd-bar-in" id="updBarIn"></div></div>
+        <div class="upd-msg" id="updProgMsg"></div>
+        <div class="upd-path" id="updPath"></div>
+      </div>
     </div>
   </div>
 

@@ -817,6 +817,10 @@ function warnMsg(m) { toast(m, 'warn'); }
     /* kind === 'chats' 分支已随「附带主对话上下文」功能一并移除：
        页面不再有对话选择入口，也就没有调用方会发 subagent_chats。 */
     if (kind === 'cfg') return renderCfg(d);
+    if (kind === 'updCheck') return renderUpdCheck(r);
+    if (kind === 'updDownload') return renderUpdDownload(r);
+    if (kind === 'updStatus') return renderUpdStatus(d);
+    if (kind === 'updInstall') return renderUpdInstall(r);
     if (kind === 'profiles') { return; }
     if (kind === 'inbox') return renderInbox(d);
     if (kind === 'inboxClear') { okMsg('已清空'); openInbox(); return; }
@@ -2916,6 +2920,176 @@ document.addEventListener('visibilitychange', function () {
     if (!S.allModels.length && (d && d.cached_models) && d.cached_models.length) {
       fillModels(d.cached_models, true, d.models_at || 0);
     }
+    /* 版本号：后端 status 里带 version 就直接显示，没有就拉一次 */
+    if (d && d.version && $('updCur')) $('updCur').textContent = d.version;
+    if ($('updCur') && (!$('updCur').textContent || $('updCur').textContent === '—')) {
+      call('subagent:subagent_version', {}, 'updStatus');
+    }
+    /* 进页面时拉一次下载状态：上次没下完的话进度要能续上显示 */
+    call('subagent:subagent_download_status', {}, 'updStatus');
+  }
+
+  /* ── 版本更新（第三十轮，仿 on_air）──
+     只做「检查 → 下载 → 提示去包管理导入」，不做自动安装：
+     .toolpkg 的安装要宿主介入，插件层没有这个权限。 */
+  var UPD = { release: null, timer: 0, checking: false };
+
+  function updMsg(text, cls) {
+    var el = $('updMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'upd-msg' + (cls ? (' ' + cls) : '');
+  }
+
+  /* 检查更新 */
+  function updCheck(force) {
+    if (UPD.checking) return;
+    UPD.checking = true;
+    var btn = document.querySelector('[data-act="updCheck"]');
+    if (btn) btn.classList.add('spin');
+    updMsg('正在检查…');
+    call('subagent:subagent_check_update', { force: !!force }, 'updCheck', function () {
+      UPD.checking = false;
+      if (btn) btn.classList.remove('spin');
+    });
+  }
+
+  function renderUpdCheck(r) {
+    UPD.checking = false;
+    var btn = document.querySelector('[data-act="updCheck"]');
+    if (btn) btn.classList.remove('spin');
+    if (!r || r.success === false) {
+      updMsg((r && r.message) || '检查失败', 'err');
+      return;
+    }
+    var d = r.data || {};
+    if (d.current && $('updCur')) $('updCur').textContent = d.current;
+    UPD.release = d;
+    if (!d.has_update) {
+      updMsg('已是最新版本' + (d.latest ? ('（' + d.latest + '）') : ''), 'ok');
+      if ($('updNew')) $('updNew').style.display = 'none';
+      return;
+    }
+    /* 有新版本：填卡片 */
+    updMsg('发现新版本 ' + d.latest, 'ok');
+    if ($('updTag')) $('updTag').textContent = d.latest || '';
+    if ($('updNotes')) $('updNotes').textContent = d.notes || d.notes_full || '（该版本没有写更新说明）';
+    if ($('updSize')) {
+      var sz = Number(d.asset_size) || 0;
+      $('updSize').textContent = d.has_asset
+        ? ('更新包 ' + (sz > 0 ? fmtBytes(sz) : '大小未知') + (d.prerelease ? ' · 预发布版' : ''))
+        : '该版本没有上传 .toolpkg 资产，无法下载';
+    }
+    if ($('updDlBtn')) {
+      $('updDlBtn').style.display = d.has_asset ? '' : 'none';
+      $('updDlBtn').textContent = '下载更新包';
+    }
+    if ($('updNew')) $('updNew').style.display = '';
+  }
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576) return (Math.round(n / 104857.6) / 10) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' B';
+  }
+
+  /* 下载更新 */
+  function updDownload() {
+    if ($('updDlBtn')) { $('updDlBtn').disabled = true; $('updDlBtn').textContent = '下载中…'; }
+    if ($('updProg')) $('updProg').style.display = '';
+    if ($('updProgLb')) $('updProgLb').textContent = '下载中';
+    if ($('updProgMsg')) $('updProgMsg').textContent = '正在连接 GitHub…';
+    if ($('updBarIn')) $('updBarIn').style.width = '0%';
+    if ($('updPath')) $('updPath').textContent = '';
+    call('subagent:subagent_download_update', {}, 'updDownload');
+    /* 轮询状态：下载是后端阻塞的，页面只能靠轮询看进度 */
+    if (UPD.timer) { try { clearInterval(UPD.timer); } catch (e0) {} }
+    UPD.timer = setInterval(function () {
+      if (!ALIVE) { try { clearInterval(UPD.timer); } catch (e1) {} return; }
+      call('subagent:subagent_download_status', {}, 'updStatus');
+    }, 1500);
+  }
+
+  function renderUpdDownload(r) {
+    if (UPD.timer) { try { clearInterval(UPD.timer); } catch (e0) {} UPD.timer = 0; }
+    if ($('updDlBtn')) { $('updDlBtn').disabled = false; $('updDlBtn').textContent = '下载更新包'; }
+    var ok = !!(r && r.success !== false);
+    var msg = (r && r.message) || (ok ? '下载完成' : '下载失败');
+    updMsg(msg, ok ? 'ok' : 'err');
+    if ($('updProg')) $('updProg').style.display = '';
+    var d = (r && r.data) || {};
+    var installed = !!d.installed;
+    if ($('updProgLb')) {
+      $('updProgLb').textContent = !ok ? '下载失败' : (installed ? '已安装' : '下载完成');
+    }
+    if ($('updProgMsg')) $('updProgMsg').textContent = msg;
+    if ($('updBarIn') && ok) $('updBarIn').style.width = '100%';
+    if ($('updPath')) {
+      if (installed) {
+        $('updPath').textContent = '已写入 ' + (d.path || '') + '　→ 重启 Operit 生效';
+      } else if (d.path) {
+        $('updPath').textContent = '文件：' + d.path + '（未自动安装，可点「立即安装」）';
+      } else {
+        $('updPath').textContent = '';
+      }
+    }
+    /* 下载成功但没装上时，给个手动安装入口 */
+    if ($('updInstall')) {
+      $('updInstall').style.display = (ok && !installed) ? '' : 'none';
+    }
+    call('subagent:subagent_download_status', {}, 'updStatus');
+  }
+
+  /* 手动安装（下载完成但自动安装失败时用） */
+  function updInstall() {
+    if ($('updInstall')) { $('updInstall').disabled = true; $('updInstall').textContent = '安装中…'; }
+    call('subagent:subagent_install_update', {}, 'updInstall');
+  }
+
+  function renderUpdInstall(r) {
+    if ($('updInstall')) { $('updInstall').disabled = false; $('updInstall').textContent = '立即安装'; }
+    var ok = !!(r && r.success !== false);
+    var msg = (r && r.message) || (ok ? '已安装' : '安装失败');
+    updMsg(msg, ok ? 'ok' : 'err');
+    if ($('updProgLb')) $('updProgLb').textContent = ok ? '已安装' : '安装失败';
+    if ($('updProgMsg')) $('updProgMsg').textContent = msg;
+    var d = (r && r.data) || {};
+    if ($('updPath') && d.path) {
+      $('updPath').textContent = '已写入 ' + d.path + (d.need_restart ? '　→ 重启 Operit 生效' : '');
+    }
+    if (ok && $('updInstall')) $('updInstall').style.display = 'none';
+  }
+
+  /* 下载状态（轮询入口） */
+  function renderUpdStatus(d) {
+    if (!d) return;
+    /* 版本号顺便刷新 */
+    if (d.version && $('updCur') && $('updCur').textContent === '—') $('updCur').textContent = d.version;
+    var st = d.status || 'idle';
+    if (st === 'idle') return;
+    if ($('updProg')) $('updProg').style.display = '';
+    var pct = Number(d.percent) || 0;
+    if ($('updBarIn')) $('updBarIn').style.width = pct + '%';
+    if ($('updProgLb')) {
+      $('updProgLb').textContent =
+        st === 'done' ? '下载完成' :
+        st === 'failed' ? '下载失败' :
+        st === 'missing' ? '文件已不在' :
+        ('下载中 ' + pct + '%');
+    }
+    if ($('updProgMsg')) {
+      $('updProgMsg').textContent = d.message || (d.received_text ? (d.received_text + ' / ' + d.total_text) : '');
+    }
+    if ($('updPath') && d.path) {
+      $('updPath').textContent = '文件：' + d.path;
+    }
+    /* 终态停轮询 */
+    if ((st === 'done' || st === 'failed' || st === 'missing') && UPD.timer) {
+      try { clearInterval(UPD.timer); } catch (e1) {}
+      UPD.timer = 0;
+      if ($('updDlBtn')) { $('updDlBtn').disabled = false; $('updDlBtn').textContent = '下载更新包'; }
+    }
   }
   /* 密钥显示切换：默认密码态，点一下变明文 */
   function toggleKey() {
@@ -3439,6 +3613,10 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'pickModel') return pickModel();
     if (act === 'probeModel') return probeModel();
     if (act === 'doProbe') return probe();
+    /* 版本更新（第三十轮） */
+    if (act === 'updCheck') { hf(); return updCheck(true); }
+    if (act === 'updDownload') { hf(); return updDownload(); }
+    if (act === 'updInstall') { hf(); return updInstall(); }
     if (act === 'saveKey') return saveKey();
     if (act === 'doCreate') return createTask();
     if (act === 'openTools') return openTools();

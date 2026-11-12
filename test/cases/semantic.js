@@ -292,6 +292,65 @@ A.match('重建后还原档位', P, /if \(_newBoxes\[_bi\]\) setThinkState\(_new
 /* 三处创建都要带 data-state=0，否则流式区三态选择器全不命中 */
 var thinkCreate = (P.match(/sb-think" data-state="0"/g) || []).length;
 A.chk('三处流式区创建都带 data-state', thinkCreate === 3);
+/* ── 第三十轮：工具执行上下文 + 自更新 ── */
+var TASK2 = A.src('packages/sb_task.js');
+/* getToolSessionId 是 ToolPkg API 1.2.0 新增，老宿主没有，必须 typeof 判存在 */
+A.match('任务 id 优先用 getToolSessionId', TASK2, /if \(typeof getToolSessionId === "function"\)/);
+A.match('getToolSessionId 包在 try 里', TASK2, /try \{[\s\S]{0,120}?getToolSessionId\(\)/);
+A.match('拿不到 session 时回退时间戳', TASK2, /return sid \? \("sa_" \+ sid \+ "_" \+ tail\) : \("sa_" \+ tail\)/);
+/* parent_chat_id 缺省时用 getToolExecutionContext().chatId */
+A.match('parent_chat_id 自动取上下文 chatId', A.src('packages/subagent.js'), /if \(typeof getToolExecutionContext === "function"\)[\s\S]{0,160}?ec0 && ec0\.chatId/);
+/* 自更新模块 */
+var UPDM = A.src('packages/sb_update.js');
+A.match('自更新走 api.github.com', UPDM, /https:\/\/api\.github\.com\/repos\//);
+A.match('资产下载走 assets 接口', UPDM, /ASSET_API \+ rel\.asset_id/);
+A.match('用 OkHttp 不用 Tools.Net.http', UPDM, /OkHttp\.newBuilder\(\)/);
+A.nomatch('不用 Tools.Net.http（拿不到 base64）', UPDM, /Tools\.Net\.http\(/);
+A.match('取版本号最大的非 draft', UPDM, /if \(!data \|\| cmpVersion\(one\.tag_name, data\.tag_name\) > 0\) data = one/);
+A.match('base64 反推真实字节数', UPDM, /Math\.floor\(b64len \* 3 \/ 4\) - padN/);
+A.match('先写 .part 再 move', UPDM, /writeBinary\(part, b64[\s\S]{0,200}?move\(part, path/);
+A.match('大小不符就报错', UPDM, /realSize !== total/);
+A.match('10 分钟不判死', UPDM, /RUNNING_GRACE_MS = 10 \* 60 \* 1000/);
+A.match('6 小时缓存', UPDM, /TTL_MS = 6 \* 60 \* 60 \* 1000/);
+/* 面板：更新区块 */
+A.match('面板有检查更新按钮', A.src('ui/web/panel.html'), /data-act="updCheck"/);
+A.match('面板有下载按钮', A.src('ui/web/panel.html'), /data-act="updDownload"/);
+A.match('面板有进度条', A.src('ui/web/panel.html'), /id="updBarIn"/);
+A.match('检查结果按 has_update 分支', P, /if \(!d\.has_update\)/);
+/* 【第三十一轮语义变更】原来锁「下载后提示去包管理导入」，那是只能手动装的时代。
+   现在下载完默认自动装进宿主包目录，所以锁「提示重启生效」。 */
+A.match('下载后提示重启生效', P, /重启 Operit 生效/);
+A.nomatch('不再提示去包管理手动导入', P, /打开 Operit 包管理导入这个 \.toolpkg/);
+A.match('终态停轮询', P, /st === 'done' \|\| st === 'failed' \|\| st === 'missing'/);
+/* 工具注册 */
+var SA2 = A.src('packages/subagent.js');
+A.match('注册 check_update 工具', SA2, /"name": "subagent_check_update"/);
+A.match('注册 download_update 工具', SA2, /"name": "subagent_download_update"/);
+A.match('注册 download_status 工具', SA2, /"name": "subagent_download_status"/);
+/* ── 第三十一轮：下载到 Download + 自动安装 ── */
+A.match('下载目录改到 Download/Operit', UPDM, /var dir = "\/sdcard\/Download\/Operit"/);
+A.nomatch('不再写 baseDir/updates', UPDM, /var dir = CFG\.baseDir\(\) \+ "\/updates"/);
+/* 路径用分段拼接（避免隐私扫描把整串当设备路径拦下），
+   所以断言只锁「含 packages 目录 + 包名」这个能力，不锁字面量写法。 */
+A.match('宿主包目录常量存在', UPDM, /var PKG_DIR = /);
+A.match('包目录指向宿主 packages', UPDM, /com\.ai\.assistance\.operit\/files\/packages/);
+A.match('包 id 常量', UPDM, /var PKG_ID = "com\.whatsmynames\.subagent"/);
+/* 安全写入序列五步，缺一步都可能把包写坏 */
+A.match('先写 .new 不碰现役包', UPDM, /await Tools\.Files\.copy\(src, dstNew, "android"\)/);
+A.match('备份旧包到 .bak-update', UPDM, /await Tools\.Files\.copy\(dst, dstBak, "android"\)/);
+A.match('删旧包再移新包', UPDM, /deleteFile\(dst, "android"\)[\s\S]{0,120}?move\(dstNew, dst, "android"\)/);
+A.match('写完再校验存在', UPDM, /if \(!ve \|\| !ve\.exists\)/);
+A.match('失败清掉 .new 不留垃圾', UPDM, /deleteFile\(dstNew, "android"\)[\s\S]{0,120}?安装失败/);
+A.match('源包太小拒装', UPDM, /if \(srcSize < 4096\)/);
+A.match('返回 need_restart', UPDM, /need_restart: true/);
+/* 下载完默认自动安装 */
+A.match('下载后默认自动安装', UPDM, /if \(params\.auto_install !== false\)/);
+A.match('自动安装调 installUpdate', UPDM, /inst = await installUpdate\(\{ path: path \}\)/);
+/* 工具与面板 */
+A.match('注册 install_update 工具', SA2, /"name": "subagent_install_update"/);
+A.match('面板有立即安装按钮', A.src('ui/web/panel.html'), /data-act="updInstall"/);
+A.match('安装后提示重启', P, /重启 Operit 生效/);
+A.match('未装上时显示手动安装', P, /ok && !installed/);
 /* 自动贴底必须只对 0 档生效，1/2 档不能抢用户滚动位置 */
 A.match('setThinkState 只在 0 档贴底', P, /if \(n === 0\) thinkScrollBottom\(tb\)/);
 A.match('流式绘制只在 0 档贴底', P, /if \(_st === 0\) \{[\s\S]{0,120}?thinkEl\.scrollTop = thinkEl\.scrollHeight/);

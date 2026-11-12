@@ -504,6 +504,68 @@ METADATA
             "parameters": []
         },
         {
+            "name": "subagent_check_update",
+            "description": {
+                "zh": "检查 GitHub Release 是否有新版本（带 6 小时缓存）。返回当前版本、最新版本、更新说明、下载地址",
+                "en": "Check GitHub releases for a newer version (6h cache)"
+            },
+            "parameters": [
+                {
+                    "name": "force",
+                    "type": "boolean",
+                    "required": false,
+                    "description": {
+                        "zh": "true = 跳过 6 小时缓存强制重新拉取",
+                        "en": "Bypass the 6h cache"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "subagent_download_update",
+            "description": {
+                "zh": "下载最新版本的 .toolpkg 到数据目录 updates/。走 api.github.com（github.com 在本机网络不可达）",
+                "en": "Download the latest .toolpkg into updates/"
+            },
+            "parameters": [
+                {
+                    "name": "force",
+                    "type": "boolean",
+                    "required": false,
+                    "description": {
+                        "zh": "true = 跳过缓存重新检查版本",
+                        "en": "Bypass the version cache"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "subagent_download_status",
+            "description": {
+                "zh": "查询下载进度与结果（已下载/总大小/百分比/失败原因），面板重开后仍可读",
+                "en": "Query download progress and result"
+            },
+            "parameters": []
+        },
+        {
+            "name": "subagent_install_update",
+            "description": {
+                "zh": "把已下载的 .toolpkg 写入宿主包目录完成安装。装完必须重启 Operit 生效（宿主只在启动时加载包文件）。会备份旧包到 .bak-update",
+                "en": "Install the downloaded .toolpkg into the host package dir. Restart Operit to take effect"
+            },
+            "parameters": [
+                {
+                    "name": "path",
+                    "type": "string",
+                    "required": false,
+                    "description": {
+                        "zh": "要安装的包路径。不传则用上次下载记录里的路径",
+                        "en": "Package path; defaults to the last downloaded file"
+                    }
+                }
+            ]
+        },
+        {
             "name": "subagent_trace",
             "description": {
                 "zh": "看任务逐步明细：思考、正文、工具调用与结果摘要",
@@ -888,6 +950,18 @@ exports.subagent_spawn = async function (params) {
     if (!ctxText && (ctxModeEarly === "chat_tail" || ctxModeEarly === "fork" || ctxModeEarly === "summary")) {
         try {
             var pcid = String(params.parent_chat_id || "");
+            /* 【自动取当前对话】ToolPkg API 1.2.0 的 getToolExecutionContext().chatId
+               就是发起本次工具调用的对话 id，比下面「取最近更新的对话」准得多：
+               用户在 A 对话里派活、B 对话刚好更新过，取最近会拿错。
+               老宿主没这个 API，所以 typeof 判存在 + 回退到原逻辑。 */
+            if (!pcid) {
+                try {
+                    if (typeof getToolExecutionContext === "function") {
+                        var ec0 = getToolExecutionContext();
+                        pcid = String((ec0 && ec0.chatId) || "");
+                    }
+                } catch (eEc) { pcid = ""; }
+            }
             if (!pcid) {
                 /* 同 subagent_chats：宿主校验 query 必填，优先 listAll */
                 var lr = null;
@@ -2179,4 +2253,36 @@ exports.subagent_version = async function () {
         if (Object.prototype.hasOwnProperty.call(exports, k) && /^subagent_/.test(k)) n++;
     }
     complete({ success: true, message: VERSION, data: { version: VERSION, base_dir: CFG.baseDir(), temp_root: TASK.tempRoot(), tools: n } });
+};
+
+/* ── 自更新（第三十轮，仿 on_air）──
+   为什么走工具而不是只在面板里做：面板可以调工具，主代理也能调，
+   这样「派个任务让子代理自己更新」也可行。 */
+var UPD = require("./sb_update.js");
+
+exports.subagent_check_update = async function (params) {
+    params = params || {};
+    var r = await UPD.checkUpdate({ force: !!params.force });
+    if (!r.ok) {
+        complete({ success: false, message: r.msg, data: { error: r.msg } });
+        return;
+    }
+    complete({ success: true, message: r.msg, data: r.data });
+};
+
+exports.subagent_download_update = async function (params) {
+    params = params || {};
+    var r = await UPD.downloadUpdate({ force: !!params.force });
+    complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
+};
+
+exports.subagent_download_status = async function () {
+    var r = await UPD.downloadStatus();
+    complete({ success: true, message: r.msg, data: r.data });
+};
+
+exports.subagent_install_update = async function (params) {
+    params = params || {};
+    var r = await UPD.installUpdate({ path: params.path });
+    complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
 };

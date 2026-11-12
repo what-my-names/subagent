@@ -19,8 +19,28 @@ function nowText() {
     function p(n) { return n < 10 ? "0" + n : "" + n; }
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
 }
+/* 任务 id。
+   【为什么优先用 getToolSessionId】ToolPkg API 1.2.0 新增，官方注释：
+   「Host-assigned tool session identity; distinct for every delegated subtask run」
+   宿主保证每次委派都不同。原来用「时间戳 + 随机数」，同一毫秒内并发派两个任务
+   有撞号风险（随机数只有 46656 种，同毫秒撞概率不低）。
+   【为什么还要拼时间戳】session id 只在同一次工具调用内稳定，跨调用可能重复，
+   拼上时间戳保证全局唯一。
+   【为什么要 typeof 判存在】这是 1.2.0 新增 API，老版本宿主没有，
+   直接调会抛 ReferenceError。 */
 function newId() {
-    return "sa_" + nowMs().toString(36) + "_" + Math.floor(Math.random() * 46656).toString(36).padStart(3, "0");
+    var sid = "";
+    try {
+        if (typeof getToolSessionId === "function") {
+            sid = String(getToolSessionId() || "");
+        }
+    } catch (e) { sid = ""; }
+    /* session id 可能含非法文件名字符，只留字母数字，截断防过长 */
+    if (sid) {
+        sid = sid.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
+    }
+    var tail = nowMs().toString(36) + Math.floor(Math.random() * 46656).toString(36).padStart(3, "0");
+    return sid ? ("sa_" + sid + "_" + tail) : ("sa_" + tail);
 }
 
 function tasksDir() { return CFG.tasksDir(); }

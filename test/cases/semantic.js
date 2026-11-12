@@ -461,4 +461,40 @@ A.match('悬浮态固定居中', P, /el\.style\.left = '50%';\s*el\.style\.top =
 A.match('悬浮态保留居中基准', P, /rec\.floatBase = 'translate\(-50%,-50%\)'/);
 A.match('拖动叠加基准不覆盖', P, /el\.style\.transform = rec\.floatBase \+ ' translate3d\('/);
 A.match('悬浮态拖动飞走', P, /var isFloat = el\.classList\.contains\('float'\)/);
+
+/* ── 第四十一轮：HTML 标签嵌套必须平衡 ──
+   根因：edit_file 大段替换吃掉了 searchbar 的 </div>，
+   #homeViewport 被吞进 .searchbar（display:flex 横向），主页排版整个炸掉。
+   CSS 花括号、JS 语法、字符串断言全都查不出来，只有真跑才看到。
+   这里做真·标签栈校验：模拟浏览器解析，检查开闭配对。 */
+(function () {
+  var html = A.src('ui/web/panel.html');
+  var VOID = { area:1, base:1, br:1, col:1, embed:1, hr:1, img:1, input:1,
+               link:1, meta:1, param:1, source:1, track:1, wbr:1 };
+  var cleaned = html.replace(/<!--[\s\S]*?-->/g, '')
+                    .replace(/<script[\s\S]*?<\/script>/gi, '<script></script>')
+                    .replace(/<style[\s\S]*?<\/style>/gi, '<style></style>');
+  var re = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+  var stack = [], errs = [], m;
+  while ((m = re.exec(cleaned)) !== null) {
+    var closing = m[1] === '/', tag = m[2].toLowerCase(), self = m[4] === '/';
+    if (VOID[tag] || self) continue;
+    if (!closing) { stack.push(tag); continue; }
+    if (!stack.length) { errs.push('多余 </' + tag + '>'); continue; }
+    if (stack[stack.length - 1] === tag) { stack.pop(); continue; }
+    var fi = -1;
+    for (var k = stack.length - 1; k >= 0; k--) { if (stack[k] === tag) { fi = k; break; } }
+    if (fi >= 0) {
+      for (var k2 = stack.length - 1; k2 > fi; k2--) errs.push('<' + stack[k2] + '> 未闭合');
+      stack.length = fi;
+    } else errs.push('</' + tag + '> 无匹配开标签');
+  }
+  for (var j = 0; j < stack.length; j++) errs.push('<' + stack[j] + '> 未闭合');
+  A.chk('panel.html 标签嵌套平衡' + (errs.length ? '：' + errs.slice(0, 3).join('; ') : ''), errs.length === 0);
+
+  /* 结构断言：searchbar 与 homeViewport 必须是 page-home 的并列子节点，
+     不能出现 viewport 被吞进 searchbar 里（那就是排版炸掉的症状） */
+  A.match('searchbar 已正确闭合', html, /<\/button>\s*<\/div>\s*<!--\s*上滑彩蛋/);
+  A.match('viewport 不在 searchbar 内', html, /<div class="searchbar topbar">[\s\S]{0,600}?<\/div>\s*<!--[\s\S]{0,400}?<div class="home-viewport"/);
+})();
 A.finish();

@@ -566,6 +566,33 @@ METADATA
             ]
         },
         {
+            "name": "subagent_open_mail",
+            "description": {
+                "zh": "调起系统邮件应用写一封信（发 SENDTO intent）。WebView 不支持 mailto: 直接跳转，必须走后端 intent",
+                "en": "Open the system mail app with a draft (SENDTO intent). WebView cannot navigate mailto: directly"
+            },
+            "parameters": [
+                {
+                    "name": "email",
+                    "type": "string",
+                    "required": true,
+                    "description": {
+                        "zh": "收件邮箱地址",
+                        "en": "Recipient email address"
+                    }
+                },
+                {
+                    "name": "subject",
+                    "type": "string",
+                    "required": false,
+                    "description": {
+                        "zh": "邮件主题，默认「反馈」",
+                        "en": "Subject, defaults to feedback"
+                    }
+                }
+            ]
+        },
+        {
             "name": "subagent_trace",
             "description": {
                 "zh": "看任务逐步明细：思考、正文、工具调用与结果摘要",
@@ -2284,5 +2311,11 @@ exports.subagent_download_status = async function () {
 exports.subagent_install_update = async function (params) {
     params = params || {};
     var r = await UPD.installUpdate({ path: params.path });
+    complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
+};
+/* 反馈邮箱：WebView 不能直接跳 mailto:，走后端发 SENDTO intent */
+exports.subagent_open_mail = async function (params) {
+    params = params || {};
+    var r = await UPD.openMail({ email: params.email, subject: params.subject });
     complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
 };

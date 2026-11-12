@@ -20,7 +20,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 > 带了 CORS 头则是真逐字流式。判断方法：
 > `curl -sI -X OPTIONS -H 'Origin: http://localhost/subagent' <你的端点>`，看有没有 `access-control-allow-origin`。
 
-## 工具（34 个）
+## 工具（35 个）
 
 **任务生命周期**
 
@@ -103,7 +103,7 @@ src/
   manifest.json          ToolPkg 清单
   main.js                入口：注册 UI 路由 + 收件箱钩子
   packages/              后端（配置 / 任务 / LLM / 工具 / 钩子 / 消息总线）
-    subagent.js          34 个工具的导出与声明
+    subagent.js          35 个工具的导出与声明
     sb_config.js         配置读写、密钥环境变量、模型缓存
     sb_task.js           任务状态机与落盘
     sb_llm.js            端点解析、请求构造、模型列表

@@ -4018,17 +4018,19 @@ document.addEventListener('visibilitychange', function () {
     /* 打开态：在彩蛋屏上下滑可以收回 */
     bindClose($('eggPanel'));
 
-    /* 邮箱入口：mailto 交给系统处理 */
+    /* 邮箱入口：WebView 不能直接跳 mailto:（会被当成导航地址，加载失败顶成白页）。
+       改走后端发 SENDTO intent，由系统交给邮件应用；失败则把地址显示出来让用户复制。 */
     var mail = $('eggMail');
     if (mail) {
       mail.addEventListener('click', function (ev) {
         ev.preventDefault();
         var addr = 'whoiscui@foxmail.com';
-        try {
-          window.location.href = 'mailto:' + addr + '?subject=' + encodeURIComponent('[subagent] 反馈');
-        } catch (eM) {
-          toast('反馈邮箱：' + addr, 'ok');
-        }
+        call('subagent:subagent_open_mail', { email: addr, subject: '[subagent] 反馈' }, 'eggMail',
+          function (r) {
+            var ok = !!(r && r.success !== false);
+            var msg = (r && r.message) || (ok ? '已调起邮件应用' : '邮箱：' + addr);
+            toast(msg, ok ? 'ok' : 'warn');
+          });
       });
     }
 

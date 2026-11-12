@@ -530,6 +530,39 @@ async function installUpdate(params) {
     }
 }
 
+/* ---------- 工具：打开邮件客户端 ----------
+   为什么需要：WebView 不处理 mailto: 协议。前端用 window.location.href = 'mailto:...'
+   会被 WebView 当成导航地址，加载失败后直接顶成错误页，整个面板被吃掉
+   （net::ERR_UNKNOWN_URL_SCHEME）。
+   正确做法是发 SENDTO intent 交给系统，WebView 不参与导航。 */
+async function openMail(params) {
+    params = params || {};
+    var addr = String(params.email || "").trim();
+    var subject = String(params.subject || "反馈");
+    if (!addr) return { ok: false, msg: "没有指定邮箱地址" };
+
+    /* mailto: 里的 @ 和 ? 都是保留字符，主题要 encode */
+    var uri = "mailto:" + addr + "?subject=" + encodeURIComponent(subject);
+    try {
+        if (!Tools || !Tools.System || typeof Tools.System.intent !== "function") {
+            return { ok: false, msg: "宿主不支持 intent，邮箱：" + addr, data: { email: addr } };
+        }
+        var r = await Tools.System.intent({
+            action: "android.intent.action.SENDTO",
+            uri: uri
+        });
+        /* 宿主可能返回成功但系统没邮件客户端，这里只报「已发起」 */
+        return {
+            ok: true,
+            msg: "已调起邮件应用（" + addr + "）",
+            data: { email: addr, uri: uri, raw: r ? String(r.message || "") : "" }
+        };
+    } catch (e) {
+        /* 失败时把地址回给前端，让用户能手动复制 */
+        return { ok: false, msg: "没有可用的邮件应用，邮箱：" + addr, data: { email: addr } };
+    }
+}
+
 module.exports = {
     REPO: REPO,
     cmpVersion: cmpVersion,
@@ -539,6 +572,7 @@ module.exports = {
     downloadUpdate: downloadUpdate,
     downloadStatus: downloadStatus,
     installUpdate: installUpdate,
+    openMail: openMail,
     PKG_DIR: PKG_DIR,
     PKG_ID: PKG_ID
 };

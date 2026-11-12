@@ -355,10 +355,12 @@ A.match('未装上时显示手动安装', P, /ok && !installed/);
 /* ── 第三十四轮：工具数必须与实际一致 ── */
 /* 这个数字错过两次（29 写死，实际 34），加断言锁死，谁再写错就红 */
 var realToolCount = (SA2.match(/"name": "subagent_/g) || []).length;
-A.match('README 工具数写 34', A.src('../README.md'), /## 工具（34 个）/);
-A.match('README 文件说明写 34', A.src('../README.md'), /subagent\.js\s+34 个工具的导出与声明/);
-A.chk('实际工具数就是 34', realToolCount === 34);
-A.chk('README 数字与代码一致', A.src('../README.md').indexOf('## 工具（' + realToolCount + ' 个）') >= 0);
+/* 【第四十二轮】原来锁死 34，加工具就要改三处。改为动态比对：拿代码实际数量比对文档。 */
+A.chk('README 工具数与代码一致（' + realToolCount + ' 个）',
+  A.src('../README.md').indexOf('## 工具（' + realToolCount + ' 个）') >= 0);
+A.chk('README 文件说明与代码一致',
+  new RegExp('subagent\\.js\\s+' + realToolCount + ' 个工具的导出与声明').test(A.src('../README.md')));
+A.chk('实际工具数不少于 34（只增不减）', realToolCount >= 34);
 /* ── 第三十七轮：主页上滑彩蛋改为「整页上推」──
    旧版是从底部拉出一块板（egg-mask + egg-open），已整体废弃。
    新版是 viewport 裁切 + track 200% 两屏，track 上移 50% 露出彩蛋。 */
@@ -497,4 +499,12 @@ A.match('悬浮态拖动飞走', P, /var isFloat = el\.classList\.contains\('flo
   A.match('searchbar 已正确闭合', html, /<\/button>\s*<\/div>\s*<!--\s*上滑彩蛋/);
   A.match('viewport 不在 searchbar 内', html, /<div class="searchbar topbar">[\s\S]{0,600}?<\/div>\s*<!--[\s\S]{0,400}?<div class="home-viewport"/);
 })();
+/* ── 第四十二轮：反馈邮箱不能走 location.href ──
+   WebView 不处理 mailto:，跳过去会把面板顶成 ERR_UNKNOWN_URL_SCHEME 白页。 */
+A.nomatch('前端不再跳 mailto:', P, /window\.location\.href = 'mailto:/);
+A.match('邮箱改走后端工具', P, /call\('subagent:subagent_open_mail'/);
+A.match('后端有 openMail 实现', A.src('packages/sb_update.js'), /async function openMail\(params\)/);
+A.match('发 SENDTO intent', A.src('packages/sb_update.js'), /action: "android\.intent\.action\.SENDTO"/);
+A.match('工具已注册声明', SA2, /"name": "subagent_open_mail"/);
+A.match('工具已导出实现', SA2, /exports\.subagent_open_mail = async function/);
 A.finish();

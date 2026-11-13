@@ -507,4 +507,32 @@ A.match('后端有 openMail 实现', A.src('packages/sb_update.js'), /async func
 A.match('发 SENDTO intent', A.src('packages/sb_update.js'), /action: "android\.intent\.action\.SENDTO"/);
 A.match('工具已注册声明', SA2, /"name": "subagent_open_mail"/);
 A.match('工具已导出实现', SA2, /exports\.subagent_open_mail = async function/);
+/* ── 第四十三轮：反馈模板体系 ── */
+/* 邮件正文必须是结构化模板，不能是空白 */
+/* 正文按标准 issue 模板写：### 一级标题 + 提示 + 留白 */
+A.match('邮件正文含「发生了什么」', UPDM, /### 发生了什么/);
+A.match('邮件正文含「期望是什么」', UPDM, /### 期望是什么/);
+A.match('邮件正文含「复现步骤」', UPDM, /### 复现步骤/);
+A.match('邮件正文自动带环境信息', UPDM, /### 环境信息（自动填写，请勿删除）/);
+A.match('环境信息含版本与包名', UPDM, /"- 版本：" \+ env\.version[\s\S]{0,120}"- 包名：" \+ env\.pkg/);
+/* 换行方案：宿主 type 字段被占用于 intent 类型，ACTION_SEND 传不了 MIME，
+   只能走 SENDTO + mailto；而 mailto 的 %0A / %0D%0A 在 Foxmail 里会挤成一行，
+   所以正文用 <br> 分隔（第三方客户端认这个）。 */
+A.match('邮件走 SENDTO', UPDM, /action: "android\.intent\.action\.SENDTO"/);
+A.nomatch('不再用 ACTION_SEND（宿主无 MIME 支持）', UPDM, /action: "android\.intent\.action\.SEND"/);
+A.match('正文用 <br> 分隔', UPDM, /lines\.join\("<br>"\)/);
+A.nomatch('正文不用 CRLF', UPDM, /lines\.join\([^)]*\\r\\n/);
+/* 版本号由调用方传入（沙箱里读不到 VERSION.txt） */
+A.match('版本号由调用方传入', UPDM, /version: String\(params\.version \|\| ""\)/);
+A.match('自动采集设备信息', UPDM, /Tools\.System\.getDeviceInfo\(\)/);
+A.match('主题按类型自动生成', UPDM, /"\[subagent\] " \+ \(kind === "feature" \? "功能建议" : "问题反馈"\)/);
+/* GitHub issue 模板必须存在且是表单式 */
+A.match('有 bug 模板', A.src('../.github/ISSUE_TEMPLATE/bug_report.yml'), /^name: 问题反馈/m);
+A.match('bug 模板有必填校验', A.src('../.github/ISSUE_TEMPLATE/bug_report.yml'), /validations:\s*\n\s*required: true/);
+A.match('有 feature 模板', A.src('../.github/ISSUE_TEMPLATE/feature_request.yml'), /^name: 功能建议/m);
+A.match('关掉空白 issue', A.src('../.github/ISSUE_TEMPLATE/config.yml'), /blank_issues_enabled: false/);
+/* 外链也要走后端，不能 location.href */
+A.match('外链走 open_url 工具', P, /call\('subagent:subagent_open_url'/);
+A.match('外链工具只放 https', UPDM, /if \(!\/\^https:\\\/\\\/\/i\.test\(url\)\)/);
+A.match('外链工具限定白名单', UPDM, /github\\\.com\\\/what-my-names/);
 A.finish();

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 邮件反馈（涉及隐私 / 内容较长）
+    url: mailto:whoiscui@foxmail.com?subject=%5Bsubagent%5D%20%E5%8F%8D%E9%A6%88
+    about: 不方便公开的内容走邮件。插件里「反馈 / 联系」会自动带上环境信息。
+  - name: 先看文档
+    url: https://github.com/what-my-names/subagent#readme
+    about: README 里有安装、配置、工具清单和已知限制，很多问题那里已经有答案。

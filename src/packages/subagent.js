@@ -586,8 +586,35 @@ METADATA
                     "type": "string",
                     "required": false,
                     "description": {
-                        "zh": "邮件主题，默认「反馈」",
-                        "en": "Subject, defaults to feedback"
+                        "zh": "邮件主题，默认按类型和版本自动生成",
+                        "en": "Subject; auto-generated from kind and version if omitted"
+                    }
+                },
+                {
+                    "name": "kind",
+                    "type": "string",
+                    "required": false,
+                    "description": {
+                        "zh": "反馈类型：bug（问题反馈，默认）/ feature（功能建议）",
+                        "en": "Feedback type: bug (default) or feature"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "subagent_open_url",
+            "description": {
+                "zh": "用系统浏览器打开链接。WebView 不能直接跳外链，必须走后端。只放行本仓库相关地址",
+                "en": "Open a URL in the system browser. WebView cannot navigate external links directly"
+            },
+            "parameters": [
+                {
+                    "name": "url",
+                    "type": "string",
+                    "required": true,
+                    "description": {
+                        "zh": "要打开的 https 链接（限本仓库相关）",
+                        "en": "https URL to open (repo-related only)"
                     }
                 }
             ]
@@ -2316,6 +2343,12 @@ exports.subagent_install_update = async function (params) {
 /* 反馈邮箱：WebView 不能直接跳 mailto:，走后端发 SENDTO intent */
 exports.subagent_open_mail = async function (params) {
     params = params || {};
-    var r = await UPD.openMail({ email: params.email, subject: params.subject });
+    var r = await UPD.openMail({ email: params.email, subject: params.subject, kind: params.kind, version: VERSION });
+    complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
+};
+/* 外链：同样不能 location.href，走后端 VIEW intent */
+exports.subagent_open_url = async function (params) {
+    params = params || {};
+    var r = await UPD.openUrl({ url: params.url });
     complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
 };

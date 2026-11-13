@@ -925,6 +925,9 @@ textarea{resize:vertical;min-height:72px}
 .egg-mail{display:inline-block;margin-top:14px;font-size:12.5px;color:var(--acc);
   text-decoration:none;padding:7px 18px;border-radius:9px;
   background:rgba(74,141,255,.1);border:1px solid rgba(74,141,255,.22)}
+/* 两个入口并排，间距 10px；窄屏自动换行 */
+.egg-links{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px}
+.egg-links .egg-mail{margin-top:0}
 .egg-mail:active{background:rgba(74,141,255,.2)}
 .egg-ver{margin-top:12px;font-size:10.5px;color:var(--mut);opacity:.7;
   font-variant-numeric:tabular-nums}

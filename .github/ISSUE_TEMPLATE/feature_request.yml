@@ -1,0 +1,63 @@
+name: 功能建议
+description: 想要某个能力、觉得某处可以更好用
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提建议前先说一句：这个插件刻意做窄——它只管「派活、收结论」，
+        不做通用聊天，也不接管宿主已有的能力。方向对得上的建议更容易落地。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的是什么麻烦
+      description: 先说场景，再说你想要的解法。有场景的建议更容易判断值不值得做。
+      placeholder: |
+        例：同时派了 5 个子代理，收件箱里结论混在一起，分不清哪条对应哪个任务。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望的解法
+      description: 具体一点。界面、交互、参数，怎么顺手怎么说。
+      placeholder: |
+        例：收件箱按 group 分组，每组能折叠。
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你试过的其他办法
+      description: 现在你是怎么绕过去的？这能说明痛点有多真。
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及哪一块
+      multiple: true
+      options:
+        - 任务创建 / 执行
+        - 面板界面
+        - 通知条
+        - 更新与下载
+        - 配置
+        - 收件箱
+        - 工具白名单 / 权限
+        - 其他
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在 Issues 里搜过，没有重复建议
+          required: true

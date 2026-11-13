@@ -1,0 +1,97 @@
+name: 问题反馈
+description: 功能不工作、报错、界面错乱、卡顿等
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量把下面几项填全，能省掉好几轮来回。
+
+        > 如果涉及隐私内容，请改用邮件：whoiscui@foxmail.com
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: 一句话说清现象。有报错原文就贴原文，别只写「报错了」。
+      placeholder: |
+        例：点面板里「反馈 / 联系」后整个面板变成白页，显示 net::ERR_UNKNOWN_URL_SCHEME。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望是什么
+      description: 你认为正常应该怎样。
+      placeholder: |
+        例：应该弹出邮件应用，面板保持不动。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从打开面板开始，一步步写。能稳定复现最好。
+      placeholder: |
+        1. 打开子代理面板
+        2. 主页上滑拉出彩蛋
+        3. 点「反馈 / 联系」
+        4. 面板变白页
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 插件版本
+      description: 面板「配置 → 版本更新」里能看到，或彩蛋页底部。
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题出在哪一块
+      multiple: true
+      options:
+        - 任务创建 / 执行
+        - 面板界面（排版、动画、手势）
+        - 通知条
+        - 更新与下载
+        - 配置（模型、密钥、端点）
+        - 收件箱
+        - 工具白名单 / 权限
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      description: 机型 + Android 版本 + API 等级。
+      placeholder: OPD2101 / Android 14 / API 34
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充说明 / 截图
+      description: 日志、截图、录屏，或你试过的其他方法。截图直接拖进来。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在 Issues 里搜过，没有重复
+          required: true
+        - label: 这是最新版本的问题
+          required: false

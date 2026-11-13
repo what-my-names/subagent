@@ -4025,11 +4025,24 @@ document.addEventListener('visibilitychange', function () {
       mail.addEventListener('click', function (ev) {
         ev.preventDefault();
         var addr = 'whoiscui@foxmail.com';
-        call('subagent:subagent_open_mail', { email: addr, subject: '[subagent] 反馈' }, 'eggMail',
+        call('subagent:subagent_open_mail', { email: addr, kind: 'bug' }, 'eggMail',
           function (r) {
             var ok = !!(r && r.success !== false);
             var msg = (r && r.message) || (ok ? '已调起邮件应用' : '邮箱：' + addr);
             toast(msg, ok ? 'ok' : 'warn');
+          });
+      });
+    }
+
+    /* GitHub Issue 入口：同样不能 location.href（WebView 会白页），走后端开链接 */
+    var issue = $('eggIssue');
+    if (issue) {
+      issue.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        call('subagent:subagent_open_url', { url: 'https://github.com/what-my-names/subagent/issues/new/choose' }, 'eggIssue',
+          function (r) {
+            var ok = !!(r && r.success !== false);
+            toast((r && r.message) || (ok ? '已打开 Issue 页面' : '打开失败'), ok ? 'ok' : 'warn');
           });
       });
     }

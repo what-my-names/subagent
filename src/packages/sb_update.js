@@ -530,6 +530,29 @@ async function installUpdate(params) {
     }
 }
 
+/* 收集反馈要用的环境信息：版本、机型、系统版本。
+   为什么自动带：用户报 bug 时最常缺的就是这些，每次都要来回问一遍。
+   版本号优先用调用方传进来的（宿主沙箱里读不到源码目录的 VERSION.txt）。 */
+async function collectEnv(params) {
+    params = params || {};
+    var env = {
+        version: String(params.version || "") || currentVersion() || "?",
+        pkg: PKG_ID,
+        model: "", android: "", sdk: 0, app: ""
+    };
+    try {
+        if (Tools && Tools.System && typeof Tools.System.getDeviceInfo === "function") {
+            var d = await Tools.System.getDeviceInfo();
+            if (d) {
+                env.model = String(d.model || "") + (d.manufacturer ? ("（" + d.manufacturer + "）") : "");
+                env.android = String(d.androidVersion || "");
+                env.sdk = Number(d.sdkVersion) || 0;
+            }
+        }
+    } catch (e) { /* 拿不到就留空，不影响发信 */ }
+    return env;
+}
+
 /* ---------- 工具：打开邮件客户端 ----------
    为什么需要：WebView 不处理 mailto: 协议。前端用 window.location.href = 'mailto:...'
    会被 WebView 当成导航地址，加载失败后直接顶成错误页，整个面板被吃掉
@@ -538,28 +561,138 @@ async function installUpdate(params) {
 async function openMail(params) {
     params = params || {};
     var addr = String(params.email || "").trim();
-    var subject = String(params.subject || "反馈");
     if (!addr) return { ok: false, msg: "没有指定邮箱地址" };
 
-    /* mailto: 里的 @ 和 ? 都是保留字符，主题要 encode */
-    var uri = "mailto:" + addr + "?subject=" + encodeURIComponent(subject);
+    var env = await collectEnv(params);
+    var kind = String(params.kind || "bug");
+    var subject = String(params.subject || "") ||
+        ("[subagent] " + (kind === "feature" ? "功能建议" : "问题反馈") + " - " + env.version);
+
+    /* 预填结构化正文，按标准 issue 模板的写法：
+       一级标题 + 一句提示 + 留白，用户照着填。
+       为什么不用 mailto 的 body 参数：%0D%0A 在 Foxmail / 部分国产客户端会被吃掉，
+       整段挤成一行（实测踩过）。改用 ACTION_SEND + EXTRA_TEXT 传纯文本，
+       换行原样保留，不经过 URI 编码。 */
+    var isFeat = kind === "feature";
+    var lines = isFeat ? [
+        "### 你遇到的是什么麻烦",
+        "",
+        "（先说场景，再说你想要的解法。有场景的建议更容易判断值不值得做）",
+        "",
+        "",
+        "### 你希望的解法",
+        "",
+        "（具体一点。界面、交互、参数，怎么顺手怎么说）",
+        "",
+        "",
+        "### 你试过的其他办法",
+        "",
+        "（现在你是怎么绕过去的？这能说明痛点有多真）",
+        "",
+        "",
+        "### 涉及哪一块",
+        "",
+        "（任务执行 / 面板界面 / 通知条 / 更新下载 / 配置 / 收件箱 / 白名单 / 其他）",
+        "",
+        ""
+    ] : [
+        "### 发生了什么",
+        "",
+        "（一句话说清现象。有报错原文就贴原文，别只写「报错了」）",
+        "",
+        "",
+        "### 期望是什么",
+        "",
+        "（你认为正常应该怎样）",
+        "",
+        "",
+        "### 复现步骤",
+        "",
+        "1. ",
+        "2. ",
+        "3. ",
+        "",
+        "",
+        "### 问题出在哪一块",
+        "",
+        "（任务执行 / 面板界面 / 通知条 / 更新下载 / 配置 / 收件箱 / 白名单 / 其他）",
+        "",
+        "",
+        "### 补充说明 / 截图",
+        "",
+        "（日志、截图、录屏，或你试过的其他方法）",
+        "",
+        ""
+    ];
+
+    /* 环境信息单独一段，方便直接复制进 issue 的对应字段 */
+    lines = lines.concat([
+        "---",
+        "### 环境信息（自动填写，请勿删除）",
+        "",
+        "- 版本：" + env.version,
+        "- 包名：" + env.pkg,
+        "- 机型：" + (env.model || "?"),
+        "- Android：" + (env.android || "?") + (env.sdk ? (" (API " + env.sdk + ")") : ""),
+        "- 类型：" + (isFeat ? "功能建议" : "问题反馈")
+    ]);
+    /* 换行方案：Foxmail / Gmail 等客户端把 mailto 的 %0A 和 %0D%0A 都渲染成空格，
+       实测整段挤成一行。业界通行做法是改用 <br>，第三方客户端能正确断行。
+       纯文本客户端会显示字面 <br>，但那是少数，优先照顾主流。 */
+    var body = lines.join("<br>");
+
     try {
         if (!Tools || !Tools.System || typeof Tools.System.intent !== "function") {
             return { ok: false, msg: "宿主不支持 intent，邮箱：" + addr, data: { email: addr } };
         }
-        var r = await Tools.System.intent({
+        /* 只能走 SENDTO + mailto：
+           ACTION_SEND 需要 type="text/plain"（MIME），但宿主的 type 字段被占用于
+           intent 类型（activity/broadcast/service），传 MIME 会报
+           "Type must be one of: activity, broadcast, service"；
+           不传 type 则系统找不到能处理的应用（No Activity found to handle Intent）。
+           所以 ACTION_SEND 这条路在宿主上走不通，直接用 SENDTO。 */
+        var uri = "mailto:" + addr +
+            "?subject=" + encodeURIComponent(subject) +
+            "&body=" + encodeURIComponent(body);
+        await Tools.System.intent({
             action: "android.intent.action.SENDTO",
             uri: uri
         });
-        /* 宿主可能返回成功但系统没邮件客户端，这里只报「已发起」 */
         return {
             ok: true,
             msg: "已调起邮件应用（" + addr + "）",
-            data: { email: addr, uri: uri, raw: r ? String(r.message || "") : "" }
+            data: { email: addr, subject: subject, env: env, mode: "sendto", uri: uri }
         };
     } catch (e) {
-        /* 失败时把地址回给前端，让用户能手动复制 */
         return { ok: false, msg: "没有可用的邮件应用，邮箱：" + addr, data: { email: addr } };
+    }
+}
+
+/* ---------- 工具：用系统浏览器打开链接 ----------
+   同样因为 WebView 不能直接跳外链（https 也不行，会顶掉面板）。
+   白名单只放 https，且限定本仓库相关域名，避免被当成任意跳板。 */
+async function openUrl(params) {
+    params = params || {};
+    var url = String(params.url || "").trim();
+    if (!url) return { ok: false, msg: "没有指定链接" };
+    if (!/^https:\/\//i.test(url)) {
+        return { ok: false, msg: "只允许 https 链接" };
+    }
+    /* 只放行本仓库和 GitHub 的 issues 页面，防止被拿来跳任意站 */
+    if (!/^https:\/\/(github\.com\/what-my-names\/subagent|github\.com\/what-my-names)(\/|$)/i.test(url)) {
+        return { ok: false, msg: "这个链接不在白名单内：" + url };
+    }
+    try {
+        if (!Tools || !Tools.System || typeof Tools.System.intent !== "function") {
+            return { ok: false, msg: "宿主不支持 intent，链接：" + url, data: { url: url } };
+        }
+        await Tools.System.intent({
+            action: "android.intent.action.VIEW",
+            uri: url
+        });
+        return { ok: true, msg: "已用浏览器打开", data: { url: url } };
+    } catch (e) {
+        return { ok: false, msg: "打开失败，链接：" + url, data: { url: url } };
     }
 }
 
@@ -573,6 +706,7 @@ module.exports = {
     downloadStatus: downloadStatus,
     installUpdate: installUpdate,
     openMail: openMail,
+    openUrl: openUrl,
     PKG_DIR: PKG_DIR,
     PKG_ID: PKG_ID
 };

@@ -535,4 +535,18 @@ A.match('关掉空白 issue', A.src('../.github/ISSUE_TEMPLATE/config.yml'), /bl
 A.match('外链走 open_url 工具', P, /call\('subagent:subagent_open_url'/);
 A.match('外链工具只放 https', UPDM, /if \(!\/\^https:\\\/\\\/\/i\.test\(url\)\)/);
 A.match('外链工具限定白名单', UPDM, /github\\\.com\\\/what-my-names/);
+
+/* ── 第四十四轮：通知条动画补全 ── */
+/* 折叠/展开：基础 .tst 必须有 max-height 过渡，否则 .open 改高度是硬跳 */
+A.match('基础态有 max-height 过渡', CSS2, /transition:max-height \.3s cubic-bezier/);
+/* 悬浮态必须保留过渡（曾经写成 transition:none，导致双击瞬移） */
+A.nomatch('悬浮态不再杀掉过渡', CSS2, /\.tst\.float\{animation:none;transition:none/);
+A.match('悬浮态有 transform 过渡', CSS2, /\.tst\.float\{animation:none;\s*transition:transform \.3s/);
+/* 悬浮态消失用独立类，不能复用 tstOut（transform 会打架） */
+A.match('悬浮态淡出类', CSS2, /\.tst\.float\.gone\{opacity:0;transform:translate\(-50%,-50%\) scale\(\.94\)/);
+A.match('float 态走 gone 不走 out', P, /else if \(el\.classList\.contains\('float'\)\) \{[\s\S]{0,200}?el\.classList\.add\('gone'\)/);
+/* 两段式：同一事件循环连写两次 transform 会被合并成一帧，必须隔帧 */
+A.match('悬浮两段式过渡', P, /requestAnimationFrame\(function \(\) \{\s*requestAnimationFrame\(function \(\) \{/);
+A.match('首帧定到原位', P, /el\.style\.transform = startTf/);
+A.match('二帧过渡到中心', P, /el\.style\.transform = 'translate\(-50%,-50%\) scale\(1\)'/);
 A.finish();

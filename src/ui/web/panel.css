@@ -583,18 +583,39 @@ textarea{resize:vertical;min-height:72px}
      一旦拖动写入 style.transform，动画填充值立刻被覆盖，
      松手 reset 清空 style.transform 时又弹回 110% —— 这就是「先闪回去再消失」。
      backwards 只在播放前占位，播完自动让位给 style。 */
+  /* 过渡：折叠/展开靠 max-height，其余靠 transform/opacity。
+     为什么必须写在这里：.open 只改 max-height，没有这条就是硬跳。 */
+  transition:max-height .3s cubic-bezier(.22,.61,.36,1),
+             padding .24s ease,
+             box-shadow .3s ease,
+             border-radius .3s ease;
   animation:tstIn .26s cubic-bezier(.16,1,.3,1) backwards}
 .tst.drag{animation:none;transition:none}
 /* 单击展开：限高放开到约 8 行，仍留在原位，可滚动。
    为什么不直接全展开：长报错会把整屏挤满，8 行是「够判断」和「不霸屏」的折中。
-   想看全部就双击。 */
+   想看全部就双击。
+   注意 overflow 不能跟着过渡（CSS 里 overflow 不可动画），所以这里只在
+   展开态设 auto；收回时靠 max-height 过渡把内容裁掉，视觉上自然收拢。 */
 .tst.open{max-height:11.5em;overflow-y:auto;overscroll-behavior:contain}
-/* 双击悬浮：抬到屏幕中心，解除限高看全部，可拖动，松手飞走 */
-.tst.float{animation:none;transition:none;
+/* 双击悬浮：抬到屏幕中心，解除限高看全部，可拖动，松手飞走。
+   过渡必须留着，否则从原位跳到中心是瞬移。只关掉入场动画，
+   因为入场 keyframes 的 transform 会和这里的居中 transform 打架。 */
+.tst.float{animation:none;
+  transition:transform .3s cubic-bezier(.22,.61,.36,1),
+             opacity .3s ease,
+             width .3s cubic-bezier(.22,.61,.36,1),
+             max-height .3s cubic-bezier(.22,.61,.36,1),
+             box-shadow .3s ease,
+             border-radius .3s ease;
   max-height:none;overflow-y:auto;overscroll-behavior:contain;
   box-shadow:0 18px 48px rgba(0,0,0,.62);
   border-color:rgba(255,255,255,.18);cursor:grab}
 .tst.float:active{cursor:grabbing}
+/* 悬浮态消失：淡出 + 轻微缩小。不能用 tstOut —— 那个 keyframes 是
+   translate3d(0,-110%)，会跟居中用的 translate(-50%,-50%) 抢 transform，
+   结果是先跳到左上角再飞出去。 */
+.tst.float.gone{opacity:0;transform:translate(-50%,-50%) scale(.94);
+  transition:opacity .22s ease, transform .22s ease}
 /* 自动消失（未手动拖动）走 tstOut；这里用 forwards 而非 both：
    动画结束后保持「已飞出」的终态直到节点被移除，避免移除前一刻闪回原位 */
 .tst.out{animation:tstOut .24s ease-in forwards}

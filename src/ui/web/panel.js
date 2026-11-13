@@ -731,25 +731,45 @@ function toast(msg, level) {
 function floatToast(el, rec) {
   if (!el || rec.dead) return;
   try { clearTimeout(rec.timer); } catch (eT) {}
+
+  /* 两段式：先记下它现在的位置（right-top 的堆叠位），下一帧再过渡到屏幕中心。
+     为什么要两段：同一个事件循环里连续写两次 transform，浏览器会合并成一帧，
+     过渡根本没有起点，看起来就是瞬移。必须先让第一帧被渲染。 */
+  var r0 = el.getBoundingClientRect();
+  var startTf = 'translate3d(' + (r0.left + r0.width / 2 - window.innerWidth / 2) + 'px,' +
+                (r0.top + r0.height / 2 - window.innerHeight / 2) + 'px,0)' +
+                ' translate(-50%,-50%) scale(1)';
+
   el.classList.remove('open');
   el.classList.add('float');
   /* 从容器里摘出来挂到 body，避免被 #toastStack 的 overflow/层叠限制 */
   if (el.parentNode && el.parentNode !== document.body) {
     document.body.appendChild(el);
   }
+  /* 第一帧：定位到原位，无过渡 */
+  el.style.transition = 'none';
   el.style.position = 'fixed';
   el.style.left = '50%';
   el.style.top = '50%';
-  el.style.width = 'min(86vw, 420px)';
+  el.style.width = Math.min(r0.width, 420) + 'px';
   el.style.maxHeight = '70vh';
   el.style.overflowY = 'auto';
-  el.style.transform = 'translate(-50%,-50%)';
-  el.style.opacity = '1';
   el.style.zIndex = '300';
   el.style.pointerEvents = 'auto';
-  el.style.transition = 'transform .18s ease, opacity .18s ease';
+  el.style.opacity = '1';
+  el.style.transform = startTf;
   /* 记录基准位移，拖动时在此基础上叠加，避免覆盖掉居中用的 -50% */
   rec.floatBase = 'translate(-50%,-50%)';
+
+  /* 第二帧：解禁过渡，过渡到屏幕中心 + 撑宽 */
+  requestAnimationFrame(function () {
+    requestAnimationFrame(function () {
+      if (!el.parentNode || rec.dead) return;
+      el.style.transition = '';
+      el.style.width = 'min(86vw, 420px)';
+      el.style.transform = 'translate(-50%,-50%) scale(1)';
+    });
+  });
 }
 
   /* 新的插到最前面：容器在右上角，最新一条在最上面，旧的往下推。
@@ -809,6 +829,11 @@ function killToast(rec, dir, fromX, fromY) {
         el.style.opacity = '0';
       }, 16);
     }, 16);
+  } else if (el.classList.contains('float')) {
+    /* 悬浮态自动消失：淡出 + 轻微缩小。
+       不能走 .out → tstOut —— 那个 keyframes 用 translate3d(0,-110%)，
+       会和居中用的 translate(-50%,-50%) 抢 transform，先跳左上角再飞。 */
+    el.classList.add('gone');
   } else {
     el.classList.add('out');
   }

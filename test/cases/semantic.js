@@ -260,12 +260,12 @@ A.match('流式区 0 档限高', CSS2, /\.sb-think\{[^}]*max-height:120px/);
 A.match('流式区 1 档 320', CSS2, /\.sb-think\[data-state="1"\]\{max-height:320px/);
 A.match('流式区 2 档不限高', CSS2, /\.sb-think\[data-state="2"\]\{max-height:none/);
 /* 角标文案三档 */
-A.match('三档角标文案', P, /var THINK_TIPS = \['展开', '全部', '收起'\]/);
+A.match('两档角标文案', P, /var THINK_TIPS = \['展开', '收起', '收起'\]/);
 /* 高度 class 必须由 JS 挂上（只写 CSS 不挂 class 等于没生效） */
 A.match('JS 挂 h1/h2 class', P, /body\.classList\.add\('h1'\)/);
 A.match('JS 清 h1/h2 class', P, /body\.classList\.remove\('h1', 'h2'\)/);
 /* 点击必须累进循环，不能是两态互换 */
-A.match('点击累进到下一档', P, /setThinkState\(tb, \(st0 \+ 1\) % 3\)/);
+A.match('单击在展开收起间切', P, /cur === 0 \? 1 : 0/);
 /* 双击拦截必须删掉，否则第二次点击被吃掉，永远到不了 2 档 */
 A.nomatch('不再拦截双击', P, /_thinkTapEl/);
 /* setThinkState 必须接受 2 档（原来只认 0/1） */
@@ -581,27 +581,65 @@ A.match('工具结果默认不截断', A.src('packages/sb_task.js'), /tool_resul
 A.match('配置默认值也改 0', A.src('packages/sb_config.js'), /tool_result_max_chars: 0,/);
 /* 前端：思考块与工具块是两个独立卡片，互不嵌套 */
 A.nomatch('已删 agent-card 合并卡', P, /class="thinkbox agent-card"/);
-A.match('思考块用独立 thinkbox', P, /h \+= '<div class="thinkbox" data-think="' \+ tid \+ '"/);
-A.match('工具块用独立 toolcard', P, /h \+= '<div class="thinkbox toolcard" data-think="' \+ tid2 \+ '"/);
+A.match('思考段带 thk-sec', P, /class="thinkbox thk-sec"/);
+A.match('工具段带 toolcard thk-sec', P, /class="thinkbox toolcard thk-sec"/);
 A.match('思考正文包在 agent-think', P, /class="agent-think"/);
 A.match('工具块头部带计数', P, /class="tool-count">\(' \+ t\.length \+ '\)/);
 A.match('工具行用 toolRow 渲染', P, /h \+= toolRow\(tc, res\);/);
+/* ── 【第五十六轮】思考与工具同一张卡 + 中心弹窗 + 彻底去截断 ── */
+A.match('外层容器包住思考与工具', P, /class="agent-block"/);
+A.match('工具区在卡片内零间隔', CSS2, /\.thk-tools\{margin:0/);
+A.match('收起就真隐藏 thk-body', CSS2, /data-state="0"\]>\.thk-body/);
+A.match('收起就真隐藏 thk-tools', CSS2, /data-state="0"\]>\.thk-tools\{display:none\}/);
+A.nomatch('旧 tblock 类已删', CSS2, /\.tblock\{/);
+A.nomatch('旧 tb-head 类已删', CSS2, /\.tb-head\{/);
+A.match('屏幕中心弹窗 CSS', CSS2, /#retDlg\{position:fixed;left:50%;top:50%/);
+A.match('弹窗遮罩存在', P, /\$\('retMask'\)/);
+A.match('点击返回开中心弹窗', P, /if \(act === 'retOpen'\)/);
+A.match('弹窗关闭入口', P, /function closeRetDlg\b/);
+A.nomatch('工具行不再原位展开', P, /act === 'trowTog'/);
+A.nomatch('工具行不拼字数', P, /tb-retmeta/);
+A.nomatch('无返回字符 cell', P, /返回字符/);
+A.nomatch('后端不拼已截断字样', A.src('packages/sb_tools.js'), /\+ "\n\.\.\.\(已截断/);
 A.match('toolRow 是调用+返回一组', P, /class="trowc' \+ \(okk \? '' : ' bad'\)/);
 A.match('返回前有弯折箭头', P, /class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/);
-A.match('返回内容原位显示', P, /class="tb-rettext">' \+ esc\(txt\)/);
-A.match('工具行点位改为原展开', P, /data-act="trowTog"/);
+A.match('返回全文走中心弹窗', P, /openRetDlg\(nm2, bt\)/);
+A.nomatch('工具行不再原位展开', P, /data-act="trowTog"/);
 A.nomatch('工具行不再开弹窗', P, /class="trow' \+ \(okk \? '' : ' bad'\) \+ '" data-act="toolDlg"/);
 A.nomatch('旧 toolBlock 已删', P, /function toolBlock\(/);
 A.match('调用中显示圆点', P, /class="trow-dot"/);
 /* 第五十五轮 */
 A.nomatch('已删字数提示', P, /thk-len/);
 A.nomatch('CSS 已删 thk-len 规则', CSS2, /\.thk-len\{/);
-A.match('背景跟正文一致', CSS2, /\.thinkbox\{margin:4px 0;background:var\(--bg3\)/);
+A.match('背景跟正文一致', CSS2, /\.thinkbox\{margin:0;background:var\(--bg3\)/);
+/* ── 【第五十七轮】两卡无缝 + 调用/返回两入口 + 失败红字 ── */
+A.match('外层是 agent-block 容器', P, /class="agent-block"/);
+A.match('思考段在容器内', P, /class="thinkbox thk-sec"/);
+A.match('工具段在容器内', P, /class="thinkbox toolcard thk-sec"/);
+A.match('容器圆角只在外层', CSS2, /\.agent-block\{background:var\(--bg3\);border-radius:3px 14px 14px 14px/);
+A.match('段在容器内去圆角', CSS2, /\.agent-block>\.thinkbox\{background:transparent;border-radius:0/);
+A.match('段间分割线', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border-top:1px solid/);
+A.match('可点击色变量', CSS2, /--click:#5d9bff/);
+A.match('折叠头用可点击色', CSS2, /\.thk-tx\{[^}]*color:var\(--click\)/);
+A.match('工具名用可点击色', CSS2, /\.trow-name\{[^}]*color:var\(--click\)/);
+A.match('单击展开收起', P, /cur === 0 \? 1 : 0/);
+A.match('双击全展开', P, /st0 === 2 \? 0 : 2/);
+A.match('双击判定窗口', P, /_tapTimer/);
+A.match('流式有卡片容器变量', P, /_streamBlock/);
+A.match('工具段在容器内', P, /class="thinkbox toolcard thk-sec"/);
+A.match('段间分割线', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border-top:1px solid/);
+A.match('卡片外边距归零', CSS2, /\.thinkbox\{margin:0;/);
+A.match('聊天气泡容器 gap 归零', CSS2, /\.dt-chat\{[^}]*gap:0\}/);
+A.match('点调用行看参数', P, /data-act="callShow"/);
+A.match('点返回预览看全文', P, /data-act="retOpen"/);
+A.match('参数弹窗函数存在', P, /function openCallDlg\(/);
+A.match('失败工具红字', CSS2, /\.trowc\.bad \.trow-name/);
+A.match('流式工具卡复用同一张', P, /_streamToolCard/);
 A.nomatch('思考块不再有左边框', CSS2, /\.thinkbox\{margin:4px 0;border-left/);
-A.match('返回默认一行预览', P, /class="tb-peek" data-act="trowTog"/);
+A.match('返回默认一行预览', P, /class="tb-peek" data-act="retOpen"/);
 A.match('全文默认隐藏', CSS2, /\.tb-full\{display:none\}/);
-A.match('单工具不包一级卡', P, /var multi = t\.length > 1;/);
-A.match('单工具走 solo 分支', P, /toolcard solo" data-think/);
+A.nomatch('不再分单/多工具卡', P, /var multi = t\.length > 1;/);
+A.nomatch('不再有 solo 分支', P, /toolcard solo/);
 /* 整卡可点 */
 A.match('整卡可点', P, /var tb = e\.target\.closest\('\.thinkbox'\);/);
 A.match('工具行不抢点击', P, /if \(e\.target\.closest\('\.trow'\)\) return;/);

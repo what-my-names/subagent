@@ -145,7 +145,7 @@ function stripToolBlocks(text) {
 function clipText(t, n) {
     var s = String(t || "");
     if (!n || s.length <= n) return s;
-    return s.slice(0, n) + "\n...(已截断，原长 " + s.length + " 字符)";
+    return s.slice(0, n);   /* 【第五十六轮】不再拼截断字样 */
 }
 
 /* 系统提示词（2026-11-07 极简化，用户定调）

@@ -1385,7 +1385,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
    2 = 全部展开：不限高，滚动交给整页，不自动滚
    高度挂在 .thk-body 的 h1/h2 class（沿用原版，与 data-state 解耦），
    data-state 只管箭头与角标文案。 */
-  var THINK_TIPS = ['展开', '全部', '收起'];
+  /* 【第五十八轮】单击在 0/1 之间切（收起/展开）；双击直接进 2（全展开） */
+  var THINK_TIPS = ['展开', '收起', '收起'];
   function setThinkState(tb, st) {
     if (!tb) return;
     var n = (st === 1 || st === 2) ? st : 0;
@@ -1446,40 +1447,34 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     } catch (e) {}
     try { syncThinkFloat(); } catch (e2) {}
   }
-  /* 工具行：调用行 + 一行返回预览，点预览才展开全文。
-    用户要求：「不是点一下才有返回，而是原来就有返回，但返回就一行，点一下才打开」。
-    in : tc 调用对象, res 返回对象（可能还没有）
-    默认 data-state=0：显示 .tb-peek 一行摘要
-    点开 data-state=1：显示 .tb-full 全文 */
+  /* 【第五十七轮】工具行：两个可点区域，两个不同行为。
+     用户要求：
+       - 点「工具调用文本」→ 看 agent 是怎么调用的（参数）
+       - 点「工具返回预览」→ 屏幕中心弹窗看返回全文（可下滑）
+     失败的工具：名称、参数、返回预览全部红字提示。 */
   function toolRow(tc, res) {
     var okk = !res || (res.ok !== false);
+    var key = String(tc.id || tc.name || '');
     var brief = tc.args ? briefJson(tc.args, 56) : '';
-    var peek = '', full = '';
+    var peek = '';
     if (res) {
       var txt = res.result != null ? String(res.result) : (res.error != null ? String(res.error) : '');
       var flat = txt.replace(/\s+/g, ' ').trim();
-      var meta = fmtMs(res.ms || res.elapsed_ms) + (res.chars ? ' · ' + res.chars + ' 字符' : '');
-      /* 一行预览：弯折箭头 + 首行摘要 */
-      peek = '<div class="tb-peek" data-act="trowTog">'
+      /* 返回预览：弯折箭头 + 首行摘要。点它开返回弹窗。 */
+      peek = '<div class="tb-peek" data-act="retOpen" data-tool="' + esc(key) + '">'
         + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/><path d="M14 11l4 4-4 4"/></svg>'
         + '<span class="tb-peektxt">' + esc(flat) + '</span>'
         + '</div>';
-      /* 全文：点预览才出现 */
-      full = '<div class="tb-full"><div class="tb-peek" data-act="trowTog">'
-        + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/><path d="M14 11l4 4-4 4"/></svg>'
-        + '<span class="tb-peektxt">' + esc(flat) + '</span>'
-        + '</div>'
-        + '<div class="tb-ret"><div class="tb-rettext">' + esc(txt) + '</div>'
-        + '<div class="tb-retmeta">' + esc(meta) + '</div></div></div>';
     }
-    return '<div class="trowc' + (okk ? '' : ' bad') + '" data-state="0" data-tool="' + esc(tc.id || tc.name) + '">'
-      + '<div class="trow" data-act="trowTog">'
+    /* 调用行：点它看参数（agent 怎么调用的） */
+    return '<div class="trowc' + (okk ? '' : ' bad') + '" data-tool="' + esc(key) + '">'
+      + '<div class="trow" data-act="callShow" data-tool="' + esc(key) + '">'
       + '<svg class="trow-ico" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.1-2.1 2.6-2.4z"/></svg>'
       + '<span class="trow-name">' + esc(tc.name) + '</span>'
       + (brief ? '<span class="trow-args">' + esc(brief) + '</span>' : '')
       + '<span class="trow-st">' + (res ? (okk ? SVG_OK : SVG_BAD) : '<span class="trow-dot"></span>') + '</span>'
       + '</div>'
-      + peek + full
+      + (res ? peek : '')
       + '</div>';
   }
 
@@ -1566,41 +1561,33 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         var t = m.tool_calls || [];
         var hasTool = t.length > 0;
 
-        /* ① 思考块
-           用户要求：完成后收起来（data-state=0），不管多长都完整存着，不显示字数。 */
+        /* 【第五十八轮】一个卡片容器，里面分段：思考一段、工具一段，中间分割线。
+           用户原话「你确定这是一张卡片？还是有空格」——之前是两团圆角气泡并排。
+           现在外层 .agent-block 负责圆角与背景，内层 .thinkbox 只做可折叠的段。 */
+        if (hasThink || hasTool) {
+          h += '<div class="agent-block">';
+        }
         if (hasThink) {
           var tid = ++FOLD_SEQ;
-          h += '<div class="thinkbox" data-think="' + tid + '" data-state="0">'
+          h += '<div class="thinkbox thk-sec" data-think="' + tid + '" data-state="0">'
             + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
             + '<span class="thk-tx">思考过程</span>'
             + '<span class="thk-tip">展开</span>'
             + '</div>'
             + '<div class="thk-body" data-thk-body="' + tid + '">'
             + '<div class="agent-think">' + esc(m.reasoning) + '</div>'
-            + '</div></div>';
+            + '</div>'
+            + '</div>';
         }
-
-        /* ② 工具调用
-           用户要求：
-             - 只有 1 个工具 → 不放一级卡片，直接放在正文流里
-             - ≥2 个工具 → 才包一级卡片「工具调用 (N)」
-           两种情况都默认收起（st=0）；历史记录里这一批已结束。 */
         if (hasTool) {
           var tid2 = ++FOLD_SEQ;
-          var multi = t.length > 1;
-          if (multi) {
-            h += '<div class="thinkbox toolcard" data-think="' + tid2 + '" data-state="0">'
-              + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
-              + '<span class="thk-tx">工具调用</span>'
-              + '<span class="tool-count">(' + t.length + ')</span>'
-              + '<span class="thk-tip">展开</span>'
-              + '</div>'
-              + '<div class="thk-body" data-thk-body="' + tid2 + '">';
-          } else {
-            /* 单工具：不包卡片，直接铺在正文流 */
-            h += '<div class="toolcard solo" data-think="' + tid2 + '" data-state="1">'
-              + '<div class="thk-body thk-body-flat">';
-          }
+          h += '<div class="thinkbox toolcard thk-sec" data-think="' + tid2 + '" data-state="0">'
+            + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+            + '<span class="thk-tx">工具调用</span>'
+            + '<span class="tool-count">(' + t.length + ')</span>'
+            + '<span class="thk-tip">展开</span>'
+            + '</div>'
+            + '<div class="thk-body" data-thk-body="' + tid2 + '">';
           for (var j = 0; j < t.length; j++) {
             var tc = t[j];
             var res = resById[String(tc.id || '')];
@@ -1617,6 +1604,9 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
           }
           h += '</div></div>';
         }
+        if (hasThink || hasTool) {
+          h += '</div>';
+        }
 
         if (m.content) h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(m.content) + '</div></div>';
       } else if (m.role === 'tool') {
@@ -1624,10 +1614,12 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         var idx = resQueue.indexOf(m);
         if (idx >= 0 && usedRes[idx]) continue;
         var okk2 = (m.ok !== false);
-        h += '<div class="toolcard solo" data-state="0">'
-          + '<div class="thk-body thk-body-flat">'
+        /* 【第五十八轮】孤儿工具行也放进 agent-block 容器 */
+        h += '<div class="agent-block">'
+          + '<div class="thinkbox toolcard thk-sec" data-state="0">'
+          + '<div class="thk-body">'
           + toolRow({ name: m.name || 'tool', args: null }, m)
-          + '</div></div>';
+          + '</div></div></div>';
         S._toolMap = S._toolMap || {};
         S._toolMap[String(m.name || 'tool')] = { call: null, res: m };
       } else if (m.role === 'user') {
@@ -1737,6 +1729,47 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   function closeSheet() { $('sheet-mask').classList.remove('on'); $('sheet').classList.remove('on'); }
 
   /* 工具调用弹窗：一次点开就看到参数 + 完整返回，不做二级展开 */
+  /* 【第五十六轮】返回详情：屏幕正中弹窗。
+     用户要「整个屏幕中心出现一个弹窗，告诉你返回了什么东西」。
+     入：name 工具名，body 返回全文原文
+     出：无（直接操作 DOM） */
+  function openRetDlg(name, body) {
+    var m = $('retMask'), d = $('retDlg');
+    if (!m || !d) return;
+    var nm = $('retName');
+    if (nm) nm.textContent = String(name || '返回');
+    var bd = $('retBody');
+    if (bd) { bd.textContent = String(body == null ? '' : body); bd.scrollTop = 0; }
+    m.classList.add('on'); d.classList.add('on');
+  }
+  /* 【第五十七轮】工具调用参数：屏幕中心弹窗，看 agent 是怎么调用的。
+     入：name 工具名，args 参数（对象或 JSON 字符串）
+     出：无 */
+  function openCallDlg(name, args) {
+    var m = $('retMask'), d = $('retDlg');
+    if (!m || !d) return;
+    var nm = $('retName');
+    if (nm) nm.textContent = String(name || '工具') + ' · 调用参数';
+    var bd = $('retBody');
+    if (bd) {
+      var t = '';
+      try {
+        if (args == null) t = '(无参数)';
+        else if (typeof args === 'string') {
+          try { t = JSON.stringify(JSON.parse(args), null, 2); } catch (e1) { t = args; }
+        } else t = JSON.stringify(args, null, 2);
+      } catch (e2) { t = String(args); }
+      bd.textContent = t;
+      bd.scrollTop = 0;
+    }
+    m.classList.add('on'); d.classList.add('on');
+  }
+  function closeRetDlg() {
+    var m = $('retMask'), d = $('retDlg');
+    if (m) m.classList.remove('on');
+    if (d) d.classList.remove('on');
+  }
+
   function openToolDlg(key) {
     var rec = (S._toolMap || {})[String(key || '')];
     if (!rec) { err('找不到该调用记录'); return; }
@@ -1746,7 +1779,6 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
       + cell('工具', c.name || (r && r.name) || '-', false, true)
       + cell('状态', r ? (r.ok === false ? '失败' : '成功') : '无返回', false, false)
       + cell('耗时', fmtMs(r && r.elapsed_ms), false, true)
-      + cell('返回字符', String((r && r.chars) || 0), false, true)
       + '</div>';
     if (c.args) g += '<div class="mi-sec">参数</div><div class="mi-block">' + esc(fmtJson(c.args)) + '</div>';
     if (r && r.result) g += '<div class="mi-sec">返回</div><div class="mi-block">' + esc(r.result) + '</div>';
@@ -2625,6 +2657,10 @@ document.addEventListener('visibilitychange', function () {
     var thinkEl = holder.querySelector('.sb-think');
     var bodyEl = holder.querySelector('.sb-body');
     var thinkBuf = '', bodyBuf = '';
+    /* 【第五十七轮】当前流式工具卡容器：一批工具共用一个卡，换轮时置空 */
+    var _streamToolCard = null;
+    /* 【第五十八轮】当前流式卡片容器，思考段与工具段共用它 */
+    var _streamBlock = null;
 
     /* 逐帧渲染：每块 delta 到达后下一帧就刷，不再攒 60ms 批。
        长文本靠 md() 只在正文变化时重算，滚动用 rAF 合并，避免每块都触发重排。 */
@@ -2752,6 +2788,9 @@ document.addEventListener('visibilitychange', function () {
         return;
       }
       thinkBuf = ''; bodyBuf = '';
+      /* 【第五十七轮】新一轮重新开一张工具卡，不跟上一轮共用 */
+      _streamToolCard = null;
+      _streamBlock = null;
       setLive(depth === 0 ? '模型生成中…' : '继续推理…');
       streamOnce(msgs, function (delta) {
         if (!ALIVE) return;
@@ -2832,15 +2871,19 @@ document.addEventListener('visibilitychange', function () {
             _hist.className = 'bubble ai';
             _hist.innerHTML = '<div class="b-body md-body">' + md(bodyBuf || '') + '</div>';
             host.insertBefore(_hist, holder);
+            /* 【第五十八轮】思考与工具包在同一个 .agent-block 里 */
+            var _blk = document.createElement('div');
+            _blk.className = 'agent-block';
             if (thinkBuf) {
               var _th = document.createElement('div');
-              _th.className = 'thinkbox';
+              _th.className = 'thinkbox thk-sec';
               _th.setAttribute('data-state', '0');
               _th.innerHTML = '<div class="thk-head">' + SVG_CHEV
                 + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span></div>'
                 + '<div class="thk-body">' + esc(thinkBuf) + '</div>';
-              host.insertBefore(_th, holder);
+              _blk.appendChild(_th);
             }
+            if (_blk.childNodes.length) host.insertBefore(_blk, holder);
             thinkBuf = ''; bodyBuf = '';
             holder.innerHTML = '<div class="sb-think" data-state="0" style="display:none"></div>'
               + '<div class="sb-body md-body"></div>';
@@ -2863,16 +2906,50 @@ document.addEventListener('visibilitychange', function () {
             var content = dd.ok ? String(dd.result || '') : ('ERROR: ' + String(dd.error || '工具失败'));
             msgs.push({ role: 'tool', tool_call_id: tc.id, content: content });
             /* 工具结果立刻显示在时间线里，用户能看到进展 */
-            var tb = document.createElement('div');
-            tb.className = 'tblock' + (dd.ok ? '' : ' bad');
-            tb.setAttribute('data-act', 'toolDlg');
-            tb.setAttribute('data-val', String(tc.name));
-            tb.innerHTML = '<div class="tb-head"><span class="tb-name">' + esc(tc.name) + '</span></div>'
-              + '<div class="tb-res">' + SVG_CORNER + (dd.ok ? SVG_OK : SVG_BAD)
-              + '<span class="tb-meta">' + esc(String(content.length)) + ' 字符</span></div>';
+            /* 【第五十六轮】工具结果用 toolRow 渲染，跟思考同一张卡同一外观。
+               旧路径用 .tblock（青边半透明底），背景跟思考卡不一致，
+               用户原话「连背景都不一样，怎么是一个卡片」。 */
             S._toolMap = S._toolMap || {};
-            S._toolMap[String(tc.name)] = { call: { name: tc.name, args: JSON.stringify(tc.args || {}) }, res: { ok: dd.ok, result: content, chars: content.length } };
-            host.appendChild(tb);
+            S._toolMap[String(tc.name)] = {
+              call: { name: tc.name, args: JSON.stringify(tc.args || {}) },
+              res: { ok: dd.ok, result: content, chars: content.length }
+            };
+            var rowHtml = toolRow({ name: tc.name, args: tc.args || null },
+                                  { ok: dd.ok, result: content, error: dd.ok ? null : content });
+            /* 【第五十七轮】工具独立成卡，跟思考卡并排不合并。
+               流式期间这张卡保持展开（data-state=1）看着跑；
+               整批调用结束后由 nextTool 收尾收敛。 */
+            var cur = _streamToolCard;
+            if (!cur || !cur.parentNode) {
+              /* 【第五十八轮】工具段放进当前 agent-block；没有就新建一个 */
+              var blk = _streamBlock;
+              if (!blk || !blk.parentNode) {
+                blk = document.createElement('div');
+                blk.className = 'agent-block';
+                host.insertBefore(blk, holder);
+                _streamBlock = blk;
+              }
+              cur = document.createElement('div');
+              cur.className = 'thinkbox toolcard thk-sec';
+              cur.setAttribute('data-state', '1');
+              cur.innerHTML = '<div class="thk-head">'
+                + '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+                + '<span class="thk-tx">工具调用</span>'
+                + '<span class="tool-count"></span>'
+                + '<span class="thk-tip">收起</span></div>'
+                + '<div class="thk-body"></div>';
+              blk.appendChild(cur);
+              _streamToolCard = cur;
+            }
+            var tbody = cur.querySelector('.thk-body');
+            if (tbody) tbody.insertAdjacentHTML('beforeend', rowHtml);
+            /* 计数：本卡里工具行数量 */
+            try {
+              var cntEl = cur.querySelector('.tool-count');
+              var nrows = cur.querySelectorAll('.trowc').length;
+              if (cntEl) cntEl.textContent = '(' + nrows + ')';
+            } catch (eC) {}
+            syncThinkFloat();
             nextTool();
           });
         }
@@ -3777,6 +3854,23 @@ document.addEventListener('visibilitychange', function () {
 
     if (act === 'meta') return openMeta(val);
     if (act === 'toolDlg') return openToolDlg(val);
+    /* 【第五十六轮】点工具行/返回预览 → 中心弹窗展示返回全文 */
+    if (act === 'callShow') {
+      var kc = el.dataset.tool || val || '';
+      var rec2 = (S._toolMap || {})[String(kc)];
+      if (!rec2 || !rec2.call) { toast('找不到调用记录', 'warn'); return; }
+      return openCallDlg(rec2.call.name || kc, rec2.call.args);
+    }
+    if (act === 'retOpen') {
+      var k = el.dataset.tool || val || '';
+      var rec = (S._toolMap || {})[String(k)];
+      var r = rec && rec.res;
+      var nm2 = (rec && rec.call && rec.call.name) || k || '返回';
+      if (!r) { toast('还没有返回', 'warn'); return; }
+      var bt = r.result != null ? String(r.result) : (r.error != null ? String(r.error) : '');
+      return openRetDlg(nm2, bt);
+    }
+    if (act === 'retClose') return closeRetDlg();
     if (act === 'sheetClose') return closeSheet();
     if (act === 'goNew') { show('new'); if (!S.tools) call('subagent:subagent_tools', {}, 'tools'); loadNewForm(); return; }
     if (act === 'goCfg') {
@@ -3883,16 +3977,7 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'collapseThink') { hf(); collapseThinkAll(); return; }
     if (act === 'togglePerm') { hf(); togglePanel('permBox', 'btnPerm'); return; }
     if (act === 'toggleDanger') { toggleDanger(); return; }
-    /* 工具行点击：原位展开/收起返回内容，不开弹窗 */
-    if (act === 'trowTog') {
-      var tcw = e.target.closest('.trowc');
-      if (tcw) {
-        var op = tcw.getAttribute('data-state') === '1';
-        tcw.setAttribute('data-state', op ? '0' : '1');
-        hf();
-      }
-      return;
-    }
+    /* 【第五十六轮】原位展开已取消，工具行点击统一走 retOpen 开中心弹窗 */
     if (act === 'toggleRun') { hf(); togglePanel('runBox', 'cardRun'); return; }
     if (act === 'editFull') return openFullEdit();
     if (act === 'closeFull') return closeFullEdit();
@@ -3971,6 +4056,8 @@ document.addEventListener('visibilitychange', function () {
 /* 删除只在详情页做：列表页不提供删除入口（长按也不行），避免误删 */
   if ($('sheet-mask')) $('sheet-mask').addEventListener('click', closeSheet);
   if ($('mask')) $('mask').addEventListener('click', function () { closeDlg(); closeCfm(); });
+  /* 【第五十六轮】返回详情弹窗：点遮罩或叉关闭 */
+  if ($('retMask')) $('retMask').addEventListener('click', closeRetDlg);
 
   /* 思考块交互（2026-11-07 用户定稿，第二十八轮）：
        每次点击前进一档 0 → 1 → 2 → 0（累进循环）
@@ -3992,8 +4079,9 @@ document.addEventListener('visibilitychange', function () {
          2) 正文选中文字时不触发（长按选词复制） */
     /* 【第五十三轮】工具行（.trow）自己有点击动作（打开工具详情），不能抢。
        旧类名 .tblock 已废弃，这里一并兼容，避免遗留节点点不开。 */
+    /* 【第五十六轮】工具行与返回预览自己有点击（开中心弹窗），不能抢 */
     if (e.target.closest('.trow')) return;
-    if (e.target.closest('.tblock')) return;
+    if (e.target.closest('.tb-peek')) return;
     var tb = e.target.closest('.thinkbox');
     if (!tb) tb = e.target.closest('.sb-think');
     if (!tb) return;
@@ -4002,8 +4090,21 @@ document.addEventListener('visibilitychange', function () {
       var sel = window.getSelection && window.getSelection();
       if (sel && String(sel).length) return;
     } catch (eS) {}
+    /* 【第五十八轮】单击 = 展开/收起（0<->1）；双击 = 全部展开/收起（2<->0）。
+       用 240ms 窗口区分：单击先等一下，若这期间来了第二下就按双击走。 */
     var st0 = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
-    setThinkState(tb, (st0 + 1) % 3);
+    if (S._tapTimer && S._tapEl === tb) {
+      clearTimeout(S._tapTimer);
+      S._tapTimer = null; S._tapEl = null;
+      setThinkState(tb, st0 === 2 ? 0 : 2);
+      return;
+    }
+    S._tapEl = tb;
+    S._tapTimer = setTimeout(function () {
+      S._tapTimer = null; S._tapEl = null;
+      var cur = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
+      setThinkState(tb, cur === 0 ? 1 : 0);
+    }, 240);
   });
   /* 思考块点击已统一到上面的累进循环处理 */
 

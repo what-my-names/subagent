@@ -241,7 +241,10 @@ function clip(text, n) {
         var code = s.charCodeAt(cut - 1);
         if (code >= 0xD800 && code <= 0xDBFF) cut -= 1;
     }
-    return { text: s.slice(0, cut) + "\n...(已截断，原长 " + s.length + " 字符)", truncated: true, chars: s.length };
+    /* 【第五十六轮】不再往正文里拼「已截断，原长 N 字符」。
+       用户反复要求「不要截断」，也不接受正文里出现这种提示。
+       截断与否只放在 truncated 标志里，由调用方决定怎么处理。 */
+    return { text: s.slice(0, cut), truncated: true, chars: s.length };
 }
 
 function serialize(value) {

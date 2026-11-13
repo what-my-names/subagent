@@ -1536,32 +1536,44 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     for (var i = 0; i < turns.length; i++) {
       var m = turns[i];
       if (m.role === 'assistant') {
-        if (m.reasoning) {
-          /* 思考三档：0=小滚动区自动跟随 1=中高展开停自动滚动 2=全部展开 */
-          var tid = ++FOLD_SEQ;
-          var rl = String(m.reasoning).length;
-          h += '<div class="thinkbox" data-think="' + tid + '" data-state="0">'
-            + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
-            + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
-            + '<span class="thk-len">' + rl + ' 字</span></div>'
-            + '<div class="thk-body" data-thk-body="' + tid + '">' + esc(m.reasoning) + '</div>'
-            + '</div>';
-        }
+        /* 【第四十七轮】思考 + 工具调用合并进同一张卡片。
+           用户要求：思考和工具调用在一个对话卡片里，不是并列的两块。
+           结构：.agent-card > .thk-head（可点） + .agent-body（思考正文 + 工具行）
+           思考完自动闭合由 setThinkState 收尾时处理。 */
+        var tid = ++FOLD_SEQ;
+        var rl = m.reasoning ? String(m.reasoning).length : 0;
         var t = m.tool_calls || [];
-        for (var j = 0; j < t.length; j++) {
-          var tc = t[j];
-          var res = resById[String(tc.id || '')];
-          if (!res) {
-            /* 兼容老数据：没有 id 就按顺序配对第一个还没用过的返回 */
-            for (var q = 0; q < resQueue.length; q++) {
-              if (!usedRes[q]) { res = resQueue[q]; usedRes[q] = 1; break; }
-            }
-          } else {
-            for (var q2 = 0; q2 < resQueue.length; q2++) if (resQueue[q2] === res) usedRes[q2] = 1;
+        var hasThink = !!m.reasoning;
+        var hasTool = t.length > 0;
+        if (hasThink || hasTool) {
+          h += '<div class="thinkbox agent-card" data-think="' + tid + '" data-state="0">'
+            + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+            + '<span class="thk-tx">' + (hasThink ? '思考过程' : '工具调用') + '</span>'
+            + '<span class="thk-tip">展开</span>'
+            + (rl ? '<span class="thk-len">' + rl + ' 字</span>' : '')
+            + (hasTool ? '<span class="thk-len">' + t.length + ' 工具</span>' : '')
+            + '</div>'
+            + '<div class="thk-body" data-thk-body="' + tid + '">';
+          /* 思考正文（不截断，原文全放） */
+          if (hasThink) {
+            h += '<div class="agent-think">' + esc(m.reasoning) + '</div>';
           }
-          S._toolMap = S._toolMap || {};
-          S._toolMap[String(tc.id || tc.name)] = { call: tc, res: res || null };
-          h += toolBlock(tc, res);
+          /* 工具调用行：同一张卡片内，缩进显示 */
+          for (var j = 0; j < t.length; j++) {
+            var tc = t[j];
+            var res = resById[String(tc.id || '')];
+            if (!res) {
+              for (var q = 0; q < resQueue.length; q++) {
+                if (!usedRes[q]) { res = resQueue[q]; usedRes[q] = 1; break; }
+              }
+            } else {
+              for (var q2 = 0; q2 < resQueue.length; q2++) if (resQueue[q2] === res) usedRes[q2] = 1;
+            }
+            S._toolMap = S._toolMap || {};
+            S._toolMap[String(tc.id || tc.name)] = { call: tc, res: res || null };
+            h += toolBlock(tc, res);
+          }
+          h += '</div></div>';
         }
         if (m.content) h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(m.content) + '</div></div>';
       } else if (m.role === 'tool') {
@@ -1938,6 +1950,8 @@ document.addEventListener('visibilitychange', function () {
       timeout_ms: parseInt($('inTimeout').value || '90000', 10),
       thinking_level: S.think, max_depth: parseInt($('inDepth').value || '0', 10) || 0, origin: 'ui'
     };
+    /* 【允许危险命令】只在开启时才传，保持默认语义干净（后端默认 false）。 */
+    if ($('inDanger') && $('inDanger').value === '1') p.allow_danger = true;
 /* 附带主对话上下文已移除：不再传 context_mode / parent_chat_id，
        子代理只看任务描述本身，避免把主对话内容带进独立通道。 */
     /* 不用 sync：sync 会把桥阻塞几十秒，WebView 会卡成假死。
@@ -1959,7 +1973,9 @@ document.addEventListener('visibilitychange', function () {
         timeout: ($('inTimeout').value || ''),
         depth: ($('inDepth').value || ''),
         think: S.think,
-        sel: S.sel || []
+        sel: S.sel || [],
+        /* 危险命令开关也记住：用户这次开了，下次进新建页保持开着 */
+        danger: ($('inDanger') && $('inDanger').value === '1') ? 1 : 0
       };
       localStorage.setItem(NEWFORM_KEY, JSON.stringify(o));
     } catch (e) {}
@@ -1967,7 +1983,8 @@ document.addEventListener('visibilitychange', function () {
   function loadNewForm() {
     var o = null;
     try { o = JSON.parse(localStorage.getItem(NEWFORM_KEY) || 'null'); } catch (e) { o = null; }
-    if (!o) return;
+    /* 没有记忆也要先按默认值重绘一次，否则第一次进新建页开关样式是空的 */
+    if (!o) { paintDanger(); return; }
     try {
       if ($('inWs') && o.ws) { $('inWs').value = o.ws; var vw = $('vWs'); if (vw) vw.textContent = o.ws; }
       if ($('inSteps') && o.steps) $('inSteps').value = o.steps;
@@ -1975,6 +1992,9 @@ document.addEventListener('visibilitychange', function () {
       if ($('inDepth') && o.depth !== undefined) $('inDepth').value = o.depth;
       if (o.think && THINK_CN[o.think]) setThinkSlider(o.think);
       if (o.sel && o.sel.length) { S.sel = o.sel.slice(); syncSelLabel(); }
+      /* 危险命令开关回填：先写真实值再重绘，两条路径共用 paintDanger */
+      if ($('inDanger') && o.danger) { $('inDanger').value = o.danger ? '1' : '0'; }
+      paintDanger();
       syncDepthFromSlider();
     } catch (e) {}
   }
@@ -2011,6 +2031,25 @@ document.addEventListener('visibilitychange', function () {
     S.taskDraft = v;
     var tip = $('fullTip');
     if (tip) tip.textContent = '已自动保存';
+  }
+  /* 【允许危险命令】开关：真实值存在 #inDanger（0/1），UI 只跟着它走。
+       为什么用 hidden 存值而不是直接读 class：saveNewForm / loadNewForm 都靠 value，
+       这样两条路径（用户点击 / 记忆回填）走同一份真相。 */
+  function toggleDanger() {
+    var h = $('inDanger');
+    if (!h) return;
+    var on = h.value !== '1';
+    h.value = on ? '1' : '0';
+    paintDanger();
+    hf();
+  }
+  function paintDanger() {
+    var h = $('inDanger');
+    var on = !!(h && h.value === '1');
+    var sw = $('swDanger');
+    if (sw) { if (on) sw.classList.add('on'); else sw.classList.remove('on'); }
+    var v = $('vDanger');
+    if (v) v.textContent = on ? '已开启 · 可执行脚本' : '关闭 · 不能执行脚本';
   }
   /* 卡片折叠：点卡片展开/收起下面的面板，箭头跟着转 */
   function togglePanel(boxId, cardId) {
@@ -3803,6 +3842,7 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'sendMsg') return sendMsg();
     if (act === 'collapseThink') { hf(); collapseThinkAll(); return; }
     if (act === 'togglePerm') { hf(); togglePanel('permBox', 'btnPerm'); return; }
+    if (act === 'toggleDanger') { toggleDanger(); return; }
     if (act === 'toggleRun') { hf(); togglePanel('runBox', 'cardRun'); return; }
     if (act === 'editFull') return openFullEdit();
     if (act === 'closeFull') return closeFullEdit();
@@ -3894,11 +3934,14 @@ document.addEventListener('visibilitychange', function () {
    流式区 .sb-think 没有标题行，整块可点。 */
   document.addEventListener('click', function (e) {
     if (!e.target || typeof e.target.closest !== 'function') return;
-    var tb = null;
-    /* 先看是不是历史块的标题行 */
-    var head = e.target.closest('.thk-head');
-    if (head) tb = head.closest('.thinkbox');
-    /* 再看是不是流式区（它没有 thk-head，整块可点） */
+    /* 【第四十七轮】整卡可点：用户要求「单击双击在整个思考展开里面点，
+       而不是只有在最上面的思考过程」。
+       所以从 .thk-head 扩展到整张 .thinkbox。
+       但要留两个例外：
+         1) 工具行（.tblock）自己有点击动作（打开工具详情），不能抢
+         2) 正文选中文字时不触发（长按选词复制） */
+    if (e.target.closest('.tblock')) return;
+    var tb = e.target.closest('.thinkbox');
     if (!tb) tb = e.target.closest('.sb-think');
     if (!tb) return;
     /* 双保险：正文选中文字时不触发 */

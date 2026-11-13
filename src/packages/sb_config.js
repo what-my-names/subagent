@@ -55,7 +55,10 @@ var DEFAULTS = {
     step_timeout_ms: 90000,
     wait_max_ms: 60000,
     inject_max_chars: 20000,
-    tool_result_max_chars: 8000,
+    tool_result_max_chars: 0,   /* 0 = 不截断（第四十七轮用户要求） */
+    /* 【第五十二轮】允许危险命令（脚本执行类）。默认 false：子代理任务不能跑脚本。
+       用户定调：不准执行 .sh，得要在创建任务时允许才能。 */
+    allow_danger: false,
     summary_level: "t1",
     result_level: "standard",
     request_log: false,

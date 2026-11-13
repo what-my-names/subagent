@@ -196,9 +196,23 @@
         <div class="fld">
           <button class="btn" data-act="usePrivateWs">使用私有工作区</button>
         </div>
+        <!-- 【允许危险命令】脚本执行类默认禁止，用户显式开启才放行。
+             硬红线（rm 根目录 / mkfs / dd / reboot / sudo）无论开关与否都会拒。 -->
+        <div class="fld">
+          <div class="switchrow" data-act="toggleDanger">
+            <div class="switchrow-l">
+              <div class="switchrow-t">允许危险命令</div>
+              <div class="switchrow-d" id="vDanger">关闭 · 不能执行脚本</div>
+            </div>
+            <div class="sw" id="swDanger"><i></i></div>
+          </div>
+        </div>
+        <div class="hint">开启后可执行脚本（sh/bash、.sh/.py 等脚本文件、eval、$(...)、curl|sh）。默认关闭。删除根目录、格式化磁盘、关机、提权这类命令无论开关如何都会被拒。</div>
         <div class="hint">不选工具 = 全部允许（只读工具可直接跑，写类仍需目录）。目录既是工作区，也是写入范围。</div>
         <!-- 目录真实值：由「目录」按钮的浏览器写入，不直接暴露输入框 -->
         <input id="inWs" type="hidden">
+        <!-- 危险命令开关真实值 -->
+        <input id="inDanger" type="hidden" value="0">
       </div>
 
       <!-- 运行参数卡片 -->

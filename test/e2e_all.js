@@ -41,14 +41,18 @@ for (var i = 0; i < run.length; i++) {
         crashed.push(name + '：' + String((e && e.message) || e));
     }
 }
-
-var result = A.report();
-
-if (crashed.length) {
-    console.log('');
-    console.log('⚠ 用例执行异常：');
-    for (var c = 0; c < crashed.length; c++) console.log('  - ' + crashed[c]);
-}
-
-/* 退出码：有失败或崩溃就非 0，方便脚本串联 */
-process.exit((result.fail > 0 || crashed.length > 0) ? 1 : 0);
+/* 【第四十八轮】原来这里是同步 A.report() 后立刻 process.exit()，
+   于是用例里「等 Promise 才有结果」的异步断言永远来不及登记，
+   等于白写（run_tool 后门就是这样漏掉的）。
+   改成：先等所有挂起的微任务跑完（setImmediate 排到 I/O 之后），
+   再 report 并退出。 */
+setImmediate(function () {
+    var result = A.report();
+    if (crashed.length) {
+        console.log('');
+        console.log('⚠ 用例执行异常：');
+        for (var c = 0; c < crashed.length; c++) console.log('  - ' + crashed[c]);
+    }
+    /* 退出码：有失败或崩溃就非 0，方便脚本串联 */
+    process.exit((result.fail > 0 || crashed.length > 0) ? 1 : 0);
+});

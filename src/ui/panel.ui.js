@@ -51,6 +51,13 @@ function Screen(ctx) {
         return { success: false, message: "空返回" };
     }
     async function call(name, params) {
+        /* 【第四十九轮】与 web_panel.ui.js 对齐：只允许调本包工具。
+           这里是 Compose 兜底面板（WebView 挂掉时用），同样不接受任意工具名，
+           否则面板一换实现，白名单就漏一个口子。 */
+        var lowName = String(name || "").toLowerCase();
+        if (lowName.indexOf("subagent:") !== 0 && lowName.indexOf("subagent_") !== 0) {
+            return { success: false, message: "只允许调用本包工具，已拒绝：" + name };
+        }
         try { return parse(await ctx.callTool(name, params || {})); }
         catch (e4) { return { success: false, message: String((e4 && e4.message) || e4) }; }
     }

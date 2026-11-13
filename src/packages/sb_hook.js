@@ -57,14 +57,19 @@ var CAPABILITY_HINT_ZH = [
   "[子代理能力] 可以把一整件独立的事派给子代理：它自己发模型请求、自己执行工具，回来只交结论。",
   "适合：多文件改造、大范围调研、需要反复试错的任务。",
   "派活：subagent_spawn(task=\"...\", allowed_tools=\"read_file,edit_file\", workspace=\"/sdcard/x/...\")",
+  "【参数纪律】task 只写任务本身。allowed_tools 和 workspace 是独立参数，不要塞进 task 字符串——塞进去会把 JSON 撑坏，调用直接失败。",
+  "【长规格】要交代的细节多（规格、验收标准、代码片段），写进一个文件，用 context_files=\"/sdcard/x/tmp/spec.md\" 传，不要硬塞 task。",
+  "【子代理环境】没有 create_file，写不了新文件；派它写文档会白跑。让它改已有文件、或返回内容由你落盘。",
   "推进：subagent_advance(id=...)；等结果：subagent_wait(id=...)。不要用 sync=true（桥 20 秒会超时）。",
   "取结论：subagent_result(id=...)；看进度：subagent_trace(id=...)。"
 ].join(String.fromCharCode(10));
-
 var CAPABILITY_HINT_EN = [
   "[Subagent capability] You can delegate a whole self-contained job to a subagent: it issues its own model requests, runs its own tools, and returns only the conclusion.",
   "Good for: multi-file refactors, broad research, tasks that need repeated trial and error.",
   "Delegate: subagent_spawn(task=\"...\", allowed_tools=\"read_file,edit_file\", workspace=\"/sdcard/x/...\")",
+  "[Parameter discipline] task holds the job only. allowed_tools and workspace are separate parameters; stuffing them into the task string breaks the JSON and the call fails.",
+  "[Long specs] Put detailed specs/acceptance criteria/code snippets in a file and pass context_files=\"/sdcard/x/tmp/spec.md\" instead of cramming them into task.",
+  "[Subagent env] No create_file, so it cannot write new files; asking it to write docs is a wasted run. Have it edit existing files, or return content for you to save.",
   "Advance: subagent_advance(id=...); wait: subagent_wait(id=...). Do not use sync=true (the bridge times out at 20s).",
   "Get result: subagent_result(id=...); check progress: subagent_trace(id=...)."
 ].join(String.fromCharCode(10));

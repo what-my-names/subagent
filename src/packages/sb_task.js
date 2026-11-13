@@ -226,6 +226,8 @@ async function createTask(cfg, opts) {
         context_mode: String(opts.context_mode || cfg.default_context_mode || "none"),
         context_text: String(opts.context_text || ""),
         allowed_tools: opts.allowed_tools || [],
+        /* 【第五十二轮】允许危险命令（建任务时可覆盖全局） */
+        allow_danger: opts.allow_danger === true,
         workspace_resolved: String(opts.workspace_resolved || ""),
         product_dir: productDirOf(id),
         profile_override: { base_url: opts.base_url || "", model: opts.model || "" },
@@ -409,7 +411,14 @@ async function _advanceTaskInner(cfg, task) {
             allowed: task.allowed_tools || [],
             workspace: task.workspace_resolved || "",
             productDir: task.product_dir,
-            maxChars: Number(cfg.tool_result_max_chars || 8000),
+/* 【第四十七轮】默认不截断：用户明确要求「再长也不要截断」。
+   以前默认 8000 字符，长文件读一半就被砍，模型看不到全文只能重复读。
+   cfg.tool_result_max_chars 显式配了正数才截断；0 或缺失 = 全量。
+   注意 clip() 本身对 0/缺失已经是不截断，这里只改默认值。 */
+            maxChars: Number(cfg.tool_result_max_chars || 0),
+        /* 【第五十二轮】allowDanger 透传给 analyzeCommand。
+           task 级优先（建任务时指定），否则用全局配置。 */
+        allowDanger: task.allow_danger === true || cfg.allow_danger === true,
             roots: [task.workspace_resolved || "", task.product_dir || ""].filter(Boolean),
             nextSeq: function () { seq = seq + 1; return seq; },
             loadUndo: function () { return undo.items || []; },

@@ -39,6 +39,12 @@ METADATA
                     "required": false
                 },
                 {
+                    "name": "allow_danger",
+                    "type": "boolean",
+                    "description": "允许执行危险命令（脚本执行类：sh/bash、执行 .sh .py 等脚本文件、eval、$(...)、curl|sh 等）。默认 false。硬红线（rm 根目录、mkfs、dd、reboot、sudo）无论此值为真都会拒。只影响 terminal/shell，不影响其他工具",
+                    "required": false
+                },
+                {
                     "name": "key_points",
                     "type": "string",
                     "description": "任务要点 JSON：goal/deliverable/constraints/acceptance",
@@ -888,7 +894,8 @@ async function loadCtx(cfg, task) {
         allowed: task.allowed_tools || [],
         workspace: task.workspace_resolved || "",
         productDir: task.product_dir,
-        maxChars: Number(cfg.tool_result_max_chars || 8000),
+        maxChars: Number(cfg.tool_result_max_chars || 0),
+        allowDanger: (task && task.allow_danger === true) || cfg.allow_danger === true,
         roots: [task.workspace_resolved || "", task.product_dir || ""].filter(Boolean),
         nextSeq: function () { seq = seq + 1; return seq; },
         loadUndo: function () { return undo.items || []; },
@@ -1077,6 +1084,7 @@ exports.subagent_spawn = async function (params) {
         task: taskText, title: params.title || template && template.name || "",
         key_points: kp,
         allowed_tools: allowed,
+        allow_danger: params.allow_danger === true,
         thinking_level: params.thinking_level || template && template.thinking_level || "medium",
         workspace_resolved: ws,
         context_mode: params.context_mode || template && template.context_mode || cfg.default_context_mode,
@@ -1864,7 +1872,8 @@ exports.subagent_tool_once = async function (params) {
         allowed: allowed,
         workspace: (task && task.workspace_resolved) || "",
         productDir: (task && task.product_dir) || "",
-        maxChars: Number(cfg.tool_result_max_chars || 8000),
+        maxChars: Number(cfg.tool_result_max_chars || 0),
+        allowDanger: (task && task.allow_danger === true) || cfg.allow_danger === true,
         roots: roots.filter(Boolean),
         nextSeq: function () { seq = seq + 1; return seq; },
         loadUndo: function () { return undo.items || []; },

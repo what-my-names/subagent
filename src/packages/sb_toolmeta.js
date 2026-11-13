@@ -10,6 +10,8 @@
  *   2) parameters 一律 additionalProperties:true，required 只标真正必填的 —— 宁松不严，
  *      宁可让模型多传一个无用参数，也不要因为 schema 过严导致调用被端点拒。
  *   3) 描述写「什么时候用」，不写实现细节 —— 模型靠这个选工具。
+ *   4) 有默认值的参数，除了在 description 里写，还要写 JSON Schema 的 default 字段：
+ *      描述是给人读的，default 才是给端点和模型读的，少一个模型就要猜。
  */
 
 var T = {};
@@ -35,10 +37,12 @@ def("read_file", "读整个文件内容。适合已知路径且文件不大的�
 def("read_file_part", "按行号范围读文件片段。大文件、日志、只想看某几行时用这个，别整读。",
     {
         path: { type: "string", description: "文件绝对路径" },
-        start_line: { type: "integer", description: "起始行号，从 1 开始" },
+        start_line: { type: "integer", description: "起始行号，从 1 开始，必填" },
         end_line: { type: "integer", description: "结束行号（含），不传默认 start_line+99" }
     },
-    ["path"]);
+    /* 【第四十八轮】start_line 原来不在 required 里，描述又说「从 1 开始」，
+       不传时行为未定义（宿主按 1 处理还是报错取决于实现）。标成必填，少一层歧义。 */
+    ["path", "start_line"]);
 
 def("file_info", "查文件或目录的大小、修改时间、类型。",
     { path: { type: "string", description: "目标路径" } },
@@ -74,10 +78,14 @@ def("list_files", "列一个目录下的直接子项（不递归）。",
     ["path"]);
 
 /* ── 写文件 ── */
-def("create_file", "新建文件并写入完整内容。文件已存在会失败，改已有文件请用 edit_file。",
+/* 【第四十八轮】create_file 用 new、write_file 用 content，同一语义两个键名，
+   模型很容易把 content 传给 create_file。这里两个键都声明（new 仍必填，与宿主一致），
+   并在描述里点明别名，减少「传了 content 但 new 缺失」被端点拒的情况。 */
+def("create_file", "新建文件并写入完整内容。文件已存在会失败，改已有文件请用 edit_file。内容参数名是 new（不是 content）。",
     {
         path: { type: "string", description: "文件绝对路径" },
-        new: { type: "string", description: "完整文件内容" }
+        new: { type: "string", description: "完整文件内容（必填，键名就是 new）" },
+        content: { type: "string", description: "content 是 write_file 的键名，create_file 请改用 new" }
     },
     ["path", "new"]);
 
@@ -121,7 +129,7 @@ def("copy_file", "复制文件/目录。",
 def("terminal", "在持久终端会话里执行命令，同一会话内上下文连贯（cd 会保持）。适合需要连续多步的场景。",
     {
         command: { type: "string", description: "要执行的命令" },
-        timeoutMs: { type: "integer", description: "超时毫秒，建议显式传，默认 15000" },
+        timeoutMs: { type: "integer", default: 15000, description: "超时毫秒，建议显式传，默认 15000" },
         background: { type: "boolean", description: "true 则后台执行并立即返回，适合启动服务" }
     },
     ["command"]);
@@ -136,7 +144,7 @@ def("shell", "一次性执行 shell 命令，无会话状态。单条短命令�
 def("terminal_wait", "等待持久终端里上一条命令执行完成，返回它的输出。适合长命令分步取结果。",
     {
         sessionId: { type: "string", description: "目标会话 id，不传用当前对话的默认会话" },
-        timeoutMs: { type: "integer", description: "超时毫秒，默认 300000" }
+        timeoutMs: { type: "integer", default: 300000, description: "超时毫秒，默认 300000" }
     },
     []);
 

@@ -20,6 +20,21 @@ function Screen(ctx) {
                     if (typeof params === "string") { try { params = JSON.parse(params); } catch (eQ) { params = {}; } }
                     try {
                         if (!tool) throw new Error("缺少 tool");
+                        /* 【第四十九轮·架构级修复】桥必须限定只能调本包工具。
+                           原来的实现是裸的 ctx.callTool(tool, params)，前端传什么就执行什么，
+                           等于页面一旦能跑 JS 就拿到宿主全部工具的执行权（含 terminal）。
+                           面板渲染的 Markdown / 工具结果都来自外部输入，这条口子是实打实的。
+                           只放行 subagent 前缀；真要执行宿主工具走 subagent_tool_once，
+                           那条路径经过 runOne，白名单 + 递归拦截 + 写边界全都在。 */
+                        var lowTool = tool.toLowerCase();
+                        if (lowTool.indexOf("subagent:") !== 0 && lowTool.indexOf("subagent_") !== 0) {
+                            return JSON.stringify({
+                                success: false,
+                                message: "桥只允许调用本包工具，已拒绝：" + tool,
+                                data: {},
+                                denied: true
+                            });
+                        }
                         // ctx.callTool 是两参：工具名 + 参数对象，必须 await
                         var r = await ctx.callTool(tool, params || {});
                         return (typeof r === "string") ? r : JSON.stringify(r);

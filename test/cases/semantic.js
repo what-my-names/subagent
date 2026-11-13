@@ -790,6 +790,51 @@ if (T) {
     })
     .then(function (r) {
       g2.chk('run_tool 范围内路径放行', r.ok === true);
+      /* ── 命令安全：真实入口验证 ──
+         上面（同步组）测的是 analyzeCommand 子函数，输入自己挑、判定自己写，
+         全绿不代表 runOne 真会拦。上一轮 run_tool 后门就是这么漏的：
+         断言测了 checkWriteBoundary，没测真实入口，代码压根不执行也全绿。
+         这组直接打 runOne，并用计数器验证「被拒时 toolCall 一次都没被调」。 */
+      var capT = [], capD = [];
+      var ctxT = {
+        allowed: ['terminal'], workspace: '/tmp/ws', roots: ['/tmp/ws'],
+        productDir: '/tmp/ws/.products/t1', maxChars: 0, allowDanger: false,
+        nextSeq: function () { return 1; }, loadUndo: function () { return []; },
+        appendUndo: function () {}, clearUndo: function () {}
+      };
+      var ctxD = {};
+      for (var kk in ctxT) ctxD[kk] = ctxT[kk];
+      ctxD.allowDanger = true;
+
+      global.toolCall = function (n) { capT.push(n); return Promise.resolve({ mock: true, tool: n }); };
+      return T.runOne(ctxT, { tool: 'terminal', args: { command: 'bash /tmp/ws/a.sh' } })
+        .then(function (r1) {
+          g2.chk('runOne 真实拒绝脚本', r1.ok === false);
+          g2.chk('拒绝时 toolCall 未被调用', capT.length === 0);
+          return T.runOne(ctxT, { tool: 'terminal', args: { command: 'ls -la' } });
+        })
+        .then(function (r2) {
+          g2.chk('runOne 放行普通命令', r2.ok === true);
+          g2.chk('放行时 toolCall 被调一次', capT.length === 1);
+          global.toolCall = function (n) { capD.push(n); return Promise.resolve({ mock: true, tool: n }); };
+          return T.runOne(ctxD, { tool: 'terminal', args: { command: 'bash /tmp/ws/a.sh' } });
+        })
+        .then(function (r3) {
+          g2.chk('开启后 runOne 放行脚本', r3.ok === true);
+          g2.chk('开启后 toolCall 被调一次', capD.length === 1);
+          return T.runOne(ctxD, { tool: 'terminal', args: { command: 'rm -rf /' } });
+        })
+        .then(function (r4) {
+          g2.chk('开启后 runOne 仍拦硬红线', r4.ok === false);
+          g2.chk('硬红线拒绝时 toolCall 未被调用', capD.length === 1);
+          return T.runOne(ctxD, { tool: 'terminal', args: { command: 'cat /etc/passwd' } });
+        })
+        .then(function (r5) {
+          g2.chk('runOne 拦越界路径', r5.ok === false);
+          g2.chk('越界拒绝时 toolCall 未再增加', capD.length === 1);
+        });
+    })
+    .then(function () {
       global.toolCall = realTC;
       g2.finish();
     })

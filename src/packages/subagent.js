@@ -151,6 +151,12 @@ METADATA
                     "type": "number",
                     "description": "sync 总预算，最大 60000",
                     "required": false
+                },
+                {
+                    "name": "skills",
+                    "type": "string",
+                    "description": "给子代理看哪些 skill 的清单：逗号分隔 skill 名，或传 all 列出全部。不传则不注入（省 token）。子代理用 subagent_skill 读全文",
+                    "required": false
                 }
             ]
         },
@@ -845,10 +851,31 @@ METADATA
                     "required": true
                 }
             ]
+        },
+        {
+            "name": "subagent_skill",
+            "description": {
+                "zh": "看可用 skill 与读 skill 全文：action=list 列清单（name + description），action=read 读某个 SKILL.md 全文。扫两个目录：/sdcard/Download/Operit/subagent/skills（子代理独立，优先）与 /sdcard/Download/Operit/skills（主 agent 共享，只读）",
+                "en": "List or read skills from subagent's own dir and the shared main dir"
+            },
+            "parameters": [
+                {
+                    "name": "action",
+                    "type": "string",
+                    "description": "list（默认）看清单 / read 读全文",
+                    "required": false
+                },
+                {
+                    "name": "name",
+                    "type": "string",
+                    "description": "skill 名（action=read 时必填）。只允许字母数字点横杠下划线中文空格",
+                    "required": false
+                }
+            ]
         }
     ]
 }
-*/
+ */
 "use strict";
 
 var CFG = require("./sb_config.js");
@@ -858,6 +885,7 @@ var BUS = require("./sb_bus.js");
 var LLM = require("./sb_llm.js");
 var TOOLS = require("./sb_tools.js");
 var TASK = require("./sb_task.js");
+var SKILL = require("./sb_skill.js");
 
 var VERSION = "v1.0.0";
 /* 模型列表磁盘缓存有效期：24 小时。600+ 模型一次拉取数秒，命中缓存直接返回 */
@@ -1013,6 +1041,24 @@ exports.subagent_spawn = async function (params) {
     }
 
     var ctxText = String(params.context_text || "");
+    /* 【第六十五轮】skill 清单：逗号分隔或 all。all 展开成全部名字。
+       为什么只传名字不传全文：全文几十万字会把上下文吃光，模型要用哪个自己读。 */
+    var skillsArg = String(params.skills || "").trim();
+    var skillsList = [];
+    if (skillsArg) {
+        if (skillsArg.toLowerCase() === "all") {
+            try {
+                var _allSk = await SKILL.listSkills();
+                for (var _si = 0; _si < _allSk.length; _si++) skillsList.push(_allSk[_si].name);
+            } catch (eSk2) { skillsList = []; }
+        } else {
+            var _parts = skillsArg.split(",");
+            for (var _pi = 0; _pi < _parts.length; _pi++) {
+                var _one = String(_parts[_pi] || "").trim();
+                if (_one) skillsList.push(_one);
+            }
+        }
+    }
     var ctxModeEarly = String(params.context_mode || "");
     if (!ctxText && (ctxModeEarly === "chat_tail" || ctxModeEarly === "fork" || ctxModeEarly === "summary")) {
         try {
@@ -1089,6 +1135,7 @@ exports.subagent_spawn = async function (params) {
         workspace_resolved: ws,
         context_mode: params.context_mode || template && template.context_mode || cfg.default_context_mode,
         context_text: ctxText,
+        skills: skillsList,
         max_steps: params.max_steps, timeout_ms: params.timeout_ms,
         model: params.model, base_url: params.base_url,
         summary_level: params.summary_level, result_level: params.result_level,
@@ -2323,6 +2370,44 @@ exports.subagent_vendor_js = async function (params) {
     } catch (e) {
         complete({ success: false, message: "读取失败（可把 katex.min.js 放到 " + CFG.baseDir() + "/vendor/ 后重试）：" + String(e && e.message || e), data: {} });
     }
+};
+/* skill 支持（第六十五轮）：用户要求「让子代理也能读主 agent 的 skill，或者给独立 skill」。
+   两条路都做：
+     1) /sdcard/Download/Operit/subagent/skills —— 子代理独立目录，优先
+     2) /sdcard/Download/Operit/skills           —— 主 agent 共享，只读
+   同名时独立目录覆盖主目录，这样想给某个 skill 加子代理专属说明，不用动主目录。
+   为什么要这个工具而不是塞进系统提示词：单个 SKILL.md 几千到几万字，
+   全部塞进去几十万字符直接拉爆上下文。提示词里只给 name + description，
+   模型判断要用哪个，再调这个工具取全文。 */
+exports.subagent_skill = async function (params) {
+    params = params || {};
+    var action = String(params.action || "list").trim().toLowerCase();
+    if (action === "read") {
+        var r = await SKILL.readSkill(String(params.name || ""));
+        if (!r.ok) { complete({ success: false, message: r.error, data: {} }); return; }
+        complete({
+            success: true,
+            message: "已读取 skill " + r.name + "（" + r.chars + " 字符" + (r.truncated ? "，已截断到 " + r.text.length : "") + "）",
+            data: {
+                name: r.name, dir: r.dir,
+                chars: r.chars, truncated: r.truncated,
+                text: r.text
+            }
+        });
+        return;
+    }
+    /* 默认 list */
+    var all = [];
+    try { all = await SKILL.listSkills(); } catch (e) { all = []; }
+    var items = [];
+    for (var i = 0; i < all.length; i++) {
+        items.push({ name: all[i].name, description: all[i].description, dir: all[i].dir });
+    }
+    complete({
+        success: true,
+        message: "共 " + items.length + " 个 skill（扫 " + SKILL.SKILL_ROOTS.join(" 与 ") + "）",
+        data: { items: items, total: items.length, roots: SKILL.SKILL_ROOTS }
+    });
 };
 exports.subagent_version = async function () {
     /* tools 计数必须动态算，不能写死。

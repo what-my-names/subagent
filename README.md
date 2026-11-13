@@ -20,7 +20,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 > 带了 CORS 头则是真逐字流式。判断方法：
 > `curl -sI -X OPTIONS -H 'Origin: http://localhost/subagent' <你的端点>`，看有没有 `access-control-allow-origin`。
 
-## 工具（36 个）
+## 工具（37 个）
 
 **任务生命周期**
 
@@ -70,6 +70,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 | `subagent_save_turn` | 面板流式结束后把这一轮消息落盘，保证刷新后不丢 |
 | `subagent_tool_once` | 面板流式循环用：执行单个工具（白名单与写入范围校验与后端一致） |
 | `subagent_vendor_js` | 外接资源读取：读数据目录 `vendor/` 下的 js/css（如 katex.min.js） |
+| `subagent_skill` | 看可用 skill 清单 / 读某个 SKILL.md 全文。扫 `/sdcard/Download/Operit/subagent/skills`（自身，优先）与 `/sdcard/Download/Operit/skills`（主 agent 共享） |
 
 短任务用 `sync: true` 一次跑完；长任务用步进。
 
@@ -103,10 +104,11 @@ src/
   manifest.json          ToolPkg 清单
   main.js                入口：注册 UI 路由 + 收件箱钩子
   packages/              后端（配置 / 任务 / LLM / 工具 / 钩子 / 消息总线）
-    subagent.js          36 个工具的导出与声明
+    subagent.js          37 个工具的导出与声明
     sb_config.js         配置读写、密钥环境变量、模型缓存
     sb_task.js           任务状态机与落盘
     sb_llm.js            端点解析、请求构造、模型列表
+   sb_skill.js          skill 扫描与读取（子代理自身目录优先，主 agent 共享目录只读）
     sb_tools.js          白名单校验、工具名清洗、写范围检查
     sb_bus.js            收件箱（内存队列 + 落盘）
     sb_hook.js           系统提示词钩子（只读内存，不调工具）

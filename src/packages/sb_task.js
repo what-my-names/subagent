@@ -4,6 +4,7 @@
 var CFG = require("./sb_config.js");
 var LLM = require("./sb_llm.js");
 var TOOLS = require("./sb_tools.js");
+var SKILL = require("./sb_skill.js");
 
 /* 任务产物根：并入三目录约定，落在 workspace 下（config 注释里 workspace 就是「任务产物与可写根」）。
  * 惰性求值：不能写成 var TEMP_ROOT = CFG.workspaceDir() + ...，因为 require 阶段 CFG 可能还没就绪；
@@ -171,6 +172,21 @@ function buildSystemPrompt(task, cfg) {
     if (kp.acceptance && kp.acceptance.length) lines.push("验收：" + kp.acceptance.join("；"));
     /* 背景文本（对话历史 / 文件内容等），原样注入 */
     if (task.context_text) lines.push(clipText(task.context_text, cfg.inject_max_chars || 20000));
+    /* 【第六十五轮】skill 清单：只注 name + description，不注全文。
+       为什么不全注：单个 SKILL.md 几千到几万字，几十个就是几十万字符，直接拉爆上下文。
+       模型看到清单后，需要哪个用 subagent_skill(action=read, name=xxx) 自己取。 */
+    if (task.skills && task.skills.length) {
+        var skillTxt = "";
+        try {
+            var all = task._skillList || null;
+            if (all) skillTxt = SKILL.formatSkillList(all, task.skills);
+        } catch (eS) { skillTxt = ""; }
+        if (skillTxt) {
+            lines.push("可用 skill：");
+            lines.push(skillTxt);
+            lines.push("需要某个 skill 的完整内容时，调 subagent_skill（action=read, name=skill名）。");
+        }
+    }
     return lines.join("\n");
 }
 
@@ -225,6 +241,9 @@ async function createTask(cfg, opts) {
         thinking_level: String(opts.thinking_level || "medium"),
         context_mode: String(opts.context_mode || cfg.default_context_mode || "none"),
         context_text: String(opts.context_text || ""),
+        /* 【第六十五轮】要注入哪些 skill 的清单。存数组，空数组=不注入。
+           传 all 时由调用方展开成全部名字。 */
+        skills: Array.isArray(opts.skills) ? opts.skills : [],
         allowed_tools: opts.allowed_tools || [],
         /* 【第五十二轮】允许危险命令（建任务时可覆盖全局） */
         allow_danger: opts.allow_danger === true,
@@ -248,7 +267,13 @@ async function createTask(cfg, opts) {
     await mkdirs(productDirOf(id) + "/reports");
     await mkdirs(productDirOf(id) + "/work");
     await mkdirs(tasksDir());
+    /* 【第六十五轮】有 skill 需求时先扫一遍目录，把清单缓存到 _skillList，
+       供 buildSystemPrompt 拼提示词。扫不到不报错，只是清单为空。 */
+    if (task.skills && task.skills.length) {
+        try { task._skillList = await SKILL.listSkills(); } catch (eSk) { task._skillList = null; }
+    }
     task.turns.push({ role: "system", content: buildSystemPrompt(task, cfg) });
+    delete task._skillList;
     task.turns.push({ role: "user", content: String(opts.task || "") });
     await saveTask(task);
     var u = await loadUsage();

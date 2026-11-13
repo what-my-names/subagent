@@ -675,11 +675,18 @@ function toast(msg, level) {
         decided = true;
         horiz = ax >= ay;
       }
+      /* 【第六十二轮】用户要求：两个位置随便滑都能飞。
+         以前竖向会还给页面滚动，导致往上/往下滑没反应。
+         现在只在「没展开的长内容需要滚动」时才放行竖向，其余全接管。 */
       if (decided && !horiz) {
-        /* 竖向手势：交还给页面，不吞掉滚动 */
-        tracking = false;
-        reset(true);
-        return;
+        var needScroll = !el.classList.contains('float') &&
+                         el.scrollHeight > el.clientHeight + 2 &&
+                         el.classList.contains('open');
+        if (needScroll) {
+          tracking = false;
+          reset(true);
+          return;
+        }
       }
       /* 全方向跟手。悬浮态要保留居中基准 -50%，只叠加手指位移 */
       if (rec.floatBase) {
@@ -689,7 +696,7 @@ function toast(msg, level) {
       }
       var dist = Math.sqrt(curX * curX + curY * curY);
       el.style.opacity = String(Math.max(0.25, 1 - dist / 260));
-      if (horiz) { try { e.preventDefault(); } catch (eP) {} }
+      try { e.preventDefault(); } catch (eP) {}
     });
 
     function finish(e) {
@@ -1400,6 +1407,19 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     }
     var tip = tb.querySelector('.thk-tip');
     if (tip) tip.textContent = THINK_TIPS[n];
+    /* 【第六十三轮】展开浮入：不再用 void offsetWidth 强制同步回流。
+       强制回流会让每次点击都触发一次全文档布局，内容多时明显卡。
+       改用双 rAF：下一帧再加类，浏览器自然分帧，不用同步取布局。 */
+    if (body && body.classList) {
+      body.classList.remove('thk-in');
+      if (n !== 0) {
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            if (body.isConnected) body.classList.add('thk-in');
+          });
+        });
+      }
+    }
     /* 只有 0 档自动跟到底；1/2 档是用户主动展开的，不抢他的滚动位置 */
     if (n === 0) thinkScrollBottom(tb);
     syncThinkFloat();
@@ -1452,23 +1472,31 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
        - 点「工具调用文本」→ 看 agent 是怎么调用的（参数）
        - 点「工具返回预览」→ 屏幕中心弹窗看返回全文（可下滑）
      失败的工具：名称、参数、返回预览全部红字提示。 */
+  /* 【第六十四轮】工具行唯一序号。
+     为什么不用 tc.id / tc.name 当键：同一轮里可以有两条同名工具（比如两次 read_file 都失败），
+     用名字做键会互相覆盖，后者把前者顶掉 —— 用户点第一条，弹出来的却是第二条的内容。
+     用递增序号做键，再写到节点的 data-tsq 上，点击时按序号精确取。 */
+  var TOOL_SEQ = 0;
   function toolRow(tc, res) {
     var okk = !res || (res.ok !== false);
+    var tsq = ++TOOL_SEQ;
     var key = String(tc.id || tc.name || '');
+    S._toolBySeq = S._toolBySeq || {};
+    S._toolBySeq[String(tsq)] = { call: tc, res: res || null };
     var brief = tc.args ? briefJson(tc.args, 56) : '';
     var peek = '';
     if (res) {
       var txt = res.result != null ? String(res.result) : (res.error != null ? String(res.error) : '');
       var flat = txt.replace(/\s+/g, ' ').trim();
       /* 返回预览：弯折箭头 + 首行摘要。点它开返回弹窗。 */
-      peek = '<div class="tb-peek" data-act="retOpen" data-tool="' + esc(key) + '">'
+      peek = '<div class="tb-peek" data-act="retOpen" data-tool="' + esc(key) + '" data-tsq="' + tsq + '">'
         + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/><path d="M14 11l4 4-4 4"/></svg>'
         + '<span class="tb-peektxt">' + esc(flat) + '</span>'
         + '</div>';
     }
     /* 调用行：点它看参数（agent 怎么调用的） */
-    return '<div class="trowc' + (okk ? '' : ' bad') + '" data-tool="' + esc(key) + '">'
-      + '<div class="trow" data-act="callShow" data-tool="' + esc(key) + '">'
+    return '<div class="trowc' + (okk ? '' : ' bad') + '" data-tool="' + esc(key) + '" data-tsq="' + tsq + '">'
+      + '<div class="trow" data-act="callShow" data-tool="' + esc(key) + '" data-tsq="' + tsq + '">'
       + '<svg class="trow-ico" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.1-2.1 2.6-2.4z"/></svg>'
       + '<span class="trow-name">' + esc(tc.name) + '</span>'
       + (brief ? '<span class="trow-args">' + esc(brief) + '</span>' : '')
@@ -1539,37 +1567,47 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     var turns = d.turns || [], h = '';
     /* 先把 tool 结果按 tool_call_id 建索引，保证返回紧跟调用 */
     var resById = {}, resQueue = [];
+    /* 【第六十四轮】重渲染前清空工具序号表，否则每刷新一次就累积 */
+    S._toolBySeq = {};
     for (var r0 = 0; r0 < turns.length; r0++) {
       if (turns[r0].role === 'tool') {
         resQueue.push(turns[r0]);
-        var cid = String(turns[r0].calls_id || '');
+        var cid = String(turns[r0].tool_call_id || turns[r0].calls_id || '');
         if (cid) resById[cid] = turns[r0];
       }
     }
     var usedRes = {};
 
+    /* 【第六十轮】整段连续的 AI 输出合成一个卡片。
+       用户原话（连喊十几个「一个」）：「工具调用，思考内容全没了，一个卡片」
+       之前每条 turn 各自生成一个 .agent-block，一轮 25 步就被切成 25 个卡片。
+       现在：从第一条 assistant 到最后一个 tool，共用一个 .agent-block，
+       内部依次排列「思考过程」段 → 工具调用段 → 正文段，全部同一张卡。 */
+    /* 【第六十一轮】按任务状态决定默认展开还是收起。
+       用户原话：「这个是一个已经完成的任务，为什么不收起？」
+       运行中要展开看实时进展；已结束就收起来，别撑满一屏。 */
+    var live = (d.status === 'running' || d.status === 'queued');
+    var stInit = live ? '1' : '0';
+    var blkOpen = false;
+    function openBlk() {
+      if (!blkOpen) { h += '<div class="agent-block">'; blkOpen = true; }
+    }
+    function closeBlk() {
+      if (blkOpen) { h += '</div>'; blkOpen = false; }
+    }
     for (var i = 0; i < turns.length; i++) {
       var m = turns[i];
       if (m.role === 'assistant') {
-        /* 【第五十三轮】思考与工具调用拆成两个独立块，对齐 Operit 原生观感。
-           之前塞进同一张 agent-card，工具跟在思考正文后面，看起来像思考的一部分，
-           用户带截图指正了这一点。现在：
-             思考块：「思考过程」折叠头 + 灰字正文
-             工具块：「工具调用 (N)」折叠头 + N 个一行式工具行
-           两块各自独立折叠，互不嵌套。 */
         var hasThink = !!m.reasoning;
         var t = m.tool_calls || [];
         var hasTool = t.length > 0;
 
-        /* 【第五十八轮】一个卡片容器，里面分段：思考一段、工具一段，中间分割线。
-           用户原话「你确定这是一张卡片？还是有空格」——之前是两团圆角气泡并排。
-           现在外层 .agent-block 负责圆角与背景，内层 .thinkbox 只做可折叠的段。 */
-        if (hasThink || hasTool) {
-          h += '<div class="agent-block">';
-        }
+        /* 有思考或工具 → 先开卡（已在卡内就复用） */
+        if (hasThink || hasTool) openBlk();
+
         if (hasThink) {
           var tid = ++FOLD_SEQ;
-          h += '<div class="thinkbox thk-sec" data-think="' + tid + '" data-state="0">'
+          h += '<div class="thinkbox thk-sec" data-think="' + tid + '" data-state="' + stInit + '">'
             + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
             + '<span class="thk-tx">思考过程</span>'
             + '<span class="thk-tip">展开</span>'
@@ -1581,7 +1619,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         }
         if (hasTool) {
           var tid2 = ++FOLD_SEQ;
-          h += '<div class="thinkbox toolcard thk-sec" data-think="' + tid2 + '" data-state="0">'
+          h += '<div class="thinkbox toolcard thk-sec" data-think="' + tid2 + '" data-state="' + stInit + '">'
             + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
             + '<span class="thk-tx">工具调用</span>'
             + '<span class="tool-count">(' + t.length + ')</span>'
@@ -1604,28 +1642,32 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
           }
           h += '</div></div>';
         }
-        if (hasThink || hasTool) {
-          h += '</div>';
-        }
 
-        if (m.content) h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(m.content) + '</div></div>';
+        /* 正文也放进同一张卡：不再单独用 .bubble */
+        if (m.content) {
+          openBlk();
+          h += '<div class="agent-text">' + md(m.content) + '</div>';
+        }
+        /* 这一条什么都没产出（空 assistant）就收卡，避免残留空壳 */
+        if (!hasThink && !hasTool && !m.content) closeBlk();
       } else if (m.role === 'tool') {
         /* 已被调用块吸收的不再单独渲染 */
         var idx = resQueue.indexOf(m);
         if (idx >= 0 && usedRes[idx]) continue;
-        var okk2 = (m.ok !== false);
-        /* 【第五十八轮】孤儿工具行也放进 agent-block 容器 */
-        h += '<div class="agent-block">'
-          + '<div class="thinkbox toolcard thk-sec" data-state="0">'
+        openBlk();
+        h += '<div class="thinkbox toolcard thk-sec" data-state="' + stInit + '">'
           + '<div class="thk-body">'
           + toolRow({ name: m.name || 'tool', args: null }, m)
-          + '</div></div></div>';
+          + '</div></div>';
         S._toolMap = S._toolMap || {};
         S._toolMap[String(m.name || 'tool')] = { call: null, res: m };
       } else if (m.role === 'user') {
+        closeBlk();
         h += '<div class="bubble mine"><div class="b-body">' + esc(m.content) + '</div></div>';
       }
     }
+    /* 【第六十轮】循环结束，把未收的卡片收掉 */
+    closeBlk();
     /* 【关键】pending = 流式过程中临时落盘、还没收尾的内容。
        用户退出面板再进来时，这些内容不在 turns 里（还没落正式 turn），
        不补的话界面上就什么都没有，用户以为丢了、只能重新点启动 —— 这就是
@@ -2788,9 +2830,8 @@ document.addEventListener('visibilitychange', function () {
         return;
       }
       thinkBuf = ''; bodyBuf = '';
-      /* 【第五十七轮】新一轮重新开一张工具卡，不跟上一轮共用 */
+      /* 【第六十轮】_streamBlock 整轮复用不重置，_streamToolCard 每轮重开段 */
       _streamToolCard = null;
-      _streamBlock = null;
       setLive(depth === 0 ? '模型生成中…' : '继续推理…');
       streamOnce(msgs, function (delta) {
         if (!ALIVE) return;
@@ -2867,17 +2908,26 @@ document.addEventListener('visibilitychange', function () {
            用户实测就是这个现象：先冒出 list_files 工具块，然后整块消失变成正文。 */
         try {
           if (thinkBuf || bodyBuf) {
-            var _hist = document.createElement('div');
-            _hist.className = 'bubble ai';
-            _hist.innerHTML = '<div class="b-body md-body">' + md(bodyBuf || '') + '</div>';
-            host.insertBefore(_hist, holder);
-            /* 【第五十八轮】思考与工具包在同一个 .agent-block 里 */
-            var _blk = document.createElement('div');
-            _blk.className = 'agent-block';
+            /* 【第六十轮】正文也进同一个卡片 */
+            if (bodyBuf) {
+              var _txt = document.createElement('div');
+              _txt.className = 'agent-text';
+              _txt.innerHTML = md(bodyBuf);
+              if (!_blk) { _blk = document.createElement('div'); _blk.className = 'agent-block'; }
+              _blk.appendChild(_txt);
+            }
+            /* 【第六十轮】整轮共用一个 agent-block，不再每条新建 */
+            var _blk = _streamBlock;
+            if (!_blk || !_blk.parentNode) {
+              _blk = document.createElement('div');
+              _blk.className = 'agent-block';
+              host.insertBefore(_blk, holder);
+              _streamBlock = _blk;
+            }
             if (thinkBuf) {
               var _th = document.createElement('div');
               _th.className = 'thinkbox thk-sec';
-              _th.setAttribute('data-state', '0');
+              _th.setAttribute('data-state', '1');
               _th.innerHTML = '<div class="thk-head">' + SVG_CHEV
                 + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span></div>'
                 + '<div class="thk-body">' + esc(thinkBuf) + '</div>';
@@ -3856,14 +3906,20 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'toolDlg') return openToolDlg(val);
     /* 【第五十六轮】点工具行/返回预览 → 中心弹窗展示返回全文 */
     if (act === 'callShow') {
+      /* 【第六十四轮】优先按唯一序号取，避开同名工具互相覆盖 */
+      var sqc = el.dataset.tsq || '';
+      var rec2 = sqc ? (S._toolBySeq || {})[String(sqc)] : null;
       var kc = el.dataset.tool || val || '';
-      var rec2 = (S._toolMap || {})[String(kc)];
+      if (!rec2) rec2 = (S._toolMap || {})[String(kc)];
       if (!rec2 || !rec2.call) { toast('找不到调用记录', 'warn'); return; }
       return openCallDlg(rec2.call.name || kc, rec2.call.args);
     }
     if (act === 'retOpen') {
+      /* 【第六十四轮】优先按唯一序号取，避开同名工具互相覆盖 */
+      var sqr = el.dataset.tsq || '';
+      var rec = sqr ? (S._toolBySeq || {})[String(sqr)] : null;
       var k = el.dataset.tool || val || '';
-      var rec = (S._toolMap || {})[String(k)];
+      if (!rec) rec = (S._toolMap || {})[String(k)];
       var r = rec && rec.res;
       var nm2 = (rec && rec.call && rec.call.name) || k || '返回';
       if (!r) { toast('还没有返回', 'warn'); return; }
@@ -4090,21 +4146,21 @@ document.addEventListener('visibilitychange', function () {
       var sel = window.getSelection && window.getSelection();
       if (sel && String(sel).length) return;
     } catch (eS) {}
-    /* 【第五十八轮】单击 = 展开/收起（0<->1）；双击 = 全部展开/收起（2<->0）。
-       用 240ms 窗口区分：单击先等一下，若这期间来了第二下就按双击走。 */
+    /* 【第六十三轮】单击立即响应，不再等 240ms。
+       旧逻辑为了区分双击，单击要 setTimeout 240ms 后才动，手感发滞。
+       新逻辑：单击立刻切（0<->1）；若 260ms 内来了第二击，再累进到 2。
+       双击的最终结果一样（全展开），但第一下即时反馈。 */
     var st0 = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
-    if (S._tapTimer && S._tapEl === tb) {
-      clearTimeout(S._tapTimer);
-      S._tapTimer = null; S._tapEl = null;
+    var now = Date.now();
+    if (S._tapEl === tb && now - (S._tapAt || 0) < 260) {
+      /* 第二击：从刚切到的 1 再推到 2；若已经是 2 则收回 0 */
+      S._tapEl = null; S._tapAt = 0;
       setThinkState(tb, st0 === 2 ? 0 : 2);
       return;
     }
     S._tapEl = tb;
-    S._tapTimer = setTimeout(function () {
-      S._tapTimer = null; S._tapEl = null;
-      var cur = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
-      setThinkState(tb, cur === 0 ? 1 : 0);
-    }, 240);
+    S._tapAt = now;
+    setThinkState(tb, st0 === 0 ? 1 : 0);
   });
   /* 思考块点击已统一到上面的累进循环处理 */
 

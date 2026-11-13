@@ -249,8 +249,8 @@ A.nomatch('notifyDone 不再传 conclusion', A.src('packages/subagent.js'), /tex
 var CSS2 = A.src('ui/web/panel.css');
 /* 三档高度必须都存在：基础=0档，h1=1档，h2=2档。缺一档就退化回两态。 */
 A.match('0 档基础限高 120', CSS2, /\.thk-body\{[^}]*max-height:120px/);
-A.match('1 档 h1 限高 320', CSS2, /\.thk-body\.h1\{max-height:320px\}/);
-A.match('2 档 h2 不限高', CSS2, /\.thk-body\.h2\{max-height:none;overflow:visible\}/);
+A.match('1 档 h1 限高 320', CSS2, /\.thk-body\.h1\{max-height:320px;opacity:1\}/);
+A.match('2 档 h2 不限高', CSS2, /\.thk-body\.h2\{max-height:none;overflow:visible;opacity:1\}/);
 /* 基础态必须容器内滚（这是 0 档能跟手的前提） */
 A.match('0 档容器内滚', CSS2, /\.thk-body\{[^}]*overflow-y:auto/);
 /* 嵌套滚动必须 contain，否则「划到最下面」会突然跳到整页 */
@@ -265,7 +265,7 @@ A.match('两档角标文案', P, /var THINK_TIPS = \['展开', '收起', '收起
 A.match('JS 挂 h1/h2 class', P, /body\.classList\.add\('h1'\)/);
 A.match('JS 清 h1/h2 class', P, /body\.classList\.remove\('h1', 'h2'\)/);
 /* 点击必须累进循环，不能是两态互换 */
-A.match('单击在展开收起间切', P, /cur === 0 \? 1 : 0/);
+A.match('单击立即切换', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);
 /* 双击拦截必须删掉，否则第二次点击被吃掉，永远到不了 2 档 */
 A.nomatch('不再拦截双击', P, /_thinkTapEl/);
 /* setThinkState 必须接受 2 档（原来只认 0/1） */
@@ -440,7 +440,7 @@ A.match('头像从 eggPanel 取容器', P, /var av = \$\('eggPanel'\) && \$\('eg
 A.match('通知条在右上', CSS2, /#toastStack\{position:fixed;top:calc\(52px \+ env\(safe-area-inset-top, 0px\)\);right:8px/);
 A.nomatch('通知条不再贴底', CSS2, /#toastStack\{position:fixed;bottom:calc\(78px/);
 /* 入场从上方滑入，不是从右侧 */
-A.match('入场从上方', CSS2, /@keyframes tstIn\{\s*0%\{opacity:0;transform:translate3d\(0,-110%,0\)\}/);
+A.match('入场斜向轻位移', CSS2, /@keyframes tstIn\{[\s\S]*?0%\{opacity:0;transform:translate3d\(12px,-14px,0\) scale\(\.96\)\)?\}/);
 /* 新条目插到顶部，旧的往下推 */
 A.match('新条目插到最前', P, /box\.insertBefore\(el, box\.firstChild\)/);
 A.match('数组同步 unshift', P, /TST_NODES\.unshift\(rec\)/);
@@ -542,7 +542,7 @@ A.match('外链工具限定白名单', UPDM, /github\\\.com\\\/what-my-names/);
 A.match('基础态有 max-height 过渡', CSS2, /transition:max-height \.3s cubic-bezier/);
 /* 悬浮态必须保留过渡（曾经写成 transition:none，导致双击瞬移） */
 A.nomatch('悬浮态不再杀掉过渡', CSS2, /\.tst\.float\{animation:none;transition:none/);
-A.match('悬浮态有 transform 过渡', CSS2, /\.tst\.float\{animation:none;\s*transition:transform \.3s/);
+A.match('悬浮态带回弹过渡', CSS2, /\.tst\.float\{animation:none;[\s\S]{0,200}?cubic-bezier\(\.34,1\.4,\.64,1\)/);
 /* 悬浮态消失用独立类，不能复用 tstOut（transform 会打架） */
 A.match('悬浮态淡出类', CSS2, /\.tst\.float\.gone\{opacity:0;transform:translate\(-50%,-50%\) scale\(\.94\)/);
 A.match('float 态走 gone 不走 out', P, /else if \(el\.classList\.contains\('float'\)\) \{[\s\S]{0,200}?el\.classList\.add\('gone'\)/);
@@ -614,29 +614,60 @@ A.nomatch('CSS 已删 thk-len 规则', CSS2, /\.thk-len\{/);
 A.match('背景跟正文一致', CSS2, /\.thinkbox\{margin:0;background:var\(--bg3\)/);
 /* ── 【第五十七轮】两卡无缝 + 调用/返回两入口 + 失败红字 ── */
 A.match('外层是 agent-block 容器', P, /class="agent-block"/);
+A.match('思考段按任务状态定默认态', P, /data-think="' \+ tid \+ '" data-state="' \+ stInit/);
+
+/* ── 【第六十轮】整轮共用一个卡片 ── */
+A.match('整轮共用开卡函数', P, /function openBlk\(\)/);
+
+/* 【第六十一轮】已结束任务默认收起 */
+A.match('运行中才默认展开', P, /var live = \(d\.status === 'running'/);
+
+/* ── 【第六十二轮】滑动 + 色彩分层 + 弹出动画 ── */
+A.match('聊天区子项禁止收缩', CSS2, /\.dt-chat>\*\{flex-shrink:0/);
+A.match('卡片自己也禁收缩', CSS2, /\.agent-block\{[^}]*flex-shrink:0/);
+A.match('思考正文色独立变量', CSS2, /--think-fg:#a8b4cc/);
+A.match('思考正文用该变量', CSS2, /\.thk-body\{[^}]*color:var\(--think-fg\)/);
+A.match('悬浮窗带回弹曲线', CSS2, /#retDlg\{[^}]*cubic-bezier\(\.22,1\.15,\.36,1\)/);
+A.match('悬浮窗起始缩小', CSS2, /#retDlg\{[^}]*scale\(\.9\)/);
+A.match('展开时内容淡入', CSS2, /@keyframes thkIn/);
+A.match('展开加动效类', P, /classList\.add\('thk-in'\)/);
+A.match('toast 浮中带回弹', CSS2, /\.tst\.float\{[^}]*cubic-bezier\(\.34,1\.4,\.64,1\)/);
+A.match('toast 非展开也可拖飞', P, /var needScroll = !el\.classList\.contains\('float'\)/);
+A.match('默认态由状态决定', P, /var stInit = live \? '1' : '0'/);
+A.match('有收卡函数', P, /function closeBlk\(\)/);
+A.match('正文进同一卡片', P, /class="agent-text">/);
+A.match('流式正文也进卡', P, /_blk\.appendChild\(_txt\)/);
+A.match('正文段样式', CSS2, /\.agent-block>\.agent-text\{/);
+A.match('工具段按任务状态定默认态', P, /data-think="' \+ tid2 \+ '" data-state="' \+ stInit/);
+A.match('段间零边框', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border:0/);
 A.match('思考段在容器内', P, /class="thinkbox thk-sec"/);
 A.match('工具段在容器内', P, /class="thinkbox toolcard thk-sec"/);
 A.match('容器圆角只在外层', CSS2, /\.agent-block\{background:var\(--bg3\);border-radius:3px 14px 14px 14px/);
-A.match('段在容器内去圆角', CSS2, /\.agent-block>\.thinkbox\{background:transparent;border-radius:0/);
-A.match('段间分割线', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border-top:1px solid/);
+A.match('段在容器内去圆角', CSS2, /\.agent-block>\.thinkbox\{background:transparent;border:0;border-radius:0/);
+A.nomatch('不再有分割线', CSS2, /border-top:1px solid rgba\(127,141,179,\.18\)/);
 A.match('可点击色变量', CSS2, /--click:#5d9bff/);
 A.match('折叠头用可点击色', CSS2, /\.thk-tx\{[^}]*color:var\(--click\)/);
 A.match('工具名用可点击色', CSS2, /\.trow-name\{[^}]*color:var\(--click\)/);
-A.match('单击展开收起', P, /cur === 0 \? 1 : 0/);
+A.match('单击立即切换', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);
 A.match('双击全展开', P, /st0 === 2 \? 0 : 2/);
-A.match('双击判定窗口', P, /_tapTimer/);
+A.match('双击窗口用时间戳', P, /now - \(S\._tapAt \|\| 0\) < 260/);
+A.nomatch('不再用 240ms 延时', P, /setTimeout\(function \(\) \{\n\s+S\._tapTimer/);
+A.nomatch('不再强制同步回流', P, /void body\.offsetWidth/);
+A.match('用双 rAF 分帧', P, /requestAnimationFrame\(function \(\) \{\n\s+requestAnimationFrame/);
+A.match('折叠时长已缩到 .16s', CSS2, /transition:max-height \.16s/);
+A.match('声明 will-change', CSS2, /will-change:max-height/);
 A.match('流式有卡片容器变量', P, /_streamBlock/);
 A.match('工具段在容器内', P, /class="thinkbox toolcard thk-sec"/);
-A.match('段间分割线', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border-top:1px solid/);
+A.match('段间零边框', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border:0/);
 A.match('卡片外边距归零', CSS2, /\.thinkbox\{margin:0;/);
-A.match('聊天气泡容器 gap 归零', CSS2, /\.dt-chat\{[^}]*gap:0\}/);
+A.match('聊天气泡容器 gap 归零', CSS2, /\.dt-chat\{[^}]*gap:0/);
 A.match('点调用行看参数', P, /data-act="callShow"/);
 A.match('点返回预览看全文', P, /data-act="retOpen"/);
 A.match('参数弹窗函数存在', P, /function openCallDlg\(/);
 A.match('失败工具红字', CSS2, /\.trowc\.bad \.trow-name/);
 A.match('流式工具卡复用同一张', P, /_streamToolCard/);
 A.nomatch('思考块不再有左边框', CSS2, /\.thinkbox\{margin:4px 0;border-left/);
-A.match('返回默认一行预览', P, /class="tb-peek" data-act="retOpen"/);
+A.match('返回默认一行预览', P, /class="tb-peek" data-act="retOpen" data-tool=/);
 A.match('全文默认隐藏', CSS2, /\.tb-full\{display:none\}/);
 A.nomatch('不再分单/多工具卡', P, /var multi = t\.length > 1;/);
 A.nomatch('不再有 solo 分支', P, /toolcard solo/);
@@ -821,6 +852,23 @@ if (T) {
   A.chk('开启后仍拦越界路径', T.analyzeCommand('cat /etc/passwd', W, true).ok === false);
   A.chk('开启后仍拦 .. 穿越', T.analyzeCommand('cat /tmp/ws/../../etc/passwd', W, true).ok === false);
 }
+A.match('工具行用唯一序号做键', P, /var tsq = \+\+TOOL_SEQ/);
+A.match('结果索引兼容 tool_call_id', P, /turns\[r0\]\.tool_call_id \|\| turns\[r0\]\.calls_id/);
+A.match('点击优先读 data-tsq', P, /el\.dataset\.tsq/);
+/* 【第六十五轮】skill 支持：双目录 + 安全校验 + 注入提示词 */
+var SK = A.src('packages/sb_skill.js');
+var SUB = A.src('packages/subagent.js');
+var TSK = A.src('packages/sb_task.js');
+var TOOLS2 = A.src('packages/sb_tools.js');
+A.match('skill 有子代理独立目录', SK, /Operit\/subagent\/skills/);
+A.match('skill 有主 agent 共享目录', SK, /Download\/Operit\/skills/);
+A.match('skill 名允许中文', SK, /u4e00-\\u9fa5/);
+A.match('skill 名拦截 .. 逃逸', SK, /indexOf\("\.\."\)/);
+A.match('skill 全文上限 60000', SK, /SKILL_MAX_CHARS = 60000/);
+A.match('spawn 有 skills 参数', SUB, /"name": "skills"/);
+A.match('新增 subagent_skill 工具', SUB, /exports\.subagent_skill = async function/);
+A.match('skill 清单注入系统提示词', TSK, /可用 skill：/);
+A.match('白名单含 skill', TOOLS2, /vendor_js\|skill/);
 A.finish();
 
 /* run_tool 后门的行为测试：异步跑完再单独 report，

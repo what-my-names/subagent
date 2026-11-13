@@ -215,7 +215,7 @@ A.match('loadStreamEnv 按任务 id 校验', P2, /STREAM\.ctxFor === _tid/);
 A.match('loadStreamEnv 记录 ctxFor', P2, /STREAM\.ctxFor = _tid/);
 /* 工具调用轮次结束后必须定格 holder，否则下一轮流式覆盖造成「内容消失又出现」 */
 A.match('工具轮结束后定格流式 holder', P2, /工具调用这一轮结束后，必须把当前流式 holder/);
-A.match('定格时把已流出内容转成正式气泡', P2, /host\.insertBefore\(_hist, holder\)/);
+A.match('定格时把已流出内容落进同一张卡', P2, /_blk.appendChild\(_txt\)/);
 A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="sb-think"/);
 
 A.finish();

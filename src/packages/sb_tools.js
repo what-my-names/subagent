@@ -68,7 +68,7 @@ function isNoPathWriteTool(name) {
 /* 本包工具名形态：subagent_ + 已知动词/名词。
    为什么用白名单动词而不是 `subagent_` 前缀：
    subagent_helper 也是 subagent_ 开头，但 helper 不是本包工具。 */
-var OWN_TOOL_RE = /^subagent_(spawn|advance|wait|status|result|undo|cancel|resume|steer|inbox|list|close|delete|config|templates|probe|version|check_update|download_update|download_status|install_update|open_mail|open_url|trace|workspace|list_dir|check_path|save_turn|stream_flush|tool_once|stream_ctx|stream_key|stream_relay|chats|tools|vendor_js)$/;
+var OWN_TOOL_RE = /^subagent_(spawn|advance|wait|status|result|undo|cancel|resume|steer|inbox|list|close|delete|config|templates|probe|version|check_update|download_update|download_status|install_update|open_mail|open_url|trace|workspace|list_dir|check_path|save_turn|stream_flush|tool_once|stream_ctx|stream_key|stream_relay|chats|tools|vendor_js|skill)$/;
 
 function isRecursive(name) {
     var n = String(name || "");

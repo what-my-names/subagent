@@ -60,8 +60,8 @@ A.match('飞出移除延时 320ms', P, /\}, dir \? 320 : 260\);/);
 
 /* ── 竖向手势还给页面（阻塞根因） ── */
 A.match('有方向判定', P, /decided = true;[\s\S]{0,60}?horiz = ax >= ay;/);
-A.match('竖向放弃接管', P, /if \(decided && !horiz\) \{[\s\S]{0,140}?tracking = false;[\s\S]{0,60}?reset\(true\);/);
-A.match('只在横向 preventDefault', P, /if \(horiz\) \{ try \{ e\.preventDefault\(\)/);
+A.match('竖向仅在需要滚动时放行', P, /var needScroll = !el\.classList\.contains\('float'\)/);
+A.match('接管后一律 preventDefault', P, /try \{ e\.preventDefault\(\); \} catch \(eP\) \{\}/);
 
 /* ── 顺序：右上角容器，新的插到最前（第三十九轮反转，原为右下角 append 到末尾） ── */
 A.match('新条目插到最前', P, /box\.insertBefore\(el, box\.firstChild\);/);

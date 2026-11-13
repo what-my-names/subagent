@@ -331,14 +331,27 @@ async function steerTask(cfg, task, text) {
     if (!t) return { ok: false, task: task, message: "消息为空" };
     if (task.status === "closed") return { ok: false, task: task, message: "任务已关闭，不能追加" };
     task.turns.push({ role: "user", content: t });
+    /* 【第六十七轮】自动加步数上限要明说，不能偷偷加。
+       原来悄悄改 max_steps，用户以为自己在 20 步内，其实已经 25 了。 */
+    var extended = 0;
     if (task.status === "done" || task.status === "failed" || task.status === "cancelled") {
         task.status = "running";
         task.cancel = false;
         task.error = null;
-        if (task.step >= task.max_steps) task.max_steps = task.step + 5;
+        if (task.step >= task.max_steps) {
+            var before = Number(task.max_steps || 0);
+            task.max_steps = task.step + 5;
+            extended = task.max_steps - before;
+            task.steer_extended = Number(task.steer_extended || 0) + extended;
+        }
     }
     await saveTask(task);
-    return { ok: true, task: task, message: "已追加，下一次 advance 生效" };
+    return {
+        ok: true, task: task,
+        message: extended > 0
+            ? "已追加，下一次 advance 生效（步数上限已从 " + (task.max_steps - extended) + " 提到 " + task.max_steps + "）"
+            : "已追加，下一次 advance 生效"
+    };
 }
 
 /* 阶段标记：前端轮询靠它显示「正在调用模型 / 正在执行工具」，
@@ -358,9 +371,46 @@ async function setPhase(task, phase, extra) {
    ToolPkg 后端是单进程单事件循环，用 Set 做互斥就够，不需要文件锁。 */
 var _advancing = {};
 
+/* 【第六十七轮】加磁盘锁，补上内存锁的缺口。
+   内存锁只在「同一个 JS 引擎实例」里有效：
+   面板在 WebView 的 JsEngine 里跑，主 agent 调 subagent_advance 在另一个执行上下文，
+   两边各有一份 _advancing，互相看不见 —— 同一个任务会被两边同时推进，
+   结果就是双份 LLM 请求（双倍计费）+ 两个 saveTask 互相覆盖（丢步骤）。
+   磁盘锁跨上下文可见。
+   【僵死锁】带时间戳，超过 STALE_LOCK_MS 视为上一次推进已崩，允许抢占。
+   万一真锁死了，删掉 cache/lock_<id>.json 即可解开。 */
+var STALE_LOCK_MS = 10 * 60 * 1000;
+function lockPath(id) { return CFG.cacheDir() + "/lock_" + String(id || "x") + ".json"; }
+async function tryDiskLock(id) {
+    if (!id) return { ok: true, stale: false };
+    var p = lockPath(id);
+    var now = nowMs();
+    var old = null;
+    try { var raw = await readText(p); if (raw) old = JSON.parse(raw); } catch (e) { old = null; }
+    if (old && old.at && (now - Number(old.at)) < STALE_LOCK_MS) {
+        return { ok: false, at: Number(old.at), stale: false };
+    }
+    try {
+        await mkdirs(CFG.cacheDir());
+        await Tools.Files.write(p, JSON.stringify({ at: now }), false, "android");
+    } catch (e) {
+        /* 写不进锁文件时不阻塞任务 —— 宁可能并发也不要永远推不动 */
+        return { ok: true, stale: false, degraded: true };
+    }
+    return { ok: true, stale: !!old };
+}
+async function releaseDiskLock(id) {
+    if (!id) return;
+    try { await Tools.Files.deleteFile(lockPath(id), "android"); } catch (e) {}
+}
+
 async function advanceTask(cfg, task) {
     var _lk = String(task.id || "");
     if (_lk && _advancing[_lk]) return { ok: false, busy: true, task: task, message: "该任务正在推进中，请稍后" };
+    var dk = await tryDiskLock(_lk);
+    if (!dk.ok) {
+        return { ok: false, busy: true, task: task, message: "该任务正在推进中（另一处正在跑），请稍后" };
+    }
     if (_lk) _advancing[_lk] = true;
     try {
         return await _advanceTaskInner(cfg, task);
@@ -380,7 +430,75 @@ async function advanceTask(cfg, task) {
         return { ok: false, task: task, message: task.error };
     } finally {
         if (_lk) delete _advancing[_lk];
+        await releaseDiskLock(_lk);
     }
+}
+
+/* 【第六十七轮】上下文超限 → 转存文件。
+ *
+ * 背景：用户早先定「工具结果不截断」，落盘保留全量没问题；
+ * 但 task.turns 全量发给模型，跑十几步后几十万字符，模型直接 400 context_length_exceeded。
+ * 用户新决定：不砍内容，改成「超限就转存成文件，让子代理自己去读」。
+ *
+ * 做法：
+ *   1. 只处理 tool 角色的消息（正文/思考通常短，且是叙事主线，不能动）
+ *   2. 单条低于 EXTRACT_MIN_CHARS(4000) 的不动 —— 短的转存反而增加往返
+ *   3. 从最老的开始转存，直到总量降到 CTX_SOFT_LIMIT 以下
+ *   4. 原文写进 CFG.tmpDir()/<taskId>_<n>.txt，消息里换成一行引用
+ *   5. **只返回副本，不改 task.turns** —— 落盘仍是全量，随时可回溯
+ *
+ * 入：task, cfg
+ * 出：可直接喂给 LLM.callChat 的 messages 数组（副本）
+ */
+var EXTRACT_MIN_CHARS = 4000;      /* 单条低于这个值不转存，转存反而多一次往返 */
+var CTX_SOFT_LIMIT = 180000;       /* 总字符软上限，约 45k token，留足余量给模型输出 */
+
+async function prepareTurnsForModel(task, cfg) {
+    var turns = task.turns || [];
+    /* 先算总量 */
+    var total = 0;
+    for (var i = 0; i < turns.length; i++) {
+        total += String((turns[i] || {}).content || "").length;
+    }
+    /* 没超就直接返回原数组（不复制，省开销） */
+    if (total <= CTX_SOFT_LIMIT) return turns;
+
+    var out = [];
+    var copied = 0;
+    var lastIdx = turns.length - 1;
+    /* 从最老的开始找可转存的 tool 消息。
+       跳过最后一条（最新工具结果，模型马上要用，转存等于白跑一步） */
+    for (var j = 0; j < turns.length; j++) {
+        var m = turns[j] || {};
+        var c = String(m.content || "");
+        if (m.role !== "tool" || j === lastIdx || c.length < EXTRACT_MIN_CHARS) {
+            out.push(m);
+            continue;
+        }
+        if (total <= CTX_SOFT_LIMIT) { out.push(m); continue; }
+        /* 需要转存这一条 */
+        var path = CFG.tmpDir() + "/" + String(task.id || "task") + "_" + j + ".txt";
+        try {
+            await mkdirs(CFG.tmpDir());
+            await Tools.Files.write(path, c, false, "android");
+        } catch (e) {
+            /* 写不进去就原样保留 —— 宁可超限也不要丢内容 */
+            out.push(m);
+            continue;
+        }
+        var cp = {};
+        for (var k in m) { if (Object.prototype.hasOwnProperty.call(m, k)) cp[k] = m[k]; }
+        cp.content = "[内容过长已转存] 这段工具返回共 " + c.length
+            + " 字符，全文在 " + path
+            + "，需要细节时用 read_file 读它。";
+        out.push(cp);
+        total -= (c.length - cp.content.length);
+        copied++;
+    }
+    if (copied > 0) {
+        try { task.ctx_spilled = Number(task.ctx_spilled || 0) + copied; } catch (e2) {}
+    }
+    return out;
 }
 
 async function _advanceTaskInner(cfg, task) {
@@ -400,7 +518,7 @@ async function _advanceTaskInner(cfg, task) {
     var t0 = nowMs();
     task.status = "running";
     await setPhase(task, "llm", { step_at: nowMs() });
-    var res = await LLM.callChat(cfg, profile, task.turns, task.allowed_tools, task.thinking_level, task.timeout_ms);
+    var res = await LLM.callChat(cfg, profile, await prepareTurnsForModel(task, cfg), task.allowed_tools, task.thinking_level, task.timeout_ms);
     var elapsed = nowMs() - t0;
     await logRequest(cfg, { t: nowText(), task: task.id, step: task.step + 1, status: res.ok ? 200 : (res.status || 0), ms: elapsed, in: (res.usage ? res.usage.in : 0), out: (res.usage ? res.usage.out : 0), ok: !!res.ok });
     if (!res.ok) {
@@ -524,5 +642,6 @@ module.exports = {
     loadUndo: loadUndo,
     saveUndo: saveUndo,
     loadUsage: loadUsage,
-    bumpUsage: bumpUsage
+    bumpUsage: bumpUsage,
+    prepareTurnsForModel: prepareTurnsForModel
 };

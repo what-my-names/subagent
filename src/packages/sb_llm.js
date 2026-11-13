@@ -104,8 +104,13 @@ function runToolSchema(allowed) {
        全放开时也必须给：包工具（`包名:工具名`）不在内置表里，只能走这个入口。 */
     if (fallback.length || allOpen) {
         var fbDesc = allOpen
-            ? "执行一个没有独立定义的工具（如包工具，写成 包名:工具名）。args 是该工具自己的参数对象。"
-            : ("执行一个没有独立定义的工具（包工具或通配）。tool 必须是允许列表中的名字；args 是该工具自己的参数对象。这些工具只能通过本入口调用：" + fallback.join(", "));
+            ? "执行一个没有独立定义的工具（如包工具，写成 包名:工具名）。args 是该工具自己的参数对象。\n"
+              + "示例：{\"tool\":\"super_admin:terminal\",\"args\":{\"command\":\"ls /sdcard\",\"timeoutMs\":30000}}\n"
+              + "示例：{\"tool\":\"deepseek_search:deepseek_search\",\"args\":{\"query\":\"kotlin coroutine\"}}\n"
+              + "注意：args 里直接放该工具自己的参数，不要再多套一层 args。"
+            : ("执行一个没有独立定义的工具（包工具或通配）。tool 必须是允许列表中的名字；args 是该工具自己的参数对象。\n"
+              + "示例：{\"tool\":\"包名:工具名\",\"args\":{\"参数名\":\"值\"}}\n"
+              + "注意：args 里直接放该工具自己的参数，不要再多套一层 args。这些工具只能通过本入口调用：" + fallback.join(", "));
         out.push({
             type: "function",
             function: {

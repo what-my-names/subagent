@@ -496,8 +496,16 @@ async function installUpdate(params) {
             oldExists = !!(oe && oe.exists);
         } catch (e2) { oldExists = false; }
         if (oldExists) {
+            /* 【第六十七轮】备份失败就不许往下走。
+               原先是 try/catch 空吞：备份没成也照样删旧包，
+               万一 move 再失败 → 旧包没了新包没装上，更新直接砖。
+               现在备份失败直接中止，现役包一个字节都不动。 */
             try { await Tools.Files.deleteFile(dstBak, "android"); } catch (e3) {}
-            try { await Tools.Files.copy(dst, dstBak, "android"); } catch (e4) {}
+            try {
+                await Tools.Files.copy(dst, dstBak, "android");
+            } catch (e4) {
+                return { ok: false, msg: "备份现役包失败，已中止（现役包未改动）：" + String((e4 && e4.message) || e4) };
+            }
         }
 
         /* 4. 替换：删旧的 → 移新的 */

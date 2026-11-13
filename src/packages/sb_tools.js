@@ -142,16 +142,22 @@ function matchAllowed(name, allowed) {
 function extractPaths(args) {
     var out = [];
     if (!args || typeof args !== "object") return out;
-    /* 【第四十八轮】原来只读顶层键。但转发型调用（run_tool）与部分包工具
-       会把真正参数放在 args.args / args.params 里，顶层是空的。
-       这里对这两个键递归一层，其余仍只看顶层 —— 不做无限递归，
-       避免参数里塞了深层嵌套对象把栈打爆。 */
-    var nested = ["args", "params"];
-    for (var n = 0; n < nested.length; n++) {
-        var inner = args[nested[n]];
-        if (inner && typeof inner === "object" && !Array.isArray(inner)) {
-            var sub = extractPaths(inner);
-            for (var s = 0; s < sub.length; s++) out.push(sub[s]);
+    /* 【第六十七轮】原来只读顶层键 + 递归 args/params 两个键。
+       但转发型调用（run_tool）与部分包工具会把真正参数放在任意嵌套对象里，
+       只认 args/params 会漏掉路径，写边界就等于没查 —— 后门。
+       【第六十八轮】改为「递归所有对象类型的一层值」：
+       顶层标量键按 PATH_KEYS 取；顶层每个对象值再递归调一次 extractPaths。
+       仍只递归一层（递归函数自身不再往下），避免深层嵌套把栈打爆。
+       上限：最多看 20 个嵌套键，防参数里塞一堆无用对象拖慢校验。 */
+    var seen = 0;
+    for (var key in args) {
+        if (!Object.prototype.hasOwnProperty.call(args, key)) continue;
+        var v0 = args[key];
+        if (v0 && typeof v0 === "object" && !Array.isArray(v0)) {
+            if (seen >= 20) continue;
+            seen++;
+            var sub0 = extractPaths(v0);
+            for (var s0 = 0; s0 < sub0.length; s0++) out.push(sub0[s0]);
         }
     }
     for (var i = 0; i < PATH_KEYS.length; i++) {

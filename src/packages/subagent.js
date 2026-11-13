@@ -1022,7 +1022,15 @@ exports.subagent_spawn = async function (params) {
 
     var writeTools = [];
     for (var k = 0; k < allowed.length; k++) { if (TOOLS.isWriteTool(allowed[k])) writeTools.push(allowed[k]); }
-    var ws = String(params.workspace || template && template.workspace || cfg.default_workspace || "").trim();
+    /* 【第六十六轮 · 用户定 B 方案】不再静默回落到 cfg.default_workspace。
+       用户原话：「我在创建时并没有选择工作目录，你为什么还要去选择添加一个东西进去？」
+       旧行为：不传 workspace 就自动拿 default_workspace（那个值还是早期插件旧路径），
+       于是用户没选过目录，界面里却冒出一个 plugins/com.operit.subagent/workspace。
+       现在：只认调用方显式传的 workspace / 模板里的 workspace，否则留空。
+       留空时含写类工具会被下面拦下 —— 这就是要的效果（没选就不给写）。
+       注：cfg.default_workspace 字段保留在配置文件里不删，老配置不会因此报错，
+       但代码不再读它。 */
+    var ws = String(params.workspace || template && template.workspace || "").trim();
     if (ws) {
         var wsInfo = null;
         try { wsInfo = await Tools.Files.exists(ws); } catch (e2) { wsInfo = null; }
@@ -2276,8 +2284,12 @@ exports.subagent_workspace = async function (params) {
     params = params || {};
     var cfg = await CFG.load();
     var action = String(params.action || "info");
-    var defWs = String(cfg.default_workspace || "").trim() || CFG.workspaceDir();
-
+    /* 【第六十六轮】用户定为 B 方案：default_workspace 不再参与任何决策。
+       这里固定用 CFG.workspaceDir()（= ROOT_DIR/workspace，即 subagent/workspace），
+       老配置里指向旧 plugins 目录的值不再被读、也不再被写。
+       为什么保留 action=init 还会 save：为了把老配置里那个脏值就地洗掉，
+       洗成新路径后即便以后又有代码读它，也是对的。 */
+    var defWs = CFG.workspaceDir();
     if (action === "init") {
         try { await Tools.Files.mkdir(defWs, true, "android"); } catch (e) {}
         var patch = { default_workspace: defWs };

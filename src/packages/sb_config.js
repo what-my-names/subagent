@@ -3,6 +3,11 @@
  *   workspace/  任务产物与可写根
  *   tasks/      任务本体（每任务一个 json）
  *   cache/      可再生的缓存与日志（探测结果、模型列表、用量、请求日志）
+ *   tmp/        对话上下文转存文件（第六十七轮加）
+ *
+ * 为什么 tmp 不并入 cache：cache 的语义是「随时可删」，删了无所谓。
+ * 但 tmp 里放的是子代理对话历史的完整片段 —— 消息里留的引用指向这里，
+ * 删掉子代理就读不到了，上下文直接断。所以单独一个目录，语义是「任务上下文」。
  *
  * 为什么这么分：之前所有东西都堆在 plugins/com.operit.subagent/ 一个目录，
  * 30KB 的 config.json 里混着 profiles 与 probe_cache，probe.json 存着域名与模型，
@@ -26,6 +31,9 @@ function legacyDir() { return LEGACY_DIR; }
 function workspaceDir() { return ROOT_DIR + "/workspace"; }
 function tasksDirPath() { return ROOT_DIR + "/tasks"; }
 function cacheDir() { return ROOT_DIR + "/cache"; }
+/* 【第六十七轮】上下文转存目录。存的是被挤出上下文窗口的历史片段原文，
+   消息里只留路径引用，子代理用 read_file 就能读回全文。 */
+function tmpDir() { return ROOT_DIR + "/tmp"; }
 
 function cfgPath() { return baseDir() + "/config.json"; }
 
@@ -114,6 +122,8 @@ async function ensureDirs() {
     try { await Tools.Files.mkdir(workspaceDir(), true, "android"); } catch (e) {}
     try { await Tools.Files.mkdir(tasksDirPath(), true, "android"); } catch (e) {}
     try { await Tools.Files.mkdir(cacheDir(), true, "android"); } catch (e) {}
+    /* 【第六十七轮】tmp 一并建：上下文转存要用，首次没建会写失败 */
+    try { await Tools.Files.mkdir(tmpDir(), true, "android"); } catch (e) {}
 }
 /* 模型列表这类可再生的缓存单独落文件，不再塞进 config.json。
    原因：config.json 是用户配置，缓存混进去会让它涨到 30KB，
@@ -307,6 +317,7 @@ module.exports = {
     workspaceDir: workspaceDir,
     tasksDir: tasksDirPath,
     cacheDir: cacheDir,
+    tmpDir: tmpDir,
     ensureDirs: ensureDirs,
     modelsCachePath: modelsCachePath,
     readModelsCache: readModelsCache,

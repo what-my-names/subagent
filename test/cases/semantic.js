@@ -749,7 +749,10 @@ var TS = A.src('packages/sb_tools.js');
 A.match('run_tool 特判不在 write 分支内', TS, /if \(name === "run_tool"\) \{[\s\S]{0,2400}?\} else if \(write\) \{/);
 A.nomatch('不再先判 write 再判 run_tool', TS, /if \(write\) \{[\s\S]{0,600}?if \(name === "run_tool"\)/);
 A.nomatch('不再前缀放行 name:x', TS, /if \(name\.indexOf\(p \+ ":"\) === 0\) return true;/);
-A.match('extractPaths 递归嵌套', TS, /var nested = \["args", "params"\];/);
+/* 【第六十八轮】extractPaths 改为递归所有对象值（原只递归 args/params 两键，
+   会漏掉 payload/body 等任意嵌套键里的路径 → 写边界后门） */
+A.match('extractPaths 递归所有对象值', TS, /for \(var key in args\)/);
+A.match('extractPaths 有嵌套键上限', TS, /if \(seen >= 20\) continue/);
 /* D. 编码绕过与 NUL 字节 */
 A.match('normPath 会解码 URL 编码', TS, /s = decodeURIComponent\(s\)/);
 A.match('normPath 拒绝 NUL 字节', TS, /s\.indexOf\("\\u0000"\) >= 0\) return ""/);
@@ -869,6 +872,28 @@ A.match('spawn 有 skills 参数', SUB, /"name": "skills"/);
 A.match('新增 subagent_skill 工具', SUB, /exports\.subagent_skill = async function/);
 A.match('skill 清单注入系统提示词', TSK, /可用 skill：/);
 A.match('白名单含 skill', TOOLS2, /vendor_js\|skill/);
+/* 【第六十六轮】B 方案：不传 workspace 不再静默回落 default_workspace */
+var SUB2 = A.src('packages/subagent.js');
+A.nomatch('spawn 不再回落 default_workspace', SUB2, /params\.workspace \|\| template \&\& template\.workspace \|\| cfg\.default_workspace/);
+A.match('spawn 只认显式 workspace', SUB2, /params\.workspace \|\| template \&\& template\.workspace \|\| ""/);
+A.match('workspace 工具固定用 workspaceDir', SUB2, /var defWs = CFG\.workspaceDir\(\)/);
+/* 【第六十七轮】上下文转存 + 备份保护 + 磁盘锁 + steer 透明 */
+A.match('tmp 目录已定义', A.src('packages/sb_config.js'), /function tmpDir\(\)/);
+A.match('转存软上限存在', A.src('packages/sb_task.js'), /CTX_SOFT_LIMIT/);
+A.match('只转存 tool 讯息', A.src('packages/sb_task.js'), /m\.role !== "tool"/);
+A.match('转存不改落盘', A.src('packages/sb_task.js'), /prepareTurnsForModel/);
+A.match('备份失败就中止', A.src('packages/sb_update.js'), /备份现役包失败，已中止/);
+A.match('磁盘锁跨上下文', A.src('packages/sb_task.js'), /tryDiskLock/);
+A.match('僵死锁可抢占', A.src('packages/sb_task.js'), /STALE_LOCK_MS/);
+A.match('steer 步数透明', A.src('packages/sb_task.js'), /步数上限已从/);
+/* 【第六十八轮】包工具补元数据 + run_tool 说明加示例 */
+var TM = A.src('packages/sb_toolmeta.js');
+A.match('super_admin:terminal 已入表', TM, /def\("super_admin:terminal"/);
+A.match('terminal 有 timeoutMs default', TM, /timeoutMs: \{[^}]*default: 15000/);
+A.match('deepseek 已入表', TM, /def\("deepseek_search:deepseek_search"/);
+A.match('subagent_skill 已入表', TM, /def\("subagent:subagent_skill"/);
+A.match('run_tool 说明带示例', A.src('packages/sb_llm.js'), /示例：\{.*tool/);
+A.match('run_tool 提醒不多套一层', A.src('packages/sb_llm.js'), /不要再多套一层 args/);
 A.finish();
 
 /* run_tool 后门的行为测试：异步跑完再单独 report，

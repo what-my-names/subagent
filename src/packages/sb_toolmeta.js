@@ -167,6 +167,62 @@ def("download_file", "从 URL 下载文件到本地。",
     },
     ["url", "destination"]);
 
+/* ── 包工具（`包名:工具名` 形式，第六十八轮补）──
+ *
+ * 为什么补这些：包工具不在内置表里，只能走 run_tool 转发，
+ * 模型看不到它们的参数 schema，只能照 description 猜 —— 猜错就调失败。
+ * 把常用的补进来，让它们也变成独立 function，模型能直接写
+ * terminal({command:"ls", timeoutMs:30000}) 而不必包一层 run_tool。
+ *
+ * 覆盖原则：只补「高频 + 参数少但必须传对」的。
+ * 参数特别多的（如 subagent_spawn 有 20 多个）不补，包 run_tool 反而清爽。
+ */
+
+/* super_admin:terminal —— 用户最常用的一条 */
+def("super_admin:terminal", "在 Ubuntu 环境执行命令并收集输出。已挂载 sdcard 与 storage，可直接访问 Android 存储。建议每次显式传 timeoutMs，避免命令卡住。禁止用 set -e / set -o errexit，会让终端会话直接退出。",
+    {
+        command: { type: "string", description: "要执行的命令" },
+        timeoutMs: { type: "integer", description: "超时毫秒，最低 3000。建议显式传，不传前台默认 15 秒", default: 15000 },
+        background: { type: "boolean", description: "true = 后台执行立即返回，适合启动服务器这类长任务。默认 false" }
+    },
+    ["command"]);
+
+def("super_admin:shell", "用 Shizuku/Root 权限直接执行 Android 系统命令（pm / am / settings 等）。系统级操作，慎用。",
+    { command: { type: "string", description: "要执行的 shell 命令" } },
+    ["command"]);
+
+/* subagent 自己的工具里，子代理最常回调用这两个 */
+def("subagent:subagent_skill", "看可用 skill 清单或读某个 SKILL.md 全文。action=list 列清单，action=read 配 name 读全文。",
+    {
+        action: { type: "string", description: "list（默认）看清单 / read 读全文" },
+        name: { type: "string", description: "skill 名，action=read 时必填" }
+    },
+    []);
+
+/* deepseek 搜索三件套 */
+def("deepseek_search:deepseek_search", "用 DeepSeek 搜索引擎搜网页，返回标题/链接/摘要/发布时间/权威度。支持 site: / lang: / after: / before: / \"精确短语\" / -排除 等算子。",
+    {
+        query: { type: "string", description: "搜索词，支持算子" },
+        count: { type: "integer", description: "返回条数 1-50，默认 10" },
+        site: { type: "string", description: "限定站点，多个用 OR" },
+        after: { type: "string", description: "发布日期下限，如 2025-01-01" },
+        before: { type: "string", description: "发布日期上限" },
+        lang: { type: "string", description: "语言，可多个如 zh,en" }
+    },
+    ["query"]);
+
+def("deepseek_fetch:deepseek_fetch", "抓取单个网页并返回 Markdown 正文。适合在搜索后深入阅读某一篇。",
+    { url: { type: "string", description: "网页地址，http/https" } },
+    ["url"]);
+
+/* 网页访问（内置表已有 visit_web，这里补 download 之外常用的） */
+def("extended_http_tools:http_get", "直接发 HTTP GET 请求并返回响应体。要看接口原始返回时用。",
+    {
+        url: { type: "string", description: "请求地址" },
+        headers: { type: "string", description: "请求头 JSON 字符串，如 {\"Referer\":\"...\"}" }
+    },
+    ["url"]);
+
 /* ── 查表接口 ── */
 
 /* 按名字取一个工具的元数据；表里没有返回 null。 */

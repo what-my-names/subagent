@@ -90,7 +90,7 @@ A.match('sb_llm 引入 TOOLMETA', LLM, /require\("\.\/sb_toolmeta\.js"\)/);
 A.match('runToolSchema 按 allowed 逐项生成', LLM, /for \(var i = 0; i < list\.length; i\+\+\)/);
 A.match('表内工具用 meta.name 作 function 名', LLM, /name: meta\.name/);
 A.match('表外工具收进 fallback', LLM, /fallback\.push\(name\)/);
-A.match('有表外工具时才给 run_tool', LLM, /if \(fallback\.length \|\| allOpen\) \{[\s\S]{0,600}?name: RUN_TOOL/);
+A.match('有表外工具时才给 run_tool', LLM, /if \(fallback\.length \|\| allOpen\) \{[\s\S]{0,1500}?name: RUN_TOOL/);
 /* 【2026-11-07 改】空白名单不再给 run_tool 兜底：执行层 matchAllowed 全拒，
    给一个必然失败的入口比不给更糟。改为返回空数组，调用方不带 tools 字段。 */
 A.nomatch('空白名单不再给 run_tool 兜底', LLM, /if \(!out\.length\) \{[\s\S]{0,300}?name: RUN_TOOL/);

@@ -1446,21 +1446,41 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     } catch (e) {}
     try { syncThinkFloat(); } catch (e2) {}
   }
-  /* 工具调用 + 紧随其后的返回，合成一个可点击块；点开是弹窗，不是二级展开 */
-  function toolBlock(tc, res) {
+  /* 工具行：调用行 + 一行返回预览，点预览才展开全文。
+    用户要求：「不是点一下才有返回，而是原来就有返回，但返回就一行，点一下才打开」。
+    in : tc 调用对象, res 返回对象（可能还没有）
+    默认 data-state=0：显示 .tb-peek 一行摘要
+    点开 data-state=1：显示 .tb-full 全文 */
+  function toolRow(tc, res) {
     var okk = !res || (res.ok !== false);
-    var brief = briefJson(tc.args, 46);
-    var meta = res ? (esc(res.chars || 0) + ' 字符 · ' + fmtMs(res.elapsed_ms)) : '执行中…';
-    return '<div class="tblock' + (okk ? '' : ' bad') + '" data-act="toolDlg" data-val="' + esc(tc.id || tc.name) + '">'
-      + '<div class="tb-head">'
-      + '<span class="tb-name">' + esc(tc.name) + '</span>'
-      + (brief ? '<span class="tb-args">' + esc(brief) + '</span>' : '')
+    var brief = tc.args ? briefJson(tc.args, 56) : '';
+    var peek = '', full = '';
+    if (res) {
+      var txt = res.result != null ? String(res.result) : (res.error != null ? String(res.error) : '');
+      var flat = txt.replace(/\s+/g, ' ').trim();
+      var meta = fmtMs(res.ms || res.elapsed_ms) + (res.chars ? ' · ' + res.chars + ' 字符' : '');
+      /* 一行预览：弯折箭头 + 首行摘要 */
+      peek = '<div class="tb-peek" data-act="trowTog">'
+        + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/><path d="M14 11l4 4-4 4"/></svg>'
+        + '<span class="tb-peektxt">' + esc(flat) + '</span>'
+        + '</div>';
+      /* 全文：点预览才出现 */
+      full = '<div class="tb-full"><div class="tb-peek" data-act="trowTog">'
+        + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/><path d="M14 11l4 4-4 4"/></svg>'
+        + '<span class="tb-peektxt">' + esc(flat) + '</span>'
+        + '</div>'
+        + '<div class="tb-ret"><div class="tb-rettext">' + esc(txt) + '</div>'
+        + '<div class="tb-retmeta">' + esc(meta) + '</div></div></div>';
+    }
+    return '<div class="trowc' + (okk ? '' : ' bad') + '" data-state="0" data-tool="' + esc(tc.id || tc.name) + '">'
+      + '<div class="trow" data-act="trowTog">'
+      + '<svg class="trow-ico" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.1-2.1 2.6-2.4z"/></svg>'
+      + '<span class="trow-name">' + esc(tc.name) + '</span>'
+      + (brief ? '<span class="trow-args">' + esc(brief) + '</span>' : '')
+      + '<span class="trow-st">' + (res ? (okk ? SVG_OK : SVG_BAD) : '<span class="trow-dot"></span>') + '</span>'
       + '</div>'
-      + '<div class="tb-res">'
-      + '<svg class="tb-corner" viewBox="0 0 24 24"><path d="M6 3v8a3 3 0 0 0 3 3h9"/><path d="M14 10l4 4-4 4"/></svg>'
-      + (okk ? SVG_OK : SVG_BAD)
-      + '<span class="tb-meta">' + meta + '</span>'
-      + '</div></div>';
+      + peek + full
+      + '</div>';
   }
 
   var FOLD_SEQ = 0;
@@ -1536,29 +1556,51 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     for (var i = 0; i < turns.length; i++) {
       var m = turns[i];
       if (m.role === 'assistant') {
-        /* 【第四十七轮】思考 + 工具调用合并进同一张卡片。
-           用户要求：思考和工具调用在一个对话卡片里，不是并列的两块。
-           结构：.agent-card > .thk-head（可点） + .agent-body（思考正文 + 工具行）
-           思考完自动闭合由 setThinkState 收尾时处理。 */
-        var tid = ++FOLD_SEQ;
-        var rl = m.reasoning ? String(m.reasoning).length : 0;
-        var t = m.tool_calls || [];
+        /* 【第五十三轮】思考与工具调用拆成两个独立块，对齐 Operit 原生观感。
+           之前塞进同一张 agent-card，工具跟在思考正文后面，看起来像思考的一部分，
+           用户带截图指正了这一点。现在：
+             思考块：「思考过程」折叠头 + 灰字正文
+             工具块：「工具调用 (N)」折叠头 + N 个一行式工具行
+           两块各自独立折叠，互不嵌套。 */
         var hasThink = !!m.reasoning;
+        var t = m.tool_calls || [];
         var hasTool = t.length > 0;
-        if (hasThink || hasTool) {
-          h += '<div class="thinkbox agent-card" data-think="' + tid + '" data-state="0">'
+
+        /* ① 思考块
+           用户要求：完成后收起来（data-state=0），不管多长都完整存着，不显示字数。 */
+        if (hasThink) {
+          var tid = ++FOLD_SEQ;
+          h += '<div class="thinkbox" data-think="' + tid + '" data-state="0">'
             + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
-            + '<span class="thk-tx">' + (hasThink ? '思考过程' : '工具调用') + '</span>'
+            + '<span class="thk-tx">思考过程</span>'
             + '<span class="thk-tip">展开</span>'
-            + (rl ? '<span class="thk-len">' + rl + ' 字</span>' : '')
-            + (hasTool ? '<span class="thk-len">' + t.length + ' 工具</span>' : '')
             + '</div>'
-            + '<div class="thk-body" data-thk-body="' + tid + '">';
-          /* 思考正文（不截断，原文全放） */
-          if (hasThink) {
-            h += '<div class="agent-think">' + esc(m.reasoning) + '</div>';
+            + '<div class="thk-body" data-thk-body="' + tid + '">'
+            + '<div class="agent-think">' + esc(m.reasoning) + '</div>'
+            + '</div></div>';
+        }
+
+        /* ② 工具调用
+           用户要求：
+             - 只有 1 个工具 → 不放一级卡片，直接放在正文流里
+             - ≥2 个工具 → 才包一级卡片「工具调用 (N)」
+           两种情况都默认收起（st=0）；历史记录里这一批已结束。 */
+        if (hasTool) {
+          var tid2 = ++FOLD_SEQ;
+          var multi = t.length > 1;
+          if (multi) {
+            h += '<div class="thinkbox toolcard" data-think="' + tid2 + '" data-state="0">'
+              + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+              + '<span class="thk-tx">工具调用</span>'
+              + '<span class="tool-count">(' + t.length + ')</span>'
+              + '<span class="thk-tip">展开</span>'
+              + '</div>'
+              + '<div class="thk-body" data-thk-body="' + tid2 + '">';
+          } else {
+            /* 单工具：不包卡片，直接铺在正文流 */
+            h += '<div class="toolcard solo" data-think="' + tid2 + '" data-state="1">'
+              + '<div class="thk-body thk-body-flat">';
           }
-          /* 工具调用行：同一张卡片内，缩进显示 */
           for (var j = 0; j < t.length; j++) {
             var tc = t[j];
             var res = resById[String(tc.id || '')];
@@ -1571,20 +1613,21 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
             }
             S._toolMap = S._toolMap || {};
             S._toolMap[String(tc.id || tc.name)] = { call: tc, res: res || null };
-            h += toolBlock(tc, res);
+            h += toolRow(tc, res);
           }
           h += '</div></div>';
         }
+
         if (m.content) h += '<div class="bubble ai"><div class="b-body md-body" data-type="1">' + md(m.content) + '</div></div>';
       } else if (m.role === 'tool') {
         /* 已被调用块吸收的不再单独渲染 */
         var idx = resQueue.indexOf(m);
         if (idx >= 0 && usedRes[idx]) continue;
         var okk2 = (m.ok !== false);
-        h += '<div class="tblock' + (okk2 ? '' : ' bad') + '" data-act="toolDlg" data-val="' + esc(m.name || 'tool') + '">'
-          + '<div class="tb-head"><span class="tb-name">' + esc(m.name || 'tool') + '</span></div>'
-          + '<div class="tb-res">' + SVG_CORNER + (okk2 ? SVG_OK : SVG_BAD)
-          + '<span class="tb-meta">' + esc(m.chars || 0) + ' 字符 · ' + fmtMs(m.elapsed_ms) + '</span></div></div>';
+        h += '<div class="toolcard solo" data-state="0">'
+          + '<div class="thk-body thk-body-flat">'
+          + toolRow({ name: m.name || 'tool', args: null }, m)
+          + '</div></div>';
         S._toolMap = S._toolMap || {};
         S._toolMap[String(m.name || 'tool')] = { call: null, res: m };
       } else if (m.role === 'user') {
@@ -1600,8 +1643,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
       if (d.pending.think) {
         h += '<div class="thinkbox" data-think="p1" data-state="0">'
           + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
-          + '<span class="thk-tx">思考过程（生成中）</span><span class="thk-tip">展开</span>'
-          + '<span class="thk-len">' + String(d.pending.think).length + ' 字</span></div>'
+          + '<span class="thk-tx">思考过程（生成中）</span><span class="thk-tip">展开</span></div>'
           + '<div class="thk-body" data-thk-body="p1">' + esc(d.pending.think) + '</div>'
           + '</div>';
       }
@@ -2743,8 +2785,7 @@ document.addEventListener('visibilitychange', function () {
             var _keepSt = parseInt((thinkEl && thinkEl.getAttribute('data-state')) || '0', 10) || 0;
             tb2.setAttribute('data-state', String(_keepSt));
             tb2.innerHTML = '<div class="thk-head">' + SVG_CHEV
-              + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
-              + '<span class="thk-len">' + out.reasoning.length + ' 字</span></div>'
+              + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span></div>'
               + '<div class="thk-body">' + esc(out.reasoning) + '</div>';
             host.appendChild(tb2);
             /* 档位非 0 时补上高度 class 与角标（HTML 里默认写的是 0 档） */
@@ -2796,8 +2837,7 @@ document.addEventListener('visibilitychange', function () {
               _th.className = 'thinkbox';
               _th.setAttribute('data-state', '0');
               _th.innerHTML = '<div class="thk-head">' + SVG_CHEV
-                + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span>'
-                + '<span class="thk-len">' + thinkBuf.length + ' 字</span></div>'
+                + '<span class="thk-tx">思考过程</span><span class="thk-tip">展开</span></div>'
                 + '<div class="thk-body">' + esc(thinkBuf) + '</div>';
               host.insertBefore(_th, holder);
             }
@@ -3843,6 +3883,16 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'collapseThink') { hf(); collapseThinkAll(); return; }
     if (act === 'togglePerm') { hf(); togglePanel('permBox', 'btnPerm'); return; }
     if (act === 'toggleDanger') { toggleDanger(); return; }
+    /* 工具行点击：原位展开/收起返回内容，不开弹窗 */
+    if (act === 'trowTog') {
+      var tcw = e.target.closest('.trowc');
+      if (tcw) {
+        var op = tcw.getAttribute('data-state') === '1';
+        tcw.setAttribute('data-state', op ? '0' : '1');
+        hf();
+      }
+      return;
+    }
     if (act === 'toggleRun') { hf(); togglePanel('runBox', 'cardRun'); return; }
     if (act === 'editFull') return openFullEdit();
     if (act === 'closeFull') return closeFullEdit();
@@ -3940,6 +3990,9 @@ document.addEventListener('visibilitychange', function () {
        但要留两个例外：
          1) 工具行（.tblock）自己有点击动作（打开工具详情），不能抢
          2) 正文选中文字时不触发（长按选词复制） */
+    /* 【第五十三轮】工具行（.trow）自己有点击动作（打开工具详情），不能抢。
+       旧类名 .tblock 已废弃，这里一并兼容，避免遗留节点点不开。 */
+    if (e.target.closest('.trow')) return;
     if (e.target.closest('.tblock')) return;
     var tb = e.target.closest('.thinkbox');
     if (!tb) tb = e.target.closest('.sb-think');

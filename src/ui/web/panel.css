@@ -381,10 +381,13 @@ textarea{resize:vertical;min-height:72px}
    data-state 只负责箭头旋转与角标文案，两者解耦。 */
 /* cursor 只加在真正可点的地方：标题行 + 流式区。
    整卡 pointer 会误导用户以为正文也能点，实际正文留给长按选词。 */
-.thinkbox{margin:6px 0;border-left:2px solid #7f8db3;border-radius:0 9px 9px 0;background:rgba(127,141,179,.05);-webkit-tap-highlight-color:transparent;transition:border-color .3s,background .3s}
-/* 展开态（1/2）：左竖线换色，暗示「这条思考是活的」。
-   hueflow 只改 border-color 与 box-shadow，不碰布局，切换档位都不会跳。 */
-.thinkbox[data-state="1"],.thinkbox[data-state="2"]{border-left-color:rgba(74,141,255,.55)}
+/* 【第五十五轮】思考块与正文同一外观：背景 var(--bg3) + 同样的圆角，去掉左边框。
+   用户要求「思考过程与正文的背景需要完全一致」，不是独立卡片。 */
+.thinkbox{margin:4px 0;background:var(--bg3);border-radius:3px 14px 14px 14px;
+  padding:2px 0;-webkit-tap-highlight-color:transparent;
+  transition:background .3s}
+/* 展开态只靠箭头与角标提示，不再换边框颜色（没有边框了） */
+.thinkbox[data-state="1"],.thinkbox[data-state="2"]{background:var(--bg3)}
 .thk-head{display:flex;align-items:center;gap:7px;padding:6px 10px;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .thk-head:active{background:rgba(127,141,179,.12)}
 .thk-head .chv{width:12px;height:12px;flex-shrink:0;fill:none;stroke:#7f8db3;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;transition:transform .15s}
@@ -393,7 +396,6 @@ textarea{resize:vertical;min-height:72px}
 /* 状态角标：收起 / 展开 / 全部，让用户一眼知道现在在哪一档 */
 .thk-tip{margin-left:auto;font-size:10.5px;color:#7f8db3;padding:1px 6px;border-radius:9px;
   background:rgba(127,141,179,.14);font-style:normal}
-.thk-len{margin-left:8px;font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
 /* 三档高度：基础 = 0 档（120px + 容器内滚）；h1 = 1 档；h2 = 2 档。
    overscroll-behavior:contain 防止手指在「内层滚动」与「dtChat 滚动」之间来回跳。
    用户说的「划到最下面可以开始滚动」就靠这个：内层滚到底后继续滑，
@@ -404,22 +406,56 @@ textarea{resize:vertical;min-height:72px}
   transition:max-height .18s ease,padding .18s ease}
 .thk-body.h1{max-height:320px}
 .thk-body.h2{max-height:none;overflow:visible}
-/* ── 第四十七轮：思考 + 工具调用合并成一张卡片 ──
-   用户要求：两者在同一个对话卡片里，不是并列的两块。
-   卡片内部：上面是思考正文，下面是工具行（缩进 + 去掉自己的边框，
-   避免卡片里再套一堆小卡片，看起来太重）。
-   卡片整体收紧：参考 Operit 原生，行高和留白都比原来小。 */
-.agent-card .thk-body{padding:2px 10px 8px 24px}
 /* 思考正文：原文全放，不截断，靠滚动看 */
-.agent-think{white-space:pre-wrap;word-break:break-word;margin-bottom:6px}
-/* 卡片内的工具行：去掉边框和背景，只留左侧一条细线表示从属关系 */
-.agent-card .tblock{margin:5px 0 5px -6px;padding:5px 8px;background:none;
-  border:0;border-left:2px solid rgba(57,197,207,.28);border-radius:0 6px 6px 0}
-.agent-card .tblock:active{background:rgba(57,197,207,.10)}
-.agent-card .tblock.bad{border-left-color:rgba(224,108,90,.45);background:none}
-/* 卡片内工具名比正文小一号，避免抢视觉 */
-.agent-card .tb-name{font-size:11.5px}
-.agent-card .tb-args{font-size:10px}
+.agent-think{white-space:pre-wrap;word-break:break-word}
+/* ── 第五十四轮：工具块照 Operit 原生重做 ──
+   用户六条：返回写在工具里、弯折箭头、不开弹窗、背景跟对话框一致、
+   收起看不到展开才看到、整批调用完才关闭。 */
+/* 工具块跟正文同样外观（用户要求背景完全一致） */
+.thinkbox.toolcard{background:var(--bg3);border:0;border-radius:3px 14px 14px 14px;margin:4px 0}
+.tool-count{margin-left:6px;font-size:11px;color:#7f8db3;font-variant-numeric:tabular-nums}
+/* 工具块正文：不用 pre-wrap（工具行自己管空白），内边距贴齐正文 */
+.toolcard .thk-body{padding:0 0 2px 0;font-family:inherit;white-space:normal;
+  max-height:none;overflow:visible}
+/* 没有折叠头的孤儿结果块，直接铺开 */
+.thk-body-flat{padding:2px 0}
+
+/* ── 工具行：调用行 + 下面原位返回 ──
+/* .trowc 是整组（调用 + 返回），data-state=1 才展开全文。
+   默认状态（data-state=0）显示一行预览 .tb-peek，全文 .tb-full 隐藏。 */
+.trowc{margin:1px 0}
+.tb-full{display:none}
+.trowc[data-state="1"] .tb-full{display:block}
+
+.trow{display:flex;align-items:center;gap:7px;min-width:0;
+  padding:5px 6px;border-radius:6px;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;transition:background .12s}
+.trow:active{background:rgba(127,141,179,.12)}
+.trow-ico{width:13px;height:13px;flex-shrink:0;fill:none;stroke:var(--mut);
+  stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.75}
+.trow-name{font-family:ui-monospace,monospace;font-size:11.5px;color:#9aa7c7;flex-shrink:0;max-width:42%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow-args{font-family:ui-monospace,monospace;font-size:10.5px;color:#6f7a90;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.trow-st{flex-shrink:0;display:flex;align-items:center;opacity:.85}
+.trow-st .okmark{width:11px;height:11px;margin:0}
+.trow.bad .trow-name{color:#c98a80}
+.trow.bad .trow-st .okmark{stroke:var(--bad)}
+/* 调用中：一个小圆点，不是叉也不是勾 */
+.trow-dot{width:6px;height:6px;border-radius:50%;background:var(--acc);
+  animation:gpuFade 1.2s ease-in-out infinite}
+
+/* 一行预览始终可见；点开（data-state=1）才把全文 .tb-full 放出来 */
+.tb-peek{display:flex;align-items:center;gap:6px;padding:0 6px 4px 13px;cursor:pointer}
+.tb-peek .tb-corner{width:13px;height:13px;flex-shrink:0;fill:none;
+  stroke:#5c6678;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;opacity:.8}
+.tb-peektxt{flex:1;min-width:0;font-family:ui-monospace,monospace;font-size:10.5px;
+  color:#7e8aa0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 展开后的全文：一块独立区域 */
+.tb-full .tb-rettext{font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.55;
+  color:#7e8aa0;white-space:pre-wrap;word-break:break-word;
+  max-height:220px;overflow-y:auto;overscroll-behavior:contain}
+.tb-full .tb-retmeta{font-size:9.5px;color:#5c6678;margin-top:2px;font-variant-numeric:tabular-nums}
 .bubble.tool{align-self:stretch;background:transparent;border:0;padding:0;margin:5px 0}
 
 /* 工具调用块：调用与返回紧贴，整块可点开弹窗 */

@@ -575,20 +575,40 @@ A.match('按钮容器改 grid', CSS2, /\.egg-links\{[^}]*grid-template-columns:1
 A.match('标语已更换', H2, /把活交出去，只留结论。/);
 A.nomatch('旧标语已清', H2, /做工具，不做玩具。/);
 
-/* ── 第四十七轮：思考+工具合并卡片 + 不截断 ── */
+/* ── 第五十三轮：思考块与工具块拆开 + 不截断 ── */
 /* 后端：工具结果默认不截断（用户要求再长也不截） */
 A.match('工具结果默认不截断', A.src('packages/sb_task.js'), /tool_result_max_chars \|\| 0/);
 A.match('配置默认值也改 0', A.src('packages/sb_config.js'), /tool_result_max_chars: 0,/);
-/* 前端：思考与工具合进一张卡片 */
-A.match('卡片带 agent-card 类', P, /class="thinkbox agent-card"/);
+/* 前端：思考块与工具块是两个独立卡片，互不嵌套 */
+A.nomatch('已删 agent-card 合并卡', P, /class="thinkbox agent-card"/);
+A.match('思考块用独立 thinkbox', P, /h \+= '<div class="thinkbox" data-think="' \+ tid \+ '"/);
+A.match('工具块用独立 toolcard', P, /h \+= '<div class="thinkbox toolcard" data-think="' \+ tid2 \+ '"/);
 A.match('思考正文包在 agent-think', P, /class="agent-think"/);
-A.match('工具行在卡片 body 内', P, /h \+= toolBlock\(tc, res\);\s*\}\s*h \+= '<\/div><\/div>'/);
-/* 整卡可点（不再只绑 thk-head） */
+A.match('工具块头部带计数', P, /class="tool-count">\(' \+ t\.length \+ '\)/);
+A.match('工具行用 toolRow 渲染', P, /h \+= toolRow\(tc, res\);/);
+A.match('toolRow 是调用+返回一组', P, /class="trowc' \+ \(okk \? '' : ' bad'\)/);
+A.match('返回前有弯折箭头', P, /class="tb-corner" viewBox="0 0 24 24"><path d="M5 3v9a3 3 0 0 0 3 3h10"/);
+A.match('返回内容原位显示', P, /class="tb-rettext">' \+ esc\(txt\)/);
+A.match('工具行点位改为原展开', P, /data-act="trowTog"/);
+A.nomatch('工具行不再开弹窗', P, /class="trow' \+ \(okk \? '' : ' bad'\) \+ '" data-act="toolDlg"/);
+A.nomatch('旧 toolBlock 已删', P, /function toolBlock\(/);
+A.match('调用中显示圆点', P, /class="trow-dot"/);
+/* 第五十五轮 */
+A.nomatch('已删字数提示', P, /thk-len/);
+A.nomatch('CSS 已删 thk-len 规则', CSS2, /\.thk-len\{/);
+A.match('背景跟正文一致', CSS2, /\.thinkbox\{margin:4px 0;background:var\(--bg3\)/);
+A.nomatch('思考块不再有左边框', CSS2, /\.thinkbox\{margin:4px 0;border-left/);
+A.match('返回默认一行预览', P, /class="tb-peek" data-act="trowTog"/);
+A.match('全文默认隐藏', CSS2, /\.tb-full\{display:none\}/);
+A.match('单工具不包一级卡', P, /var multi = t\.length > 1;/);
+A.match('单工具走 solo 分支', P, /toolcard solo" data-think/);
+/* 整卡可点 */
 A.match('整卡可点', P, /var tb = e\.target\.closest\('\.thinkbox'\);/);
-A.nomatch('不再只绑 thk-head', P, /var head = e\.target\.closest\('\.thk-head'\);/);
-A.match('工具行不抢点击', P, /if \(e\.target\.closest\('\.tblock'\)\) return;/);
-/* 样式：卡片内工具行去边框、缩进 */
-A.match('卡片内工具行去边框', CSS2, /\.agent-card \.tblock\{[^}]*border:0/);
+A.match('工具行不抢点击', P, /if \(e\.target\.closest\('\.trow'\)\) return;/);
+/* 样式：工具行去边框、低对比 */
+A.match('工具行无边框', CSS2, /\.trow\{display:flex[^}]*cursor:pointer/);
+A.nomatch('已删 agent-card 工具行规则', CSS2, /\.agent-card \.tblock\{/);
+A.match('工具块有计数样式', CSS2, /\.tool-count\{/);
 A.match('思考正文不截断', CSS2, /\.agent-think\{white-space:pre-wrap/);
 /* 钩子补三条 */
 A.match('钩子讲参数纪律', A.src('packages/sb_hook.js'), /【参数纪律】/);

@@ -929,7 +929,8 @@ textarea{resize:vertical;min-height:72px}
 .home-track > .homescroll{height:50%;flex:none}
 .egg-panel{height:50%;flex:none;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  background:var(--bg2);border-top:1px solid var(--ln);
+  /* 背景统一为主页色，去掉顶部分隔线：两屏滑动时不再出现硬边 */
+  background:var(--bg);
   padding:10px 20px 26px;text-align:center;box-sizing:border-box}
 /* 拖拽条：提示这里能上下滑 */
 .egg-grip{width:36px;height:4px;border-radius:2px;background:rgba(127,141,179,.4);
@@ -943,12 +944,53 @@ textarea{resize:vertical;min-height:72px}
   stroke-linecap:round;stroke-linejoin:round}
 .egg-name{font-size:15px;font-weight:600;color:var(--fg);letter-spacing:.3px}
 .egg-quote{font-size:12.5px;color:var(--mut);margin-top:6px;line-height:1.7;font-style:italic}
-.egg-mail{display:inline-block;margin-top:14px;font-size:12.5px;color:var(--acc);
-  text-decoration:none;padding:7px 18px;border-radius:9px;
-  background:rgba(74,141,255,.1);border:1px solid rgba(74,141,255,.22)}
-/* 两个入口并排，间距 10px；窄屏自动换行 */
-.egg-links{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px}
-.egg-links .egg-mail{margin-top:0}
-.egg-mail:active{background:rgba(74,141,255,.2)}
+/* 卡片主体：块级、竖排居中、去掉默认胶囊样式 */
+.egg-mail{display:flex;flex-direction:column;align-items:center;
+  padding:14px 12px;text-decoration:none;
+  background:rgba(127,141,179,.07);border:1px solid rgba(127,141,179,.16);
+  border-radius:14px}
+/* 卡片内图标：20x20，主色描边 */
+.egg-mail-ico{width:20px;height:20px;margin-bottom:7px}
+.egg-mail-ico svg{stroke:var(--acc);stroke-width:1.8;fill:none}
+/* 卡片主标题 */
+.egg-mail-tx{font-size:12.5px;color:var(--fg);font-weight:500}
+/* 卡片副标题 */
+.egg-mail-sub{font-size:10.5px;color:var(--mut);margin-top:2px}
+/* 入口改为两列网格卡片：窄屏下两列仍可读，间距由 gap 控制 */
+.egg-links{display:grid;grid-template-columns:1fr 1fr;gap:10px;
+  width:min(88%,320px);margin-top:20px}
+/* 按下态：主色高亮 + 轻微回弹 */
+.egg-mail:active{background:rgba(74,141,255,.14);
+  border-color:rgba(74,141,255,.32);transform:scale(.97);transition:.16s ease}
+/* 入场前默认：元素先藏好、下沉，等加 .egg-in 再上弹 */
+.egg-panel > *{opacity:0;transform:translateY(18px)}
+/* 加 .egg-in 后整体淡入归位；缓动让上弹有弹性 */
+.egg-panel.egg-in > *{
+  opacity:1;transform:none;
+  transition:opacity .42s ease, transform .42s cubic-bezier(.2,.9,.3,1.1);
+}
+/* 依次错开入场，制造 stagger 上弹节奏 */
+.egg-panel.egg-in > *:nth-child(1){transition-delay:.05s}
+.egg-panel.egg-in > *:nth-child(2){transition-delay:.11s}
+.egg-panel.egg-in > *:nth-child(3){transition-delay:.17s}
+.egg-panel.egg-in > *:nth-child(4){transition-delay:.23s}
+.egg-panel.egg-in > *:nth-child(5){transition-delay:.29s}
+.egg-panel.egg-in > *:nth-child(6){transition-delay:.35s}
+.egg-panel.egg-in > *:nth-child(7){transition-delay:.41s}
+.egg-panel.egg-in > *:nth-child(8){transition-delay:.47s}
+/* 关闭时加 .egg-out：整体淡出并向四周飞散 */
+.egg-panel.egg-out > *{
+  opacity:0;
+  transition:opacity .46s ease, transform .46s cubic-bezier(.3,0,.8,.4);
+}
+/* 每个元素朝不同方向爆炸散开并旋转缩小 */
+.egg-panel.egg-out > *:nth-child(1){transform:translate(0,-120px)}
+.egg-panel.egg-out > *:nth-child(2){transform:translate(-90px,-110px) scale(.4) rotate(-25deg)}
+.egg-panel.egg-out > *:nth-child(3){transform:translate(10px,-140px) scale(.5) rotate(8deg)}
+.egg-panel.egg-out > *:nth-child(4){transform:translate(95px,-105px) scale(.4) rotate(18deg)}
+.egg-panel.egg-out > *:nth-child(5){transform:translate(-130px,20px) scale(.35) rotate(-40deg)}
+.egg-panel.egg-out > *:nth-child(6){transform:translate(140px,30px) scale(.35) rotate(35deg)}
+.egg-panel.egg-out > *:nth-child(7){transform:translate(-70px,90px) scale(.3) rotate(-20deg)}
+.egg-panel.egg-out > *:nth-child(8){transform:translate(80px,-60px) scale(.3) rotate(25deg)}
 .egg-ver{margin-top:12px;font-size:10.5px;color:var(--mut);opacity:.7;
   font-variant-numeric:tabular-nums}

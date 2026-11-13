@@ -507,9 +507,30 @@ function mathHtml(texEsc, display) {
     ['create_file', '新建文件', 1], ['edit_file', '编辑文件', 1], ['delete_file', '删除文件', 1], ['move_file', '移动文件', 1], ['copy_file', '复制文件', 1]
   ];
   var ST_CN = { queued: '待开始', running: '运行中', done: '已完成', failed: '失败', closed: '已关闭', cancelled: '已停止' };
+  /* 阶段文案：running 时不能只写「运行中」，用户要知道它此刻在干什么。
+     llm=正在调模型（思考中），tool=正在跑工具，queued_next=已排上马上开跑。 */
+  var PH_CN = { llm: '思考中', tool: '执行工具', queued_next: '即将开始', idle: '运行中' };
   /* 思考等级的英文标签：面板上显示英文，和后端档位名一致，也更好看 */
   var THINK_EN = { off: 'Off', low: 'Low', medium: 'Medium', high: 'High' };
   function stCn(s) { return ST_CN[s] || (s || '-'); }
+  /* 状态文案：running 时按 phase 细分，让用户知道它此刻在思考还是在跑工具。
+     it 是任务对象，带 phase / phase_at / tool_now。 */
+  function stLabel(it) {
+    if (!it) return '-';
+    var st = String(it.status || '');
+    if (st !== 'running' && st !== 'queued') return stCn(st);
+    var ph = String(it.phase || 'idle');
+    var base = PH_CN[ph] || '运行中';
+    /* 工具阶段带上工具名，比干说「执行工具」有用 */
+    if (ph === 'tool' && it.tool_now) base = '执行 ' + String(it.tool_now).slice(0, 18);
+    /* 思考超过 3 秒才显示秒数，短任务加秒数反而闪 */
+    var t0 = Number(it.phase_at || 0);
+    if (t0 > 0) {
+      var sec = Math.floor((Date.now() - t0) / 1000);
+      if (sec >= 3) base += ' ' + sec + 's';
+    }
+    return base;
+  }
 
 /* ── 堆叠式通知 ──
    对齐宿主右侧聊天栏：多条同时存在，新的压在最上面，旧的被挤下去。
@@ -1129,7 +1150,7 @@ function warnMsg(m) { toast(m, 'warn'); }
         + (S.multi ? '<span class="selbox">' + (picked ? '<svg><use href="#i-check"/></svg>' : '') + '</span>' : '')
         + '<div class="cr-avatar ' + (it.status === 'failed' ? 'f' : (it.status === 'running' ? 'r' : 'o')) + '">' + esc(String(it.title || it.id || '·').slice(0, 1)) + '</div>'
         + '<div class="cr-main"><div class="cr-top"><span class="cr-title">' + esc(it.title || it.id) + '</span><span class="cr-time">' + esc((it.last_at || it.created_at || '').slice(5, 16)) + '</span></div>'
-        + '<div class="cr-sub"><span class="cr-status ' + it.status + '">' + stCn(it.status) + '</span>'
+        + '<div class="cr-sub"><span class="cr-status ' + it.status + '">' + stLabel(it) + '</span>'
         + (it.last_text || it.result_preview ? '<span class="cr-pv">' + esc(String(it.last_text || it.result_preview).slice(0, 50)) + '</span>' : '')
         + '</div></div>'
         + (S.multi ? '' : '<span class="cr-go"><svg><use href="#i-chev-r"/></svg></span>') + '</div>';
@@ -3912,25 +3933,50 @@ document.addEventListener('visibilitychange', function () {
     var decided = false;       /* 是否已判定过方向 */
     var atBottom = false;      /* 按下时是否已滚到底 */
     var dy = 0;                /* 累计位移（负 = 往上推 = 打开方向） */
-    var THRESHOLD = 56;        /* 超过这个位移就切换状态 */
+var THRESHOLD = 56;        /* 兜底阈值（屏高拿不到时用） */
     var DECIDE_PX = 8;         /* 位移超过它才判方向 */
     var opened = false;        /* 当前是否已打开彩蛋 */
-
     /* 容器实际可见高度 = 一屏。track 是它的 200%。 */
     function screenH() {
       var vp = $('homeViewport');
       return (vp && vp.offsetHeight) || 0;
     }
+    /* 切换阈值 = 半屏。用户要求「滑到一半就自动回主页面」，
+       所以无论打开还是关闭，过中点就切，不再等固定 56px。 */
+    function halfH() {
+      var h = screenH();
+      return h > 0 ? h * 0.5 : THRESHOLD;
+    }
 
+    /* 打开：track 归位露出彩蛋屏，同时让内部元素依次上弹入场。
+       为什么要延时加 .egg-in：类名和 transform 同帧加，浏览器合并成一帧，动画不播。 */
     function openEgg() {
       opened = true;
       home.classList.add('home-open');
+      home.classList.remove('home-closing');
       track.style.transform = '';
+      var ep = $('eggPanel');
+      if (ep) {
+        ep.classList.remove('egg-out');
+        ep.classList.remove('egg-in');
+        setTimeout(function () { if (opened) ep.classList.add('egg-in'); }, 30);
+      }
     }
+    /* 关闭：先播超新星散开，散完再收 track。
+       为什么要等 460ms：散开动画是 .46s，立刻收 track 会把动画遮住看不见。 */
     function closeEgg() {
       opened = false;
       home.classList.remove('home-open', 'home-drag');
+      var ep = $('eggPanel');
+      if (ep) {
+        ep.classList.remove('egg-in');
+        ep.classList.add('egg-out');
+      }
+      /* 先把 track 归位（视觉上回到主页），动画在彩蛋屏上继续播完再清理 */
       track.style.transform = '';
+      setTimeout(function () {
+        if (!opened && ep) ep.classList.remove('egg-out');
+      }, 480);
     }
 
     /* 打开态下在彩蛋屏上往下滑，收回 */
@@ -3973,7 +4019,7 @@ document.addEventListener('visibilitychange', function () {
         if (!dragging) { decided = false; return; }
         dragging = false;
         home.classList.remove('home-drag');
-        if (dy >= THRESHOLD) closeEgg();
+        if (dy >= halfH()) closeEgg();
         else openEgg();   /* 没拉够，回弹到打开态 */
         decided = false;
         dy = 0;
@@ -4027,7 +4073,7 @@ document.addEventListener('visibilitychange', function () {
       if (!dragging) { decided = false; return; }
       dragging = false;
       home.classList.remove('home-drag');
-      if (-dy >= THRESHOLD) openEgg();
+      if (-dy >= halfH()) openEgg();
       else closeEgg();   /* 没推够，回弹 */
       decided = false;
       dy = 0;

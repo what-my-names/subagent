@@ -928,9 +928,15 @@ function tsOf(ms) {
     } catch (e) { return ""; }
 }
 function briefOf(task, unreadCache) {
+    /* phase 是「此刻在干什么」：llm=正在调模型，tool=正在跑工具，idle=空闲。
+       面板靠它显示「思考中」而不是干等一个「运行中」。
+       phase_at 是进入该阶段的时刻，前端用来算已思考多少秒。 */
     return {
         id: task.id, title: task.title, status: task.status, step: task.step,
         max_steps: task.max_steps, next: TASK.nextFor(task),
+        phase: String(task.phase || "idle"),
+        phase_at: Number(task.phase_at || 0),
+        tool_now: String(task.tool_now || ""),
         usage: task.usage || { in: 0, out: 0, est_cost: 0 },
         workspace_resolved: task.workspace_resolved || "",
         product_dir: task.product_dir || "",
@@ -1082,6 +1088,16 @@ exports.subagent_spawn = async function (params) {
     });
 
     var waitMs = Math.min(Number(params.wait_ms || 30000), Number(cfg.wait_max_ms || 60000));
+    /* 建完立刻置 running + phase=queued_next：
+       用户看到的「待开始」是因为 createTask 写的是 queued，要等第一次 advance 才变 running。
+       但任务实际上马上要跑，所以这里直接标成 running，面板立刻显示「思考中」而不是「待开始」。
+       注意：不写 phase=llm，因为还没真发请求；用 queued_next 表示「已排上，马上开跑」。 */
+    if (params.sync !== true) {
+        task.status = "running";
+        task.phase = "queued_next";
+        task.phase_at = Date.now();
+        try { await TASK.saveTask(task); } catch (eSP) {}
+    }
     if (params.sync === true) {
         var deadline = Date.now() + waitMs;
         var last = null;

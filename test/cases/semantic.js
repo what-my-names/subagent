@@ -394,7 +394,7 @@ A.match('判据是已滚到底', P, /atBottom = \(host\.scrollTop \+ host\.clien
 A.match('判据是往上滑 ddy<0', P, /atBottom && ddy < 0 && Math\.abs\(ddy\) > Math\.abs\(ddx\)/);
 A.nomatch('旧判据 startTop<=0 已删', P, /startTop <= 0 && ddy > 0/);
 A.match('接管后阻止页面滚动', P, /try \{ e\.preventDefault\(\); \} catch \(eP\)/);
-A.match('超阈值才打开', P, /if \(-dy >= THRESHOLD\) openEgg\(\)/);
+A.match('超阈值才打开', P, /if \(-dy >= halfH\(\)\) openEgg\(\)/);
 A.match('打开态可下滑收回', P, /bindClose\(\$\('eggPanel'\)\)/);
 /* 跟手位移按屏幕高换算成百分比，不能用固定 px */
 A.match('跟手走百分比', P, /track\.style\.transform = 'translate3d\(0,' \+ \(-\(move \/ h\) \* 50\) \+ '%,0\)'/);
@@ -549,4 +549,28 @@ A.match('float 态走 gone 不走 out', P, /else if \(el\.classList\.contains\('
 A.match('悬浮两段式过渡', P, /requestAnimationFrame\(function \(\) \{\s*requestAnimationFrame\(function \(\) \{/);
 A.match('首帧定到原位', P, /el\.style\.transform = startTf/);
 A.match('二帧过渡到中心', P, /el\.style\.transform = 'translate\(-50%,-50%\) scale\(1\)'/);
+
+/* ── 第四十五轮：彩蛋体验重做 ── */
+/* 背景色必须和主页一致，否则两屏交界有硬边 */
+A.match('彩蛋背景用 --bg', CSS2, /\.egg-panel\{[^}]*background:var\(--bg\)/);
+A.nomatch('彩蛋不再用 --bg2', CSS2, /\.egg-panel\{[^}]*background:var\(--bg2\)/);
+A.nomatch('彩蛋不再有 border-top', CSS2, /\.egg-panel\{[^}]*border-top/);
+/* 切换阈值改成半屏（用户要求过半即回） */
+A.match('有半屏阈值函数', P, /function halfH\(\) \{[\s\S]{0,120}?h \* 0\.5/);
+A.match('打开用半屏阈值', P, /if \(-dy >= halfH\(\)\) openEgg\(\)/);
+A.match('关闭用半屏阈值', P, /if \(dy >= halfH\(\)\) closeEgg\(\)/);
+/* 入场 + 超新星散开 */
+A.match('打开加 egg-in 类', P, /ep\.classList\.add\('egg-in'\)/);
+A.match('关闭加 egg-out 类', P, /ep\.classList\.add\('egg-out'\)/);
+A.match('入场动画有 stagger', CSS2, /\.egg-panel\.egg-in > \*:nth-child\(1\)\{transition-delay:\.05s\}/);
+A.match('散开动画类存在', CSS2, /\.egg-panel\.egg-out > \*/);
+A.match('散开有旋转', CSS2, /\.egg-panel\.egg-out > \*:nth-child\(2\)\{[^}]*rotate\(-25deg\)/);
+/* 按钮重做成卡片（图标 + 主文本 + 副文本） */
+A.match('按钮有图标位', H2, /class="egg-mail-ico"/);
+A.match('按钮有主文本', H2, /class="egg-mail-tx"/);
+A.match('按钮有副文本', H2, /class="egg-mail-sub"/);
+A.match('按钮容器改 grid', CSS2, /\.egg-links\{[^}]*grid-template-columns:1fr 1fr/);
+/* 标语换新 */
+A.match('标语已更换', H2, /把活交出去，只留结论。/);
+A.nomatch('旧标语已清', H2, /做工具，不做玩具。/);
 A.finish();

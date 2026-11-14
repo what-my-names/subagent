@@ -1858,6 +1858,19 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
         + '<span class="thk-tx">' + titleHtml + '</span>';
     }
+    /* 取某个 tool_call 对应的返回。抽成函数是因为「≥2 个包壳」与「单个平铺」
+       两条分支都要用，复制两份必然改漏一处。 */
+    function pickRes(tc) {
+      var res = resById[String(tc.id || '')];
+      if (res) {
+        for (var q2 = 0; q2 < resQueue.length; q2++) if (resQueue[q2] === res) usedRes[q2] = 1;
+        return res;
+      }
+      for (var q = 0; q < resQueue.length; q++) {
+        if (!usedRes[q]) { var r2 = resQueue[q]; usedRes[q] = 1; return r2; }
+      }
+      return null;
+    }
     var blkOpen = false;
     function openBlk() {
       if (!blkOpen) { h += '<div class="agent-block">'; blkOpen = true; }
@@ -1886,7 +1899,12 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
             + '</div>'
             + '</div>';
         }
-        if (hasTool) {
+        /* 【第八十四轮补】单个工具调用不折叠，直接平铺在正文流里。
+           规矩来自用户：「只有一个工具调用及这个工具调用，不用收就放在正文里面」。
+           理由：一条工具就是一行信息，再套一层「工具调用 (1)」的折叠头，
+           等于让用户多点一次才看到唯一那行，纯属负担。
+           ≥2 个才值得包壳 —— 那才需要「展开/收起」。 */
+        if (hasTool && t.length >= 2) {
           var kkey = i + ':tool';
           var kst = thinkState(kkey);
           h += thinkBoxOpen(kkey, 'toolcard thk-sec', '工具调用')
@@ -1896,19 +1914,19 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
             + '<div class="thk-body" data-thk-body="' + kkey + '">';
           for (var j = 0; j < t.length; j++) {
             var tc = t[j];
-            var res = resById[String(tc.id || '')];
-            if (!res) {
-              for (var q = 0; q < resQueue.length; q++) {
-                if (!usedRes[q]) { res = resQueue[q]; usedRes[q] = 1; break; }
-              }
-            } else {
-              for (var q2 = 0; q2 < resQueue.length; q2++) if (resQueue[q2] === res) usedRes[q2] = 1;
-            }
+            var res = pickRes(tc);
             S._toolMap = S._toolMap || {};
             S._toolMap[String(tc.id || tc.name)] = { call: tc, res: res || null };
             h += toolRow(tc, res);
           }
           h += '</div></div>';
+        } else if (hasTool) {
+          /* 单个工具：平铺，无折叠头、无 toolcard 外壳 */
+          var tc0 = t[0];
+          var res0 = pickRes(tc0);
+          S._toolMap = S._toolMap || {};
+          S._toolMap[String(tc0.id || tc0.name)] = { call: tc0, res: res0 || null };
+          h += '<div class="trow-alone">' + toolRow(tc0, res0) + '</div>';
         }
 
         /* 正文也放进同一张卡：不再单独用 .bubble */
@@ -1923,15 +1941,13 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         var idx = resQueue.indexOf(m);
         if (idx >= 0 && usedRes[idx]) continue;
         openBlk();
-        /* 【第八十四轮】这条独立工具段也要带 key，否则它永远回 stInit，
-           用户折叠后重渲染又被顶开。 */
-        var loneKey = i + ':lone';
-        var loneSt = thinkState(loneKey);
-        S.thkRaw[loneKey] = 1;
-        h += '<div class="thinkbox toolcard thk-sec" data-thk-key="' + esc(loneKey) + '" data-state="' + loneSt + '">'
-          + '<div class="thk-body">'
+        /* 【第八十四轮补】孤儿工具行不折叠，直接平铺。
+           用户原话：「孤儿工具是不需要折叠的」。
+           之前这里套了 thinkbox + data-state，用户得点开才看到唯一一行工具，
+           纯属多余 —— 它本来就只有一个工具，没有可折叠的内容。 */
+        h += '<div class="trow-alone">'
           + toolRow({ name: m.name || 'tool', args: null }, m)
-          + '</div></div>';
+          + '</div>';
         S._toolMap = S._toolMap || {};
         S._toolMap[String(m.name || 'tool')] = { call: null, res: m };
       } else if (m.role === 'user') {
@@ -3232,11 +3248,26 @@ document.addEventListener('visibilitychange', function () {
             };
             var rowHtml = toolRow({ name: tc.name, args: tc.args || null },
                                   { ok: dd.ok, result: content, error: dd.ok ? null : content });
-            /* 【第五十七轮】工具独立成卡，跟思考卡并排不合并。
-               流式期间这张卡保持展开（data-state=1）看着跑；
-               整批调用结束后由 nextTool 收尾收敛。 */
+            /* 【第八十四轮补】单个工具调用不折叠，流式路径同样遵守。
+               规矩来自用户：「只有一个工具调用……不用收就放在正文里面」。
+               queue.length 是本批工具总数，在开始执行前就已知，所以分支稳定，
+               不会出现「先平铺后又长成卡片」的跳变。 */
+            var soloTool = (queue.length === 1);
             var cur = _streamToolCard;
-            if (!cur || !cur.parentNode) {
+            if (soloTool && (!cur || !cur.parentNode)) {
+              var blkS = _streamBlock;
+              if (!blkS || !blkS.parentNode) {
+                blkS = document.createElement('div');
+                blkS.className = 'agent-block';
+                host.insertBefore(blkS, holder);
+                _streamBlock = blkS;
+              }
+              cur = document.createElement('div');
+              cur.className = 'trow-alone';
+              blkS.appendChild(cur);
+              _streamToolCard = cur;
+              cur.insertAdjacentHTML('beforeend', rowHtml);
+            } else if (!soloTool && (!cur || !cur.parentNode)) {
               /* 【第五十八轮】工具段放进当前 agent-block；没有就新建一个 */
               var blk = _streamBlock;
               if (!blk || !blk.parentNode) {
@@ -3257,9 +3288,14 @@ document.addEventListener('visibilitychange', function () {
               blk.appendChild(cur);
               _streamToolCard = cur;
             }
-            var tbody = cur.querySelector('.thk-body');
-            if (tbody) tbody.insertAdjacentHTML('beforeend', rowHtml);
-            /* 计数：本卡里工具行数量 */
+            /* 后续工具行插到哪：折叠卡插 .thk-body，平铺容器直接塞自己。
+               平铺只看 soloTool —— 单工具批次里 cur 永远是 .trow-alone，
+               它已经在上面插过快照行，这里不能再查 .thk-body（查不到会漏插/重插）。 */
+            if (!soloTool) {
+              var tbody = cur.querySelector('.thk-body');
+              if (tbody) tbody.insertAdjacentHTML('beforeend', rowHtml);
+            }
+            /* 计数：本卡里工具行数量（平铺态没有计数头，查不到就是空转，无害） */
             try {
               var cntEl = cur.querySelector('.tool-count');
               var nrows = cur.querySelectorAll('.trowc').length;

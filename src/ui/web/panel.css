@@ -286,6 +286,14 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
 .chat-row.stale .cr-title{color:var(--mut)}
 .cr-status.interrupted{color:var(--mut);font-style:italic}
 
+/* 【第八十四轮补】孤儿/单个工具行：平铺在正文流里，不折叠、不套卡片壳。
+   用户规矩：「单个工具调用，不需要折叠，就放在正文里面」。
+   给一点内边距让它与上下正文呼吸，但不加背景、不加圆角、不加折叠头 ——
+   它是一行信息，不是可折叠的段落。 */
+.trow-alone{padding:2px 12px 4px 14px}
+.agent-block>.trow-alone{padding:0 12px 8px 14px}
+.trow-alone .trowc{border-radius:8px}
+
 /* 表单 */
 .form{flex:1;overflow-y:auto;padding:12px 14px 30px;display:flex;flex-direction:column;gap:8px}
 .lb{font-size:11.5px;color:var(--mut);margin-top:6px}

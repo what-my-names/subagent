@@ -685,6 +685,11 @@ A.match('工具段按任务状态定默认态', P, /function thinkState\(key\)/)
 A.match('段间零边框', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border:0/);
 A.match('思考段在容器内', P, /thinkBoxOpen\(tkey, 'thk-sec', '思考过程'\)/);
 A.match('工具段在容器内', P, /thinkBoxOpen\(kkey, 'toolcard thk-sec', '工具调用'\)/);
+/* 【第八十四轮补】用户规矩：单个工具调用 / 孤儿工具不折叠，直接放正文流 */
+A.match('单个工具不包折叠壳', P, /if \(hasTool && t\.length >= 2\)/);
+A.match('单个工具平铺进正文流', P, /class="trow-alone"/);
+A.match('孤儿工具行不折叠', P, /\} else if \(m\.role === 'tool'\)[\s\S]{0,400}?trow-alone/);
+A.nomatch('孤儿工具行不再套 thinkbox', P, /role === 'tool'\)[\s\S]{0,900}?thinkbox toolcard/);
 A.match('容器圆角只在外层', CSS2, /\.agent-block\{background:var\(--bg3\);border-radius:3px 14px 14px 14px/);
 A.match('段在容器内去圆角', CSS2, /\.agent-block>\.thinkbox\{background:transparent;border:0;border-radius:0/);
 A.nomatch('不再有分割线', CSS2, /border-top:1px solid rgba\(127,141,179,\.18\)/);
@@ -700,7 +705,10 @@ A.match('用双 rAF 分帧', P, /requestAnimationFrame\(function \(\) \{\n\s+req
 A.match('折叠时长已缩到 .16s', CSS2, /transition:max-height \.16s/);
 A.match('声明 will-change', CSS2, /will-change:max-height/);
 A.match('流式有卡片容器变量', P, /_streamBlock/);
-A.match('工具段在容器内', P, /class="thinkbox toolcard thk-sec"/);
+A.match('流式工具段在容器内', P, /className = 'thinkbox toolcard thk-sec'/);
+/* 【第八十四轮补】流式路径也要遵守「单个工具不折叠」 */
+A.match('流式单工具批量走平铺', P, /var soloTool = \(queue\.length === 1\)/);
+A.match('流式平铺容器用 trow-alone', P, /cur\.className = 'trow-alone'/);
 A.match('段间零边框', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border:0/);
 A.match('卡片外边距归零', CSS2, /\.thinkbox\{margin:0;/);
 A.match('聊天气泡容器 gap 归零', CSS2, /\.dt-chat\{[^}]*gap:0/);

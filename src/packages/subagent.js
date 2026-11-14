@@ -2425,7 +2425,12 @@ function _wlCheck(params, allowed, actionName) {
     var extra = [];
     for (var k in params) {
         if (!Object.prototype.hasOwnProperty.call(params, k)) continue;
-        if (k === "id" || k === "action" || k === "target") continue;  // 公共参数
+        /* 【第八十一轮】路由参数统一放行：这些参数是用来「选分支」的，
+           每个分支的白名单不必各自重复列，否则会出现
+           「step="check" 被 update(check) 自己拦掉」这类自伤。
+           id/action/target/what/step/wait/ids/dry_run 一律放行。 */
+        if (k === "id" || k === "action" || k === "target" || k === "what"
+            || k === "step" || k === "wait" || k === "ids" || k === "dry_run") continue;
         /* 【第七十九轮】宿主注入的内部键放行：每次工具调用 Operit 都会自动带上
            __operit_* 系列与 containerPackageName/toolPkgId 等，这些不是模型传的，
            不能拦。以 __operit_ 前缀或已知宿主键名识别。 */
@@ -2669,23 +2674,26 @@ exports.subagent_del = async function (params) {
 exports.subagent_update = async function (params) {
     params = params || {};
     var step = String(params.step || "check");
+    /* 【第八十一轮】step 是路由参数，四个分支的白名单都必须放行它本身：
+       原先把 step 当普通参数检查，导致用 step="check" 调用时
+       直接报「update(check) 不接受参数：step」——路由参数把自己拦了。 */
     if (step === "check") {
-        var wl1 = _wlCheck(params, ["force"], "update(check)");
+        var wl1 = _wlCheck(params, ["step", "force"], "update(check)");
         if (wl1) { complete({ success: false, message: wl1, data: {} }); return; }
         return await exports.subagent_check_update({ force: params.force === true });
     }
     if (step === "download") {
-        var wl2 = _wlCheck(params, ["force"], "update(download)");
+        var wl2 = _wlCheck(params, ["step", "force"], "update(download)");
         if (wl2) { complete({ success: false, message: wl2, data: {} }); return; }
         return await exports.subagent_download_update({ force: params.force === true });
     }
     if (step === "status") {
-        var wl3 = _wlCheck(params, [], "update(status)");
+        var wl3 = _wlCheck(params, ["step"], "update(status)");
         if (wl3) { complete({ success: false, message: wl3, data: {} }); return; }
         return await exports.subagent_download_status();
     }
     if (step === "install") {
-        var wl4 = _wlCheck(params, ["path"], "update(install)");
+        var wl4 = _wlCheck(params, ["step", "path"], "update(install)");
         if (wl4) { complete({ success: false, message: wl4, data: {} }); return; }
         return await exports.subagent_install_update({ path: params.path });
     }

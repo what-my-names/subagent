@@ -945,6 +945,10 @@ A.eq('拦 workflow:run', TL.isRecursive('workflow:run'), true);
 A.eq('放行 workflow:list', TL.isRecursive('workflow:workflow_list'), false);
 A.eq('仍放行 subagent_helper', TL.isRecursive('subagent_helper'), false);
 
+/* 【第八十一轮】路由参数不能把自己拦掉（step="check" 被 update(check) 拒过） */
+A.match('路由参数 step 放行', A.src('packages/subagent.js'), /k === "step"/);
+A.match('路由参数 what 放行', A.src('packages/subagent.js'), /k === "what"/);
+A.match('update 各分支放行 step', A.src('packages/subagent.js'), /_wlCheck\(params, \["step", "force"\], "update\(check\)"\)/);
 /* 【第八十轮】undo 改进：越界留痕 + warn 透出 + 空备份目录清理 */
 A.match('越界路径记 warn 不再静默', A.src('packages/sb_tools.js'), /路径在写入范围外，未备份/);
 A.match('warn 条目透出 error', A.src('packages/sb_tools.js'), /plan\.push\(\{ type: it\.type, path: it\.path, backup: it\.backup, error: it\.error \|\| null \}\)/);

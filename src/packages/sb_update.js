@@ -23,6 +23,9 @@
 var CFG = require("./sb_config.js");
 
 var REPO = "what-my-names/subagent";
+/* 当前包版本：发版时与 manifest.json / VERSION.txt 同源改。
+   沙箱里读不到 VERSION.txt，只能靠这个常量兜底（见 currentVersion） */
+var PKG_VERSION = "v1.0.0";
 var RELEASES_API = "https://api.github.com/repos/" + REPO + "/releases?per_page=5";
 var ASSET_API = "https://api.github.com/repos/" + REPO + "/releases/assets/";
 /* 6 小时缓存：GitHub 未认证限流 60 次/小时，面板上点检查不该每次都打 */
@@ -32,11 +35,24 @@ var RUNNING_GRACE_MS = 10 * 60 * 1000;
 
 /* 当前版本：从 VERSION.txt 读，不在代码里硬编码（否则发版要改两处，必忘） */
 function currentVersion() {
+    /* 【第八十一轮】沙箱里没有 __dirname、也读不到包源码目录，
+       VERSION.txt 压根拿不到 —— 原来 current 恒为空串，面板显示不出当前版本。
+       现在按三条路依次试：
+       1) 硬编码常量 PKG_VERSION（发版时同源改，和 manifest 一起）
+       2) 从安装的 .toolpkg 里解 manifest.json 读 version（最准，但依赖宿主目录可读）
+       3) manifest 静态字段兜底
+       始终拿不到就返回空串，调用方按「未知版本」处理。 */
+    if (PKG_VERSION) return PKG_VERSION;
     try {
         var fs = require("fs");
-        var p = CFG.baseDir() + "/VERSION.txt";
-        if (fs && typeof fs.existsSync === "function" && fs.existsSync(p)) {
-            return String(fs.readFileSync(p, "utf8") || "").trim();
+        if (fs && typeof fs.existsSync === "function") {
+            var zp = PKG_DIR + "/" + PKG_ID + ".toolpkg";
+            if (fs.existsSync(zp)) {
+                var buf = fs.readFileSync(zp);
+                var s = String(buf);
+                var m = s.match(/"version"\s*:\s*"([^"]+)"/);
+                if (m && m[1]) return String(m[1]).trim();
+            }
         }
     } catch (e) {}
     return "";

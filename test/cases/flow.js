@@ -26,7 +26,7 @@ A.chk('resources 指向真实文件 panel.html', /ui\/web\/panel\.html/.test(M))
 A.chk('resources 指向真实文件 panel.css', /ui\/web\/panel\.css/.test(M));
 A.chk('resources 指向真实文件 panel.js', /ui\/web\/panel\.js/.test(M));
 
-/* ── 29 个工具全部注册 ── */
+/* ── 37 个实现函数全保留（面板直接调旧名），10 个大类新声明 ── */
 var TOOL_NAMES = [
     'subagent_spawn', 'subagent_advance', 'subagent_wait', 'subagent_status',
     'subagent_result', 'subagent_undo', 'subagent_cancel', 'subagent_resume',
@@ -35,25 +35,27 @@ var TOOL_NAMES = [
     'subagent_version', 'subagent_trace', 'subagent_workspace', 'subagent_list_dir',
     'subagent_check_path', 'subagent_save_turn', 'subagent_tool_once',
     'subagent_stream_ctx', 'subagent_stream_key', 'subagent_stream_relay',
-    'subagent_chats', 'subagent_tools', 'subagent_vendor_js'
+    'subagent_chats', 'subagent_tools', 'subagent_vendor_js',
+    'subagent_run', 'subagent_get', 'subagent_ctrl', 'subagent_box',
+    'subagent_del', 'subagent_update', 'subagent_cfg', 'subagent_env'
 ];
 var missing = [];
 for (var i = 0; i < TOOL_NAMES.length; i++) {
     var n = TOOL_NAMES[i];
     if (SUB.indexOf('exports.' + n) < 0) missing.push(n);
 }
-A.eq('29 个工具全部导出', missing.length, 0);
+A.eq('37 个实现函数全部导出', missing.length, 0);
 if (missing.length) console.log('    缺失：' + missing.join(', '));
 
-/* 每个工具都要有 name 声明（供 AI 调用） */
+/* METADATA 只声明 10 个大类 + 10 个面板保留名 = 20 */
 var declared = (SUB.match(/"name"\s*:\s*"subagent_/g) || []).length;
-A.chk('工具声明数量 >= 29', declared >= 29, '实际 ' + declared);
+A.eq('METADATA 声明数量 = 20', declared, 20);
 
-/* ── spawn 参数契约 ── */
+/* ── spawn 参数契约（合并后：tools/wait/budget/detail 替代旧三件） ── */
 A.match('spawn 有 task 必填', SUB, /"name"\s*:\s*"task"/);
-A.match('spawn 有 allowed_tools', SUB, /"name"\s*:\s*"allowed_tools"/);
+A.match('spawn 有 tools（替代 allowed_tools/all）', SUB, /"name"\s*:\s*"tools"/);
 A.match('spawn 有 workspace', SUB, /"name"\s*:\s*"workspace"/);
-A.match('spawn 有 sync 参数', SUB, /"name"\s*:\s*"sync"/);
+A.match('spawn 有 wait（替代 sync）', SUB, /"name"\s*:\s*"wait"/);
 A.match('spawn 有 max_steps 参数', SUB, /"name"\s*:\s*"max_steps"/);
 
 /* ── 状态机：6 个状态齐全 ── */
@@ -129,7 +131,7 @@ if (RD) {
     A.nomatch('README 不再说留空 = 不限制', RD, /留空 = 不限制/);
     /* 【第四十二轮】原来锁死 34，加工具就要改。改为动态比对代码里的实际数量。 */
     var _tc = (A.src('packages/subagent.js').match(/"name": "subagent_/g) || []).length;
-    A.chk('README 工具表与代码一致（' + _tc + ' 个）', RD.indexOf('## 工具（' + _tc + ' 个）') >= 0);
+    A.chk('README 工具表与代码一致（' + _tc + ' 个）', RD.indexOf('## 工具（' + _tc + ' 个') >= 0);
     A.match('README 提到 CORS 判据', RD, /access-control-allow-origin/);
     A.match('README 有测试章节', RD, /node e2e_all\.js/);
     A.nomatch('README 不再提 selfcheck_v025', RD, /selfcheck_v025/);

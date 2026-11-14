@@ -1,881 +1,693 @@
 /*
 METADATA
 {
-    "name": "subagent",
-    "display_name": {
-        "zh": "子代理",
-        "en": "Subagent"
-    },
-    "description": {
-        "zh": "自建模型通道的子代理：自己发请求、自己执行宿主工具、白名单硬拒绝、写前备份可撤回。",
-        "en": "Own-model subagent with hard tool whitelist and undoable writes."
-    },
-    "enabledByDefault": true,
-    "category": "TOOL",
-    "tools": [
+  "name": "subagent",
+  "display_name": {
+    "zh": "子代理",
+    "en": "Subagent"
+  },
+  "description": {
+    "zh": "自建模型通道的子代理：自己发请求、自己执行宿主工具、白名单硬拒绝、写前备份可撤回。",
+    "en": "Own-model subagent with hard tool whitelist and undoable writes."
+  },
+  "enabledByDefault": true,
+  "category": "TOOL",
+  "tools": [
+    {
+      "name": "subagent_spawn",
+      "description": {
+        "zh": "建任务并派给子代理：只有 task 必填。tools 留空=无工具、传 * 放开全部（派子代理仍硬拦）；含写类工具必须给 workspace。wait=true 当场跑完并返回结论，不传 budget 会等到结束（失败除外）。",
+        "en": "建任务并派给子代理：只有 task 必填。tools 留空=无工具、传 * 放开全部（派子代理仍硬拦）；含写类工具必须给 workspace。wait=true 当场跑完并返回结论，不传 budget 会等到结束（失败除外）。"
+      },
+      "parameters": [
         {
-            "name": "subagent_spawn",
-            "description": {
-                "zh": "建任务：只有 task 必填。allowed_tools 留空 = 一个工具都用不了；要放开全部传 all=true（递归派子代理仍硬拦）。含写类工具时必须给 workspace。sync=true 时直接跑完并返回结论。",
-                "en": "Create a task. Only task required. Empty allowed_tools means no tools; pass all=true to allow everything (recursive subagents still blocked). workspace required if write tools allowed."
-            },
-            "parameters": [
-                {
-                    "name": "task",
-                    "type": "string",
-                    "description": "任务描述",
-                    "required": true
-                },
-                {
-                    "name": "allowed_tools",
-                    "type": "string",
-                    "description": "允许的工具，逗号分隔，支持通配与 包名:工具名。留空 = 一个工具都用不了；要放开全部请传 all=true",
-                    "required": false
-                },
-                {
-                    "name": "all",
-                    "type": "boolean",
-                    "description": "true = 放开全部工具（内置工具全展开 + 包工具走 run_tool）。递归派子代理仍被硬拦。默认 false",
-                    "required": false
-                },
-                {
-                    "name": "allow_danger",
-                    "type": "boolean",
-                    "description": "允许执行危险命令（脚本执行类：sh/bash、执行 .sh .py 等脚本文件、eval、$(...)、curl|sh 等）。默认 false。硬红线（rm 根目录、mkfs、dd、reboot、sudo）无论此值为真都会拒。只影响 terminal/shell，不影响其他工具",
-                    "required": false
-                },
-                {
-                    "name": "key_points",
-                    "type": "string",
-                    "description": "任务要点 JSON：goal/deliverable/constraints/acceptance",
-                    "required": false
-                },
-                {
-                    "name": "thinking_level",
-                    "type": "string",
-                    "description": "off/low/medium/high",
-                    "required": false
-                },
-                {
-                    "name": "workspace",
-                    "type": "string",
-                    "description": "写入根，含写类工具时必填",
-                    "required": false
-                },
-                {
-                    "name": "context_mode",
-                    "type": "string",
-                    "description": "none/chat_tail/summary/fork：是否附带主对话上下文",
-                    "required": false
-                },
-                {
-                    "name": "context_turns",
-                    "type": "number",
-                    "description": "带入主对话的条数（1-120），不传按模式默认（chat_tail 8 / fork 24 / summary 60）",
-                    "required": false
-                },
-                {
-                    "name": "context_text",
-                    "type": "string",
-                    "description": "背景注入文本",
-                    "required": false
-                },
-                {
-                    "name": "parent_chat_id",
-                    "type": "string",
-                    "description": "可选：fork/chat_tail 读哪条对话的历史；不传取最近更新的对话",
-                    "required": false
-                },
-                {
-                    "name": "context_files",
-                    "type": "string",
-                    "description": "逗号分隔的文件路径，读入注入",
-                    "required": false
-                },
-                {
-                    "name": "model",
-                    "type": "string",
-                    "description": "覆盖模型",
-                    "required": false
-                },
-                {
-                    "name": "base_url",
-                    "type": "string",
-                    "description": "覆盖端点",
-                    "required": false
-                },
-                {
-                    "name": "max_steps",
-                    "type": "number",
-                    "description": "步数上限，默认 20",
-                    "required": false
-                },
-                {
-                    "name": "timeout_ms",
-                    "type": "number",
-                    "description": "单步超时，默认 90000",
-                    "required": false
-                },
-                {
-                    "name": "summary_level",
-                    "type": "string",
-                    "description": "t0/t1/t2",
-                    "required": false
-                },
-                {
-                    "name": "result_level",
-                    "type": "string",
-                    "description": "brief/standard/full",
-                    "required": false
-                },
-                {
-                    "name": "group",
-                    "type": "string",
-                    "description": "分组，用于 fan-out",
-                    "required": false
-                },
-                {
-                    "name": "template_id",
-                    "type": "string",
-                    "description": "使用 config 里的模板",
-                    "required": false
-                },
-                {
-                    "name": "sync",
-                    "type": "boolean",
-                    "description": "true=一次调用内跑完",
-                    "required": false
-                },
-                {
-                    "name": "wait_ms",
-                    "type": "number",
-                    "description": "sync 总预算，最大 60000",
-                    "required": false
-                },
-                {
-                    "name": "skills",
-                    "type": "string",
-                    "description": "给子代理看哪些 skill 的清单：逗号分隔 skill 名，或传 all 列出全部。不传则不注入（省 token）。子代理用 subagent_skill 读全文",
-                    "required": false
-                }
-            ]
+          "name": "task",
+          "type": "string",
+          "description": "任务描述：只写任务本身，工具名与路径不要塞进来",
+          "required": true
         },
         {
-            "name": "subagent_advance",
-            "description": {
-                "zh": "推进一步或 N 步（上限 3）",
-                "en": "Advance one or N steps"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "steps",
-                    "type": "number",
-                    "description": "1-3，默认 1",
-                    "required": false
-                },
-                {
-                    "name": "summary_level",
-                    "type": "string",
-                    "description": "t0/t1/t2",
-                    "required": false
-                }
-            ]
+          "name": "tools",
+          "type": "string",
+          "description": "允许的工具，逗号分隔，支持 * 通配与 包名:工具名。留空=一个都没有；传 * 放开全部",
+          "required": false
         },
         {
-            "name": "subagent_wait",
-            "description": {
-                "zh": "等待任务完成（最大 60 秒）",
-                "en": "Wait for completion up to 60s"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "timeout_ms",
-                    "type": "number",
-                    "description": "默认 30000，最大 60000",
-                    "required": false
-                },
-                {
-                    "name": "result_level",
-                    "type": "string",
-                    "description": "brief/standard/full",
-                    "required": false
-                }
-            ]
+          "name": "workspace",
+          "type": "string",
+          "description": "写入根目录，含写类工具时必填",
+          "required": false
         },
         {
-            "name": "subagent_status",
-            "description": {
-                "zh": "任务状态；不传 id 列全部",
-                "en": "Task status"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id，可选",
-                    "required": false
-                }
-            ]
+          "name": "wait",
+          "type": "boolean",
+          "description": "true=本次调用等任务完成再返回结论",
+          "required": false
         },
         {
-            "name": "subagent_result",
-            "description": {
-                "zh": "取最终结论，支持多个 id 合并",
-                "en": "Get final result"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": false
-                },
-                {
-                    "name": "task_ids",
-                    "type": "string",
-                    "description": "逗号分隔多个 id",
-                    "required": false
-                },
-                {
-                    "name": "result_level",
-                    "type": "string",
-                    "description": "brief/standard/full",
-                    "required": false
-                },
-                {
-                    "name": "max_chars",
-                    "type": "number",
-                    "description": "截断长度",
-                    "required": false
-                }
-            ]
+          "name": "budget",
+          "type": "number",
+          "description": "wait=true 时最长等待毫秒；不传=等到完成（失败除外）",
+          "required": false
         },
         {
-            "name": "subagent_undo",
-            "description": {
-                "zh": "列出或恢复写操作（默认只看不改）",
-                "en": "List or roll back writes"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "dry_run",
-                    "type": "boolean",
-                    "description": "默认 true",
-                    "required": false
-                }
-            ]
+          "name": "detail",
+          "type": "string",
+          "description": "返回详细度 brief/standard/full/trace（wait=true 时生效）",
+          "required": false
         },
         {
-            "name": "subagent_cancel",
-            "description": {
-                "zh": "等同 DSH 的 interrupt_agent：请求停止当前工作，不等待停止；之后仍可用 steer 继续",
-                "en": "Request the subagent to stop (same as interrupt_agent)"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                }
-            ]
+          "name": "max_steps",
+          "type": "number",
+          "description": "步数上限，默认 20",
+          "required": false
         },
         {
-            "name": "subagent_resume",
-            "description": {
-                "zh": "恢复任务：把已停止/失败/已完成的任务拉回待开始，清掉取消标记，可继续推进",
-                "en": "Resume a stopped/failed/done task back to queued"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                }
-            ]
+          "name": "timeout_ms",
+          "type": "number",
+          "description": "单步超时毫秒，默认 90000",
+          "required": false
         },
         {
-            "name": "subagent_steer",
-            "description": {
-                "zh": "等同 DSH 的 send_message：给子代理发消息。运行中在下一步生效，空闲则开新一轮；只回投递确认，不回答案",
-                "en": "Append an instruction to a task"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "message",
-                    "type": "string",
-                    "description": "追加的指令",
-                    "required": true
-                }
-            ]
+          "name": "thinking_level",
+          "type": "string",
+          "description": "off/low/medium/high",
+          "required": false
         },
         {
-            "name": "subagent_inbox",
-            "description": { "zh": "看收件箱：未读子代理结论列表（action=read 可清空）。每次派活前或主对话开始前建议先查一次", "en": "Inspect inbox (action=read clears)" },
-            "parameters": [
-                {
-                    "name": "action",
-                    "type": "string",
-                    "description": "传 read 清空收件箱；不传为查看",
-                    "required": false
-                }
-            ]
+          "name": "context_mode",
+          "type": "string",
+          "description": "none/chat_tail/summary/fork",
+          "required": false
         },
         {
-            "name": "subagent_list",
-            "description": {
-                "zh": "任务列表",
-                "en": "List tasks"
-            },
-            "parameters": []
+          "name": "context_turns",
+          "type": "number",
+          "description": "带几条历史 1-120",
+          "required": false
         },
         {
-            "name": "subagent_close",
-            "description": {
-                "zh": "关闭任务（两段式）：默认只返回当前进度不关闭；confirm=true 才关；可选回滚与丢弃产物",
-                "en": "Two-step close: default returns progress only"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "confirm",
-                    "type": "boolean",
-                    "description": "true 才真正关闭；不传只返回当前进度",
-                    "required": false
-                },
-                {
-                    "name": "rollback",
-                    "type": "boolean",
-                    "description": "回滚写操作",
-                    "required": false
-                },
-                {
-                    "name": "delete_product",
-                    "type": "boolean",
-                    "description": "删除产物目录",
-                    "required": false
-                }
-            ]
+          "name": "context_text",
+          "type": "string",
+          "description": "背景注入文本",
+          "required": false
         },
         {
-            "name": "subagent_delete",
-            "description": {
-                "zh": "彻底删除任务：任务文件 + 产物目录 + 快照。默认只返回预览；confirm=true 才删",
-                "en": "Permanently delete a task with its product dir and snapshots"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "confirm",
-                    "type": "boolean",
-                    "description": "true 才真正删除；不传只返回预览",
-                    "required": false
-                }
-            ]
+          "name": "context_files",
+          "type": "string",
+          "description": "逗号分隔文件路径，内容读入注入",
+          "required": false
         },
         {
-            "name": "subagent_config",
-            "description": {
-                "zh": "读写配置；key 只写不读",
-                "en": "Read/write config; key write-only"
-            },
-            "parameters": [
-                {
-                    "name": "action",
-                    "type": "string",
-                    "description": "status / set / key / refresh_models / list_profiles / add_profile / set_profile / set_active / del_profile",
-                    "required": true
-                },
-                {
-                    "name": "profile_id",
-                    "type": "string",
-                    "description": "set_active / del_profile 时的目标配置 id",
-                    "required": false
-                },
-                {
-                    "name": "payload",
-                    "type": "string",
-                    "description": "set 时的 JSON",
-                    "required": false
-                },
-                {
-                    "name": "api_key",
-                    "type": "string",
-                    "description": "写入的 key（不回显）",
-                    "required": false
-                },
-                {
-                    "name": "base_url",
-                    "type": "string",
-                    "description": "refresh_models 时可选：按这个端点拉模型（面板测未保存的输入框值用）",
-                    "required": false
-                },
-                {
-                    "name": "force",
-                    "type": "boolean",
-                    "description": "refresh_models 时可选：true 跳过 24 小时缓存强制重拉",
-                    "required": false
-                }
-            ]
+          "name": "key_points",
+          "type": "string",
+          "description": "要点 JSON: goal/deliverable/constraints/acceptance",
+          "required": false
         },
         {
-            "name": "subagent_templates",
-            "description": {
-                "zh": "任务模板：list/add/remove",
-                "en": "Task templates"
-            },
-            "parameters": [
-                {
-                    "name": "action",
-                    "type": "string",
-                    "description": "list/add/remove",
-                    "required": true
-                },
-                {
-                    "name": "payload",
-                    "type": "string",
-                    "description": "模板 JSON",
-                    "required": false
-                },
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "模板 id",
-                    "required": false
-                }
-            ]
+          "name": "skills",
+          "type": "string",
+          "description": "给子代理看的 skill 清单，逗号分隔或 all",
+          "required": false
         },
         {
-            "name": "subagent_probe",
-            "description": {
-                "zh": "分层测试连通性：端点可达 / 密钥有效 / 模型可生成。可指定模型单独探测",
-                "en": "Layered connectivity probe: reachable / key valid / model can generate"
-            },
-            "parameters": [
-                {
-                    "name": "deep",
-                    "type": "boolean",
-                    "description": "默认就会真发一次最小对话；传 false 可跳过实测只做可达性检查",
-                    "required": false
-                },
-                {
-                    "name": "model",
-                    "type": "string",
-                    "description": "只探测这个模型（临时覆盖配置里的模型）",
-                    "required": false
-                },
-                {
-                    "name": "base_url",
-                    "type": "string",
-                    "description": "只探测这个端点（临时覆盖配置里的端点，面板测未保存的输入框值用）",
-                    "required": false
-                }
-]
+          "name": "allow_danger",
+          "type": "boolean",
+          "description": "允许脚本执行等危险命令，默认 false",
+          "required": false
         },
         {
-            "name": "subagent_version",
-            "description": {
-                "zh": "版本与配置路径",
-                "en": "Version info"
-            },
-            "parameters": []
+          "name": "model",
+          "type": "string",
+          "description": "覆盖模型",
+          "required": false
         },
         {
-            "name": "subagent_check_update",
-            "description": {
-                "zh": "检查 GitHub Release 是否有新版本（带 6 小时缓存）。返回当前版本、最新版本、更新说明、下载地址",
-                "en": "Check GitHub releases for a newer version (6h cache)"
-            },
-            "parameters": [
-                {
-                    "name": "force",
-                    "type": "boolean",
-                    "required": false,
-                    "description": {
-                        "zh": "true = 跳过 6 小时缓存强制重新拉取",
-                        "en": "Bypass the 6h cache"
-                    }
-                }
-            ]
+          "name": "base_url",
+          "type": "string",
+          "description": "覆盖端点",
+          "required": false
         },
         {
-            "name": "subagent_download_update",
-            "description": {
-                "zh": "下载最新版本的 .toolpkg 到数据目录 updates/。走 api.github.com（github.com 在本机网络不可达）",
-                "en": "Download the latest .toolpkg into updates/"
-            },
-            "parameters": [
-                {
-                    "name": "force",
-                    "type": "boolean",
-                    "required": false,
-                    "description": {
-                        "zh": "true = 跳过缓存重新检查版本",
-                        "en": "Bypass the version cache"
-                    }
-                }
-            ]
+          "name": "group",
+          "type": "string",
+          "description": "分组，fan-out 用",
+          "required": false
         },
         {
-            "name": "subagent_download_status",
-            "description": {
-                "zh": "查询下载进度与结果（已下载/总大小/百分比/失败原因），面板重开后仍可读",
-                "en": "Query download progress and result"
-            },
-            "parameters": []
-        },
-        {
-            "name": "subagent_install_update",
-            "description": {
-                "zh": "把已下载的 .toolpkg 写入宿主包目录完成安装，装完即生效（不需重启）。会备份旧包到 .bak-update",
-                "en": "Install the downloaded .toolpkg into the host package dir. Takes effect immediately, no restart needed"
-            },
-            "parameters": [
-                {
-                    "name": "path",
-                    "type": "string",
-                    "required": false,
-                    "description": {
-                        "zh": "要安装的包路径。不传则用上次下载记录里的路径",
-                        "en": "Package path; defaults to the last downloaded file"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "subagent_open_mail",
-            "description": {
-                "zh": "调起系统邮件应用写一封信（发 SENDTO intent）。WebView 不支持 mailto: 直接跳转，必须走后端 intent",
-                "en": "Open the system mail app with a draft (SENDTO intent). WebView cannot navigate mailto: directly"
-            },
-            "parameters": [
-                {
-                    "name": "email",
-                    "type": "string",
-                    "required": true,
-                    "description": {
-                        "zh": "收件邮箱地址",
-                        "en": "Recipient email address"
-                    }
-                },
-                {
-                    "name": "subject",
-                    "type": "string",
-                    "required": false,
-                    "description": {
-                        "zh": "邮件主题，默认按类型和版本自动生成",
-                        "en": "Subject; auto-generated from kind and version if omitted"
-                    }
-                },
-                {
-                    "name": "kind",
-                    "type": "string",
-                    "required": false,
-                    "description": {
-                        "zh": "反馈类型：bug（问题反馈，默认）/ feature（功能建议）",
-                        "en": "Feedback type: bug (default) or feature"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "subagent_open_url",
-            "description": {
-                "zh": "用系统浏览器打开链接。WebView 不能直接跳外链，必须走后端。只放行本仓库相关地址",
-                "en": "Open a URL in the system browser. WebView cannot navigate external links directly"
-            },
-            "parameters": [
-                {
-                    "name": "url",
-                    "type": "string",
-                    "required": true,
-                    "description": {
-                        "zh": "要打开的 https 链接（限本仓库相关）",
-                        "en": "https URL to open (repo-related only)"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "subagent_trace",
-            "description": {
-                "zh": "看任务逐步明细：思考、正文、工具调用与结果摘要",
-                "en": "Step-by-step trace"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": "任务 id",
-                    "required": true
-                },
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "description": "最近 N 步，默认 10",
-                    "required": false
-                }
-            ]
-        },
-        {
-            "name": "subagent_workspace",
-            "description": {
-                "zh": "私有工作区：action=init 建好工作区目录；action=info 列出文件树与体积（按大小降序），方便主/子代理清理废弃文件",
-                "en": "Private workspace: init or list files with sizes for cleanup"
-            },
-            "parameters": [
-                { "name": "action", "type": "string", "description": "info（默认）/ init", "required": false },
-                { "name": "path", "type": "string", "description": "要列的子目录，默认工作区根", "required": false },
-                { "name": "depth", "type": "number", "description": "递归深度 1-4，默认 2", "required": false },
-                { "name": "max_files", "type": "number", "description": "最多返回条目数 10-400，默认 120", "required": false }
-            ]
-        },
-        {
-            "name": "subagent_list_dir",
-            "description": {
-                "zh": "列出一个目录下的子目录与文件（含各自体积），供面板做文件树",
-                "en": "List dirs and files with sizes for the folder picker"
-            },
-            "parameters": [
-                { "name": "path", "type": "string", "description": "目录路径", "required": true }
-            ]
-        },
-        {
-            "name": "subagent_check_path",
-            "description": {
-                "zh": "检查路径是否存在、是文件还是目录，并给出可作为 workspace 的目录",
-                "en": "Check whether a path exists / is dir, and suggest workspace dir"
-            },
-            "parameters": [
-                { "name": "path", "type": "string", "description": "要检查的路径", "required": true }
-            ]
-        },
-        {
-            "name": "subagent_save_turn",
-            "description": {
-                "zh": "面板流式结束后把这一轮助手/工具消息落盘，保证刷新后不丢；同时累计步数与用量，done=true 时进收件箱",
-                "en": "Persist a streamed turn so it survives reload"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": { "zh": "任务 id", "en": "task id" }
-                },
-                {
-                    "name": "turns",
-                    "type": "array",
-                    "description": { "zh": "要追加的消息数组", "en": "turns to append" }
-                },
-                {
-                    "name": "done",
-                    "type": "boolean",
-                    "description": { "zh": "这一轮是否已结束（true 则置 done）", "en": "mark task done" }
-                },
-                {
-                    "name": "usage",
-                    "type": "object",
-                    "description": { "zh": "本步用量 {in,out} 或 {prompt_tokens,completion_tokens}，用于累计 token 与花费", "en": "token usage of this step" },
-                    "required": false
-                },
-                {
-                    "name": "finish_reason",
-                    "type": "string",
-                    "description": { "zh": "本步结束原因（stop / tool_calls / length）", "en": "finish reason" },
-                    "required": false
-                }
-            ]
-        },
-        {
-            "name": "subagent_stream_flush",
-            "description": {
-                "zh": "流式增量落盘：把 status 置 running 并保存当前已生成的思考/正文。面板流式过程中定时调用，保证退出再进来内容还在、状态不是「待开始」",
-                "en": "Persist in-progress stream so it survives panel reload"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": { "zh": "任务 id", "en": "task id" }
-                },
-                {
-                    "name": "think",
-                    "type": "string",
-                    "description": { "zh": "当前累计的思考文本", "en": "accumulated reasoning" }
-                },
-                {
-                    "name": "body",
-                    "type": "string",
-                    "description": { "zh": "当前累计的正文文本", "en": "accumulated content" }
-                }
-            ]
-        },
-        {
-            "name": "subagent_tool_once",
-            "description": {
-                "zh": "面板流式循环用：执行单个工具（白名单与写入范围校验与后端一致）",
-                "en": "Run a single tool for the panel streaming loop"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": { "zh": "任务 id，用于取白名单与写入根", "en": "task id" }
-                },
-                {
-                    "name": "tool",
-                    "type": "string",
-                    "description": { "zh": "工具名", "en": "tool name" }
-                },
-                {
-                    "name": "args",
-                    "type": "object",
-                    "description": { "zh": "该工具的参数对象", "en": "tool args" }
-                }
-            ]
-        },
-        {
-            "name": "subagent_stream_ctx",
-            "description": {
-                "zh": "给面板流式直连用：返回端点、模型、请求头、思考字段与工具 schema（密钥单独取）",
-                "en": "Return endpoint/model/headers/tool schema for panel streaming"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": { "zh": "任务 id，用于取该任务的白名单与思考等级", "en": "task id" }
-                }
-            ]
-        },
-        {
-            "name": "subagent_stream_key",
-            "description": {
-                "zh": "仅本机面板直连时取密钥（不回显给对话，只在页面内存里用）",
-                "en": "Hand api key to the local panel for direct streaming"
-            },
-            "parameters": []
-        },
-        {
-            "name": "subagent_stream_relay",
-            "description": {
-                "zh": "http 局域网端点的流式中继：后端取整包 SSE 并解析成块，供面板回放（https 端点走前端直连，不用它）",
-                "en": "Relay SSE for http LAN endpoints: fetch whole SSE and split into replayable chunks"
-            },
-            "parameters": [
-                {
-                    "name": "id",
-                    "type": "string",
-                    "description": { "zh": "任务 id，用于取该任务的模型配置", "en": "task id" }
-                },
-                {
-                    "name": "body",
-                    "type": "object",
-                    "description": { "zh": "可选：页面已拼好的请求体；不传则后端按配置现拼", "en": "optional prebuilt request body" }
-                }
-            ]
-        },
-        {
-            "name": "subagent_chats",
-            "description": {
-                "zh": "列出 Operit 里的对话（按最近更新），供面板选择「附带哪个对话的上下文」",
-                "en": "List Operit chats for context injection selection"
-            },
-            "parameters": [
-                {
-                    "name": "limit",
-                    "type": "number",
-                    "description": { "zh": "返回条数，默认 30，最多 100", "en": "Max chats, default 30" }
-                },
-                {
-                    "name": "query",
-                    "type": "string",
-                    "description": { "zh": "按标题过滤（不区分大小写）", "en": "Filter by title" }
-                }
-            ]
-        },
-        {
-            "name": "subagent_tools",
-            "description": {
-                "zh": "列出可授权的宿主工具与已启用包（供面板选择）",
-                "en": "List host tools and enabled packages"
-            },
-            "parameters": []
-        },
-        {
-            "name": "subagent_vendor_js",
-            "description": {
-                "zh": "外接资源读取：读数据目录 vendor/ 下的 js/css 文件文本（如 katex.min.js），供面板注入。仅限 base_dir/vendor/ 内、扩展名 js/css，防路径逃逸",
-                "en": "Read vendored js/css from data dir vendor/"
-            },
-            "parameters": [
-                {
-                    "name": "name",
-                    "type": "string",
-                    "description": "文件名，如 katex.min.js / katex.min.css；只允许字母数字点横杠下划线",
-                    "required": true
-                }
-            ]
-        },
-        {
-            "name": "subagent_skill",
-            "description": {
-                "zh": "看可用 skill 与读 skill 全文：action=list 列清单（name + description），action=read 读某个 SKILL.md 全文。扫两个目录：/sdcard/Download/Operit/subagent/skills（子代理独立，优先）与 /sdcard/Download/Operit/skills（主 agent 共享，只读）",
-                "en": "List or read skills from subagent's own dir and the shared main dir"
-            },
-            "parameters": [
-                {
-                    "name": "action",
-                    "type": "string",
-                    "description": "list（默认）看清单 / read 读全文",
-                    "required": false
-                },
-                {
-                    "name": "name",
-                    "type": "string",
-                    "description": "skill 名（action=read 时必填）。只允许字母数字点横杠下划线中文空格",
-                    "required": false
-                }
-            ]
+          "name": "template_id",
+          "type": "string",
+          "description": "套用配置里的模板",
+          "required": false
         }
-    ]
+      ]
+    },
+    {
+      "name": "subagent_run",
+      "description": {
+        "zh": "推进已有任务：wait=false 推 max_steps 步（上限3）；wait=true 在 budget 内推到完成。返回 unfinished/next 时任务没失败，继续调本工具即可。",
+        "en": "推进已有任务：wait=false 推 max_steps 步（上限3）；wait=true 在 budget 内推到完成。返回 unfinished/next 时任务没失败，继续调本工具即可。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id（spawn 返回的）",
+          "required": true
+        },
+        {
+          "name": "wait",
+          "type": "boolean",
+          "description": "true=推到完成再返回；false=推 max_steps 步就返回",
+          "required": false
+        },
+        {
+          "name": "budget",
+          "type": "number",
+          "description": "wait=true 时最长等待毫秒，默认 30000 最大 60000",
+          "required": false
+        },
+        {
+          "name": "max_steps",
+          "type": "number",
+          "description": "wait=false 时最多推几步 1-3，默认 1",
+          "required": false
+        },
+        {
+          "name": "detail",
+          "type": "string",
+          "description": "brief/standard/full/trace",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_get",
+      "description": {
+        "zh": "取任务产出：不传 id 列全部任务概览；传 id 按 detail 返回——brief=只留结论800字 / standard=4000字 / full=20000字 / trace=逐步明细（配合 limit）。取结论会顺带清掉收件箱未读。",
+        "en": "取任务产出：不传 id 列全部任务概览；传 id 按 detail 返回——brief=只留结论800字 / standard=4000字 / full=20000字 / trace=逐步明细（配合 limit）。取结论会顺带清掉收件箱未读。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id；不传则列全部任务概览",
+          "required": false
+        },
+        {
+          "name": "ids",
+          "type": "string",
+          "description": "逗号分隔多个 id，合并返回",
+          "required": false
+        },
+        {
+          "name": "detail",
+          "type": "string",
+          "description": "brief/standard/full/trace，默认 standard",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "description": "detail=trace 时取最近几步，默认 10",
+          "required": false
+        },
+        {
+          "name": "max_chars",
+          "type": "number",
+          "description": "结论截断长度",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_ctrl",
+      "description": {
+        "zh": "改任务状态：action=cancel(请求停止)/resume(拉回可推)/steer(追加指令,配 message)/close(关闭,可 rollback 先恢复写入、drop_product 删产物)。各 action 的参数严格校验，传错直接报错。",
+        "en": "改任务状态：action=cancel(请求停止)/resume(拉回可推)/steer(追加指令,配 message)/close(关闭,可 rollback 先恢复写入、drop_product 删产物)。各 action 的参数严格校验，传错直接报错。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "description": "cancel/resume/steer/close",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "description": "action=steer 时必填：追加的指令",
+          "required": false
+        },
+        {
+          "name": "confirm",
+          "type": "boolean",
+          "description": "action=close 时 true 才真关",
+          "required": false
+        },
+        {
+          "name": "rollback",
+          "type": "boolean",
+          "description": "action=close 时先恢复写入",
+          "required": false
+        },
+        {
+          "name": "drop_product",
+          "type": "boolean",
+          "description": "action=close 时删产物目录",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_del",
+      "description": {
+        "zh": "删任务：任务文件+产物目录+快照+收件箱条目。confirm=true 才真删。",
+        "en": "删任务：任务文件+产物目录+快照+收件箱条目。confirm=true 才真删。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "confirm",
+          "type": "boolean",
+          "description": "true 才真删",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_undo",
+      "description": {
+        "zh": "列出或恢复该任务写过的文件（写前状态备份）。dry_run=true 只看不改。",
+        "en": "列出或恢复该任务写过的文件（写前状态备份）。dry_run=true 只看不改。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "dry_run",
+          "type": "boolean",
+          "description": "默认 true 只列不改",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_box",
+      "description": {
+        "zh": "收件箱：未读子代理结论（只有 agent 产出且成功的任务才入箱；删任务自动出箱）。action=read 清空。",
+        "en": "收件箱：未读子代理结论（只有 agent 产出且成功的任务才入箱；删任务自动出箱）。action=read 清空。"
+      },
+      "parameters": [
+        {
+          "name": "action",
+          "type": "string",
+          "description": "read=清空收件箱；不传=list",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_update",
+      "description": {
+        "zh": "自更新：step=check(查新版)/download(下载包)/status(下载进度)/install(安装,配 path)。",
+        "en": "自更新：step=check(查新版)/download(下载包)/status(下载进度)/install(安装,配 path)。"
+      },
+      "parameters": [
+        {
+          "name": "step",
+          "type": "string",
+          "description": "check/download/status/install",
+          "required": true
+        },
+        {
+          "name": "force",
+          "type": "boolean",
+          "description": "跳过缓存",
+          "required": false
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "install 的包路径",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_cfg",
+      "description": {
+        "zh": "配置与模板：target=profile（action: status/set/key/models/list/add/use/rm；payload 改配置、api_key 写密钥、base 测端点、force 跳缓存）或 target=template（action: list/add/remove）。name 指定目标 profile 或模板。",
+        "en": "配置与模板：target=profile（action: status/set/key/models/list/add/use/rm；payload 改配置、api_key 写密钥、base 测端点、force 跳缓存）或 target=template（action: list/add/remove）。name 指定目标 profile 或模板。"
+      },
+      "parameters": [
+        {
+          "name": "target",
+          "type": "string",
+          "description": "profile（默认）/template",
+          "required": false
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "description": "profile: status/set/key/models/list/add/use/rm；template: list/add/remove",
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "description": "目标 profile 或模板名（add/use/rm 时用）",
+          "required": false
+        },
+        {
+          "name": "payload",
+          "type": "string",
+          "description": "JSON 配置或模板定义",
+          "required": false
+        },
+        {
+          "name": "api_key",
+          "type": "string",
+          "description": "写入密钥，不回显",
+          "required": false
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "description": "refresh_models 用哪个端点测",
+          "required": false
+        },
+        {
+          "name": "force",
+          "type": "boolean",
+          "description": "跳过模型缓存",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_env",
+      "description": {
+        "zh": "环境探测：what=probe(分层测连通)/version/chats(列对话)/tools(列可授权工具)/workspace(info/init)/dir(列目录)/path(查路径)。",
+        "en": "环境探测：what=probe(分层测连通)/version/chats(列对话)/tools(列可授权工具)/workspace(info/init)/dir(列目录)/path(查路径)。"
+      },
+      "parameters": [
+        {
+          "name": "what",
+          "type": "string",
+          "description": "probe/version/chats/tools/workspace/dir/path",
+          "required": true
+        },
+        {
+          "name": "deep",
+          "type": "boolean",
+          "description": "probe: 是否真发一次最小对话",
+          "required": false
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "description": "probe: 只测该模型",
+          "required": false
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "description": "probe: 只测该端点",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "description": "chats: 条数",
+          "required": false
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "description": "chats: 标题过滤",
+          "required": false
+        },
+        {
+          "name": "action",
+          "type": "string",
+          "description": "workspace: info/init",
+          "required": false
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "dir/path/workspace: 目录",
+          "required": false
+        },
+        {
+          "name": "depth",
+          "type": "number",
+          "description": "workspace: 深度 1-4",
+          "required": false
+        },
+        {
+          "name": "max_files",
+          "type": "number",
+          "description": "workspace: 上限条数",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_skill",
+      "description": {
+        "zh": "看可用 skill 与读全文：action=list 列清单 / read 读 SKILL.md。",
+        "en": "看可用 skill 与读全文：action=list 列清单 / read 读 SKILL.md。"
+      },
+      "parameters": [
+        {
+          "name": "action",
+          "type": "string",
+          "description": "list（默认）/read",
+          "required": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "description": "read 时必填，skill 名",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_open_mail",
+      "description": {
+        "zh": "调起系统邮件应用写反馈信（WebView 不支持 mailto）。",
+        "en": "调起系统邮件应用写反馈信（WebView 不支持 mailto）。"
+      },
+      "parameters": [
+        {
+          "name": "email",
+          "type": "string",
+          "description": "收件邮箱",
+          "required": true
+        },
+        {
+          "name": "subject",
+          "type": "string",
+          "description": "主题，缺省按类型生成",
+          "required": false
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "description": "bug/feature",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_open_url",
+      "description": {
+        "zh": "系统浏览器打开本仓库相关链接。",
+        "en": "系统浏览器打开本仓库相关链接。"
+      },
+      "parameters": [
+        {
+          "name": "url",
+          "type": "string",
+          "description": "https 链接（限本仓库相关）",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "subagent_vendor_js",
+      "description": {
+        "zh": "读 vendor/ 下 js/css（如 katex），供面板注入，防路径逃逸。",
+        "en": "读 vendor/ 下 js/css（如 katex），供面板注入，防路径逃逸。"
+      },
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "文件名，如 katex.min.js",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "subagent_save_turn",
+      "description": {
+        "zh": "【面板内部】流式结束后落盘一轮消息并累计用量。",
+        "en": "【面板内部】流式结束后落盘一轮消息并累计用量。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "turns",
+          "type": "array",
+          "description": "消息数组",
+          "required": true
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "description": "是否结束",
+          "required": true
+        },
+        {
+          "name": "usage",
+          "type": "object",
+          "description": "token 用量",
+          "required": false
+        },
+        {
+          "name": "finish_reason",
+          "type": "string",
+          "description": "stop/tool_calls/length",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "subagent_stream_flush",
+      "description": {
+        "zh": "【面板内部】流式增量落盘，保状态与草稿。",
+        "en": "【面板内部】流式增量落盘，保状态与草稿。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "think",
+          "type": "string",
+          "description": "累计思考",
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "description": "累计正文",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "subagent_tool_once",
+      "description": {
+        "zh": "【面板内部】执行单个工具（白名单与写边界与后端一致）。",
+        "en": "【面板内部】执行单个工具（白名单与写边界与后端一致）。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "tool",
+          "type": "string",
+          "description": "工具名",
+          "required": true
+        },
+        {
+          "name": "args",
+          "type": "object",
+          "description": "参数对象",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "subagent_stream_ctx",
+      "description": {
+        "zh": "【面板内部】返回端点/模型/请求头/工具 schema。",
+        "en": "【面板内部】返回端点/模型/请求头/工具 schema。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "subagent_stream_key",
+      "description": {
+        "zh": "【面板内部】取密钥（不回显）。",
+        "en": "【面板内部】取密钥（不回显）。"
+      },
+      "parameters": []
+    },
+    {
+      "name": "subagent_stream_relay",
+      "description": {
+        "zh": "【面板内部】http 端点 SSE 中继。",
+        "en": "【面板内部】http 端点 SSE 中继。"
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "任务 id",
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "object",
+          "description": "预构建请求体",
+          "required": false
+        }
+      ]
+    }
+  ]
 }
- */
+*/
+
 "use strict";
 
 var CFG = require("./sb_config.js");
@@ -1003,13 +815,22 @@ exports.subagent_spawn = async function (params) {
     params = params || {};
     var cfg = await CFG.load();
     var taskText = String(params.task == null ? "" : params.task).trim();
-    var allowed = parseList(params.allowed_tools);
+    /* 【第七十九轮】新参数名 tools 和旧名 allowed_tools 都认。
+       METADATA 已改成 tools，但面板与老的外部调用还在用 allowed_tools，
+       只认新名会让「按新声明传参」的调用拿到空白名单 —— 任务一个工具都没有。 */
+    var allowed = parseList(params.tools != null ? params.tools : params.allowed_tools);
     /* all=true：放开全部工具。语义定调（2026-11-07 用户拍板）：
        留空 = 一个工具都用不了（空数组，白名单全拒）；
        要全放开必须显式传 all=true → 内部变成 ["*"]。
        "*" 在 sb_llm.runToolSchema 里会展开 sb_toolmeta 全表 + 留 run_tool 兜底表外包；
        在 sb_tools.matchAllowed 里匹配一切；但 isRecursive 仍会硬拦递归派子代理。 */
     if (params.all === true) allowed = ["*"];
+    /* 【第七十九轮】tools="*" 等同于 old all=true。
+       METADATA 里 all 已删掉，改由 tools 传 * 表达「全放开」，
+       但面板与老调用仍可能传 all=true —— 两条都认。 */
+    for (var ai = 0; ai < allowed.length; ai++) {
+        if (String(allowed[ai]).trim() === "*") { allowed = ["*"]; break; }
+    }
     var template = null;
     if (params.template_id) {
         var tpls = cfg.templates || [];
@@ -1158,28 +979,35 @@ exports.subagent_spawn = async function (params) {
         group: params.group
     });
 
-    var waitMs = Math.min(Number(params.wait_ms || 30000), Number(cfg.wait_max_ms || 60000));
+    /* 【第七十九轮】新名 wait / budget 与旧名 sync / wait_ms 都认。
+       wait 不传 budget 时不再用默认 30 秒，而是「一直等到结束（失败除外）」，
+       用 deadline=0 表示不限。旧调用传了 sync+wait_ms 仍按老规矩跑，不会变慢。 */
+    var wantWait = (params.wait === true) || (params.sync === true);
+    var rawBudget = (params.budget != null) ? Number(params.budget) : ((params.wait_ms != null) ? Number(params.wait_ms) : 0);
+    var waitMs = rawBudget > 0 ? Math.min(rawBudget, Number(cfg.wait_max_ms || 60000)) : 0;
     /* 建完立刻置 running + phase=queued_next：
        用户看到的「待开始」是因为 createTask 写的是 queued，要等第一次 advance 才变 running。
        但任务实际上马上要跑，所以这里直接标成 running，面板立刻显示「思考中」而不是「待开始」。
        注意：不写 phase=llm，因为还没真发请求；用 queued_next 表示「已排上，马上开跑」。 */
-    if (params.sync !== true) {
+    if (!wantWait) {
         task.status = "running";
         task.phase = "queued_next";
         task.phase_at = Date.now();
         try { await TASK.saveTask(task); } catch (eSP) {}
     }
-    if (params.sync === true) {
-        var deadline = Date.now() + waitMs;
+    if (wantWait) {
+        /* waitMs=0 表示不设上限：一直推到 done/failed 或用户取消。
+           上限预算时到点返回中途结果 + unfinished 引导。 */
+        var deadline = waitMs > 0 ? (Date.now() + waitMs) : 0;
         var last = null;
         var lastMsg = "";
         var busyHits = 0;
-        while (Date.now() < deadline) {
+        while (!deadline || Date.now() < deadline) {
             var r2 = await TASK.advanceTask(cfg, task);
             notifyDone(r2 && r2.task);
             /* 【第七十五轮】busy 单独处理。
                并发时 advanceTask 返回 {ok:false, busy:true}，但任务本身在正常跑。
-               旧代码 `if (!r2.ok) break;` 会把它当失败跳出，
+               旧代码 if (!r2.ok) break; 会把它当失败跳出，
                把「别人正在推」报成「没在预算内完成」——两件完全不同的事。 */
             if (r2 && r2.busy) {
                 busyHits++;
@@ -1203,8 +1031,7 @@ exports.subagent_spawn = async function (params) {
         if (stCur === "done") msgOut = "子代理完成（" + cur.step + " 步）";
         else if (unfinished) {
             msgOut = "任务还在跑（已 " + cur.step + "/" + cur.max_steps + " 步），未在等待预算内完成。"
-                + "继续推进：subagent_advance(id=\"" + cur.id + "\")；"
-                + "或等结果：subagent_wait(id=\"" + cur.id + "\")";
+                + "继续推进：subagent_run(id=\"" + cur.id + "\", wait=true)";
         } else msgOut = (cur.error || lastMsg || "任务未完成");
         complete({
             success: stCur === "done",
@@ -1213,9 +1040,9 @@ exports.subagent_spawn = async function (params) {
                 task: briefOf(cur),
                 task_id: cur.id,
                 unfinished: unfinished,
-                next: unfinished ? "advance" : null,
-                summary: TASK.buildSummary(cur, params.summary_level || cur.summary_level, cur.last),
-                result: stCur === "done" ? TASK.buildResult(cur, params.result_level || cur.result_level) : null
+                next: unfinished ? "run" : null,
+                summary: TASK.buildSummary(cur, params.detail || params.result_level || params.summary_level || cur.summary_level, cur.last),
+                result: stCur === "done" ? TASK.buildResult(cur, params.detail || params.result_level || cur.result_level) : null
             }
         });
         return;
@@ -1226,10 +1053,10 @@ exports.subagent_spawn = async function (params) {
        与 sb_hook.js 的「参数纪律」提示保持一致。 */
     var emptyTip = "";
     if (!allowed.length) {
-        emptyTip = "（注意：allowed_tools 为空，这个子代理没有任何工具可用，只能凭上下文空想。"
-            + "要让它读文件请传 allowed_tools=\"read_file\"，要全放开传 all=true）";
+        emptyTip = "（注意：tools 为空，这个子代理没有任何工具可用，只能凭上下文空想。"
+            + "要让它读文件请传 tools=\"read_file\"，要全放开传 tools=\"*\"）";
     }
-    complete({ success: true, message: "已建任务 " + task.id + emptyTip + inboxSuffix(), data: { task: briefOf(task), next: "advance", allowed_count: allowed.length } });
+    complete({ success: true, message: "已建任务 " + task.id + emptyTip + inboxSuffix(), data: { task: briefOf(task), next: "run", allowed_count: allowed.length } });
 };
 
 exports.subagent_advance = async function (params) {
@@ -2331,7 +2158,9 @@ exports.subagent_tools = async function () {
 exports.subagent_list_dir = async function (params) {
     params = params || {};
     var p = String(params.path == null ? "/sdcard" : params.path).trim() || "/sdcard";
-    if (p.charAt(0) !== "/") p = "/" + p.replace(/^\.+\/*/, "");
+    /* 注意：正则里不要直接写斜杠加星号那两个字，会被当成块注释开始，整个文件解析失败。
+       改成字符类规避。 */
+    if (p.charAt(0) !== "/") p = "/" + p.replace(/^\.+[/]*/, "");
     var r = null, errText = "";
     try { r = await Tools.Files.list(p, "android"); } catch (e) { errText = (e && e.message) ? e.message : String(e); }
     if (!r || !r.entries) { complete({ success: false, message: "列目录失败：" + (errText || "接口无返回"), data: { path: p } }); return; }
@@ -2552,5 +2381,384 @@ exports.subagent_open_mail = async function (params) {
 exports.subagent_open_url = async function (params) {
     params = params || {};
     var r = await UPD.openUrl({ url: params.url });
-    complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
+complete({ success: !!r.ok, message: r.msg, data: r.data || {} });
+};
+
+/* ─────────────────────────────────────────────────────────────
+   【第七十九轮】大类 dispatch 层（37 → 16，用户定的 MC 指令风格）
+
+   设计（plan 第七十九轮）：
+   - 不重写函数体：旧 exports 函数是验证过的正确实现，新工具解析大类
+     参数后调用旧函数（经内部包装，绕过 complete 的重复调用）。
+   - 新旧并存：METADATA 只列 16 个新名（宿主按 METADATA 给模型暴露工具）；
+     面板走 callTool 直接调旧名，不经 METADATA，不受影响。
+   - 参数白名单：ctrl 等多 action 工具，传了不属于该 action 的参数
+     必须明确报错（用户定过：不能静默忽略，否则模型以为生效了）。
+
+   注意：这里复用旧函数的方式是「直接调用 exports 函数并拦截 complete」。
+   complete 是宿主注入的全局，无法拦截 —— 因此旧函数需要可以无副作用地
+   被调用，返回值经由 complete 输出。dispatch 层不能这样复用。
+   替代方案：把旧函数体里 complete 前的「计算部分」没有抽出来过，
+   所以 dispatch 层改为【转发参数 + 信任旧函数】不可行。
+   最终方案：dispatch 层自带核心逻辑（ advance 循环 / get 分流 / ctrl 分流），
+   直接调 TASK / BUS / TOOLS 等底层模块 —— 与旧函数同源但不经过旧 exports。
+   旧 exports 保持原名不动（面板用）。
+   ───────────────────────────────────────────────────────────── */
+var ADV = require("./sb_task.js");
+var CFGM = require("./sb_config.js");
+
+/* 通用：参数白名单校验
+   入：params 对象, 允许的参数名数组, action 名（用于报错文案）
+   出：null = 通过；字符串 = 错误信息 */
+function _wlCheck(params, allowed, actionName) {
+    var extra = [];
+    for (var k in params) {
+        if (!Object.prototype.hasOwnProperty.call(params, k)) continue;
+        if (k === "id" || k === "action" || k === "target") continue;  // 公共参数
+        /* 【第七十九轮】宿主注入的内部键放行：每次工具调用 Operit 都会自动带上
+           __operit_* 系列与 containerPackageName/toolPkgId 等，这些不是模型传的，
+           不能拦。以 __operit_ 前缀或已知宿主键名识别。 */
+        if (k.indexOf("__operit_") === 0) continue;
+        if (k === "containerPackageName" || k === "toolPkgId") continue;
+        if (allowed.indexOf(k) < 0) extra.push(k);
+    }
+    if (extra.length) {
+        return "action=" + actionName + " 不接受参数：" + extra.join(", ")
+            + "（该 action 只接受：" + allowed.join(", ") + "）。参数传错会被忽略造成误解，所以这里直接报错。";
+    }
+    return null;
+}
+
+/* ── run：推进任务（原 advance + wait 合并） ──
+   id 必填。wait=false 推 max_steps 步（上限 3）；wait=true 在 budget 内推到终态。
+   budget 缺省 30000、最大 60000（wait=true 时生效）。detail 控制进度摘要。 */
+exports.subagent_run = async function (params) {
+    params = params || {};
+    var cfg = await CFG.load();
+    var id = String(params.id || "");
+    if (!id) { complete({ success: false, message: "缺少 id（先从 spawn 的返回里拿）", data: {} }); return; }
+    var wait = params.wait === true;
+    var detail = String(params.detail || "standard");
+    if (!wait) {
+        var wl = _wlCheck(params, ["steps", "detail", "max_steps"], "run(wait=false)");
+        if (wl) { complete({ success: false, message: wl, data: {} }); return; }
+        /* 复用旧 advance 逻辑：直接走 exports（它内部会 complete）——不可行，
+           所以这里手动做一轮 advance 的等价物：调 TASK.advanceTask 后自己 complete。 */
+        var task = await TASK.loadTask(id);
+        if (!task) { complete({ success: false, message: "找不到任务 " + id, data: {} }); return; }
+        var n = Math.max(1, Math.min(3, Number(params.max_steps || 1)));
+        var last = null;
+        for (var i = 0; i < n; i++) {
+            last = await TASK.advanceTask(cfg, task);
+            task = last.task || task;
+            if (task.status === "done" || task.status === "failed" || task.status === "cancelled") break;
+        }
+        notifyDone(task);
+        complete({
+            success: !!last && !!last.ok,
+            message: (last ? (last.message || "已推进") : "无变化") + inboxSuffix(),
+            data: {
+                task: briefOf(task),
+                summary: TASK.buildSummary(task, detail === "brief" ? "t0" : (detail === "full" ? "t2" : "t1"), task.last),
+                result: task.status === "done" ? TASK.buildResult(task, detail) : null
+            }
+        });
+        return;
+    }
+    /* wait=true：循环推到终态或 budget 尽 */
+    var wl2 = _wlCheck(params, ["budget", "detail"], "run(wait=true)");
+    if (wl2) { complete({ success: false, message: wl2, data: {} }); return; }
+    var budget = Math.min(Number(params.budget || 30000), Number((await CFG.load()).wait_max_ms || 60000));
+    var deadline = Date.now() + budget;
+    var taskW = await TASK.loadTask(id);
+    if (!taskW) { complete({ success: false, message: "找不到任务 " + id, data: {} }); return; }
+    var lastW = null, lastMsg = "", busyHits = 0;
+    while (Date.now() < deadline) {
+        var r = await TASK.advanceTask(cfg, taskW);
+        notifyDone(r && r.task);
+        if (r && r.busy) {
+            busyHits++;
+            if (busyHits > 60) { lastMsg = String(r.message || "任务持续被其他处推进"); break; }
+            await new Promise(function (rr) { setTimeout(rr, 800); });
+            continue;
+        }
+        lastW = r;
+        lastMsg = String(r.message || lastMsg || "");
+        taskW = r.task || taskW;
+        if (taskW.status === "done" || taskW.status === "failed" || taskW.status === "cancelled") break;
+        if (!r.ok) break;
+    }
+    var cur = (lastW && lastW.task) ? lastW.task : taskW;
+    var stCur = String(cur.status || "");
+    var unfinished = (stCur !== "done" && stCur !== "failed" && stCur !== "cancelled");
+    var msgOut;
+    if (stCur === "done") msgOut = "子代理完成（" + cur.step + " 步）";
+    else if (unfinished) {
+        msgOut = "任务还在跑（已 " + cur.step + "/" + cur.max_steps + " 步），未在预算内完成。"
+            + "继续：subagent_run(id=\"" + cur.id + "\", wait=true)";
+    } else msgOut = (cur.error || lastMsg || "任务未完成");
+    complete({
+        success: stCur === "done",
+        message: msgOut + inboxSuffix(),
+        data: {
+            task: briefOf(cur),
+            task_id: cur.id,
+            unfinished: unfinished,
+            next: unfinished ? "run" : null,
+            summary: TASK.buildSummary(cur, detail === "brief" ? "t0" : (detail === "full" ? "t2" : "t1"), cur.last),
+            result: stCur === "done" ? TASK.buildResult(cur, detail) : null
+        }
+    });
+};
+
+/* ── get：取产出（原 result + trace + status + list） ──
+   不传 id/ids → 列全部任务概览（原 status 无 id / list）。
+   传 id → detail 决定：brief/standard/full = 结论；trace = 逐步明细（limit 生效）。 */
+exports.subagent_get = async function (params) {
+    params = params || {};
+    var ids = [];
+    if (params.ids) ids = parseList(params.ids);
+    if (!ids.length && params.id) ids = [String(params.id)];
+    var detail = String(params.detail || "standard");
+    /* 分支一：列全部 */
+    if (!ids.length) {
+        var wl0 = _wlCheck(params, [], "get(列表)");
+        if (wl0) { complete({ success: false, message: wl0, data: {} }); return; }
+        var all = await TASK.listTasks();
+        var unreadN = 0;
+        try { unreadN = BUS.list().length; } catch (eU) { unreadN = 0; }
+        var items = [];
+        for (var i = 0; i < all.length; i++) items.push(briefOf(all[i], unreadN));
+        complete({ success: true, message: "共 " + items.length + " 个任务", data: { items: items, total: items.length } });
+        return;
+    }
+    /* 分支二：trace */
+    if (detail === "trace") {
+        var wlT = _wlCheck(params, ["detail", "limit", "max_chars"], "get(detail=trace)");
+        if (wlT) { complete({ success: false, message: wlT, data: {} }); return; }
+        var t = await TASK.loadTask(ids[0]);
+        if (!t) { complete({ success: false, message: "找不到任务", data: {} }); return; }
+        var lim = Math.max(1, Math.min(50, Number(params.limit || 10)));
+        /* 【第七十九轮】clipText：旧 subagent_trace 有、合并后丢了。简单截断带省略号。 */
+        function clipText(s, n) { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; }
+        var turns = (t.turns || []).slice(-lim * 3);
+        var steps = [];
+        for (var k = 0; k < turns.length; k++) {
+            var m = turns[k] || {};
+            if (m.role === "assistant") steps.push({ kind: "text", head: clipText(String(m.content || ""), 200) });
+            else if (m.role === "tool") steps.push({ kind: "tool", tool: m.name, ok: !!m.ok, head: clipText(String(m.content || ""), 150) });
+        }
+        complete({ success: true, message: "最近 " + steps.length + " 条明细", data: { task: briefOf(t), steps: steps } });
+        return;
+    }
+    /* 分支三：结论（单个或多个） */
+    var wlR = _wlCheck(params, ["max_chars"], "get(结论)");
+    if (wlR) { complete({ success: false, message: wlR, data: {} }); return; }
+    var outs = [];
+    var allDone = true;
+    for (var j = 0; j < ids.length; j++) {
+        var tid = ids[j];
+        if (params.id) { try { BUS.remove(tid); } catch (eR) {} }
+        var tt = await TASK.loadTask(tid);
+        if (!tt) { outs.push({ id: tid, ok: false, error: "找不到任务" }); allDone = false; continue; }
+        if (tt.status !== "done") allDone = false;
+        var text = tt.status === "done" ? TASK.buildResult(tt, detail) : null;
+        if (text && params.max_chars) text = clip(text, Number(params.max_chars));
+        outs.push({ id: tt.id, ok: tt.status === "done", status: tt.status, steps: tt.step, usage: tt.usage, result: text, task: briefOf(tt) });
+    }
+    var merged = ids.length > 1 ? outs.map(function (o) { return "== " + o.id + " ==\n" + (o.result || "（未完成：" + o.status + "）"); }).join("\n\n") : null;
+    complete({ success: true, message: allDone ? ("已取回 " + outs.length + " 个任务结论") : "有任务未完成（结果仍返回）", data: { all_done: allDone, items: outs, merged: merged } });
+};
+
+/* ── ctrl：改运行状态（原 cancel + resume + steer + close） ──
+   action 四值，参数白名单严格校验。 */
+exports.subagent_ctrl = async function (params) {
+    params = params || {};
+    var cfg = await CFG.load();
+    var id = String(params.id || "");
+    if (!id) { complete({ success: false, message: "缺少 id", data: {} }); return; }
+    var action = String(params.action || "");
+    var t = await TASK.loadTask(id);
+    if (!t && action !== "resume") { complete({ success: false, message: "找不到任务 " + id, data: {} }); return; }
+    if (action === "cancel") {
+        var wlC = _wlCheck(params, [], "ctrl(cancel)");
+        if (wlC) { complete({ success: false, message: wlC, data: {} }); return; }
+        if (!t) { complete({ success: false, message: "找不到任务", data: {} }); return; }
+        t.cancel = true;
+        await TASK.saveTask(t);
+        complete({ success: true, message: "已请求停止（下一步生效）", data: { id: t.id, status: t.status, next: "run" } });
+        return;
+    }
+    if (action === "resume") {
+        var wlRs = _wlCheck(params, [], "ctrl(resume)");
+        if (wlRs) { complete({ success: false, message: wlRs, data: {} }); return; }
+        if (!t) { complete({ success: false, message: "找不到任务 " + id, data: {} }); return; }
+        t.status = "queued"; t.cancel = false; t.error = null;
+        await TASK.saveTask(t);
+        complete({ success: true, message: "已恢复", data: { id: t.id, status: t.status, next: "run" } });
+        return;
+    }
+    if (action === "steer") {
+        var wlSt = _wlCheck(params, ["message"], "ctrl(steer)");
+        if (wlSt) { complete({ success: false, message: wlSt, data: {} }); return; }
+        if (!t) { complete({ success: false, message: "找不到任务", data: {} }); return; }
+        var r = await TASK.steerTask(cfg, t, String(params.message || ""));
+        complete({ success: r.ok, message: r.message, data: { id: t.id, step: t.step, status: t.status, next: r.ok ? "run" : null } });
+        return;
+    }
+    if (action === "close") {
+        var wlCl = _wlCheck(params, ["confirm", "rollback", "drop_product"], "ctrl(close)");
+        if (wlCl) { complete({ success: false, message: wlCl, data: {} }); return; }
+        if (!t) { complete({ success: false, message: "找不到任务", data: {} }); return; }
+        if (params.confirm !== true) {
+            var undo0 = await TASK.loadUndo(t.id);
+            complete({
+                success: true,
+                message: "未关闭：已返回当前进度。确认关闭传 confirm=true",
+                data: { need_confirm: true, task: briefOf(t), undo_count: (undo0.items || []).length }
+            });
+            return;
+        }
+        var restored = null;
+        if (params.rollback === true) {
+            var ctx = await loadCtx(cfg, t);
+            restored = await TOOLS.undoAll(ctx, false);
+            if (ctx.save) await ctx.save();
+        }
+        if (params.drop_product === true) {
+            try { await Tools.Files.deleteFile(t.product_dir, true, "android"); } catch (eD) {}
+        }
+        t.status = "closed";
+        await TASK.saveTask(t);
+        complete({ success: true, message: "已关闭" + (params.rollback === true ? "并回滚" : ""), data: { id: t.id, restored: restored } });
+        return;
+    }
+    complete({ success: false, message: "action 只支持 cancel / resume / steer / close，收到：" + action, data: {} });
+};
+
+/* ── box：收件箱（原 inbox） ── */
+exports.subagent_box = async function (params) {
+    params = params || {};
+    var wl = _wlCheck(params, ["action"], "box");
+    if (wl) { complete({ success: false, message: wl, data: {} }); return; }
+    return await exports.subagent_inbox(params);
+};
+
+/* ── undo：恢复写入（原 undo） ── */
+exports.subagent_undo = exports.subagent_undo;  // 原名保留，语义未变
+/* ── del：删任务（原 delete） —— dispatch 转发，逻辑在旧函数 ── */
+exports.subagent_del = async function (params) {
+    params = params || {};
+    var wl = _wlCheck(params, ["confirm"], "del");
+    if (wl) { complete({ success: false, message: wl, data: {} }); return; }
+    return await exports.subagent_delete({ id: params.id, confirm: params.confirm });
+};
+
+/* ── update：更新（原 check_update + download_update + download_status + install_update） ── */
+exports.subagent_update = async function (params) {
+    params = params || {};
+    var step = String(params.step || "check");
+    if (step === "check") {
+        var wl1 = _wlCheck(params, ["force"], "update(check)");
+        if (wl1) { complete({ success: false, message: wl1, data: {} }); return; }
+        return await exports.subagent_check_update({ force: params.force === true });
+    }
+    if (step === "download") {
+        var wl2 = _wlCheck(params, ["force"], "update(download)");
+        if (wl2) { complete({ success: false, message: wl2, data: {} }); return; }
+        return await exports.subagent_download_update({ force: params.force === true });
+    }
+    if (step === "status") {
+        var wl3 = _wlCheck(params, [], "update(status)");
+        if (wl3) { complete({ success: false, message: wl3, data: {} }); return; }
+        return await exports.subagent_download_status();
+    }
+    if (step === "install") {
+        var wl4 = _wlCheck(params, ["path"], "update(install)");
+        if (wl4) { complete({ success: false, message: wl4, data: {} }); return; }
+        return await exports.subagent_install_update({ path: params.path });
+    }
+    complete({ success: false, message: "step 只支持 check / download / status / install，收到：" + step, data: {} });
+};
+
+/* ── cfg：配置与模板（原 config + templates，target 消歧） ── */
+exports.subagent_cfg = async function (params) {
+    params = params || {};
+    var target = String(params.target || "profile");
+    if (target === "profile") {
+        /* 旧 config 的 action 映射：add_profile/set_profile/set_active/del_profile/list_profiles 简写 */
+        var a = String(params.action || "status");
+        var map = { list: "list_profiles", add: "add_profile", use: "set_active", rm: "del_profile", models: "refresh_models", set: "set", key: "key", status: "status" };
+        var oldA = map[a] || a;
+        var valid = ["status", "set", "key", "refresh_models", "list_profiles", "add_profile", "set_profile", "set_active", "del_profile"];
+        if (valid.indexOf(oldA) < 0) {
+            complete({ success: false, message: "cfg(target=profile) action 只支持 " + valid.join("/") + "（或简写 list/add/use/rm/models），收到：" + a, data: {} });
+            return;
+        }
+        var wlP = _wlCheck(params, ["payload", "api_key", "base", "force"], "cfg(profile)");
+        if (wlP) { complete({ success: false, message: wlP, data: {} }); return; }
+        return await exports.subagent_config({
+            action: oldA,
+            profile_id: params.name || "",
+            payload: params.payload,
+            api_key: params.api_key,
+            base_url: params.base,
+            force: params.force === true
+        });
+    }
+    if (target === "template") {
+        var ta = String(params.action || "list");
+        if (["list", "add", "remove"].indexOf(ta) < 0) {
+            complete({ success: false, message: "cfg(target=template) action 只支持 list/add/remove，收到：" + ta, data: {} });
+            return;
+        }
+        var wlT = _wlCheck(params, ["payload"], "cfg(template)");
+        if (wlT) { complete({ success: false, message: wlT, data: {} }); return; }
+        return await exports.subagent_templates({ action: ta, payload: params.payload, id: params.name || "" });
+    }
+    complete({ success: false, message: "target 只支持 profile / template，收到：" + target, data: {} });
+};
+
+/* ── env：环境探测（原 probe + version + chats + tools + workspace + list_dir + check_path） ── */
+exports.subagent_env = async function (params) {
+    params = params || {};
+    var what = String(params.what || "version");
+    if (what === "probe") {
+        var wl1 = _wlCheck(params, ["deep", "model", "base"], "env(probe)");
+        if (wl1) { complete({ success: false, message: wl1, data: {} }); return; }
+        return await exports.subagent_probe({ deep: params.deep !== false, model: params.model, base_url: params.base });
+    }
+    if (what === "version") {
+        var wl2 = _wlCheck(params, [], "env(version)");
+        if (wl2) { complete({ success: false, message: wl2, data: {} }); return; }
+        return await exports.subagent_version();
+    }
+    if (what === "chats") {
+        var wl3 = _wlCheck(params, ["limit", "query"], "env(chats)");
+        if (wl3) { complete({ success: false, message: wl3, data: {} }); return; }
+        return await exports.subagent_chats({ limit: params.limit, query: params.query });
+    }
+    if (what === "tools") {
+        var wl4 = _wlCheck(params, [], "env(tools)");
+        if (wl4) { complete({ success: false, message: wl4, data: {} }); return; }
+        return await exports.subagent_tools();
+    }
+    if (what === "workspace") {
+        var wl5 = _wlCheck(params, ["action", "path", "depth", "max_files"], "env(workspace)");
+        if (wl5) { complete({ success: false, message: wl5, data: {} }); return; }
+        return await exports.subagent_workspace({ action: params.action || "info", path: params.path, depth: params.depth, max_files: params.max_files });
+    }
+    if (what === "dir") {
+        var wl6 = _wlCheck(params, ["path"], "env(dir)");
+        if (wl6) { complete({ success: false, message: wl6, data: {} }); return; }
+        if (!params.path) { complete({ success: false, message: "env(what=dir) 需要 path", data: {} }); return; }
+        return await exports.subagent_list_dir({ path: params.path });
+    }
+    if (what === "path") {
+        var wl7 = _wlCheck(params, ["path"], "env(path)");
+        if (wl7) { complete({ success: false, message: wl7, data: {} }); return; }
+        if (!params.path) { complete({ success: false, message: "env(what=path) 需要 path", data: {} }); return; }
+        return await exports.subagent_check_path({ path: params.path });
+    }
+    complete({ success: false, message: "what 只支持 probe / version / chats / tools / workspace / dir / path，收到：" + what, data: {} });
 };

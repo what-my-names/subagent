@@ -72,7 +72,7 @@ A.eq('递归包工具仍被识别', TOOLS.isRecursive('subagent:subagent_spawn')
 var SUB = A.src('packages/subagent.js');
 A.nomatch('tool_once 不再 fallback', SUB, /var allowed = \(task && task\.allowed_tools && task\.allowed_tools\.length\)[\s\S]{0,80}?cfg\.default_allowed_tools/);
 A.match('spawn 支持 all 参数', SUB, /if \(params\.all === true\) allowed = \["\*"\]/);
-A.match('METADATA 声明了 all', SUB, /"name": "all",\s*\n\s*"type": "boolean"/);
+A.match('METADATA 声明了 tools 参数', SUB, /"name": "tools",\s*\n\s*"type": "string"/);
 A.match('allowed_tools 描述已改', SUB, /留空 = 一个工具都用不了/);
 
 /* ── 6. save_turn 必须记账（步数 / 用量 / 通知） ── */
@@ -100,7 +100,7 @@ A.match('relay 有 connect_timeout', SUB, /connect_timeout: 15000/);
 A.match('relay 有 read_timeout', SUB, /read_timeout: Math\.max\(30000/);
 
 /* ── 10. METADATA 参数与实现一致 ── */
-A.match('config 声明 profile_id', SUB, /"name": "profile_id"/);
+A.match('cfg 声明 target 消歧参数', SUB, /"name": "target"/);
 A.match('config action 描述含 set_active', SUB, /set_active/);
 
 /* ── 11. BUS.clear 返回条数 ── */
@@ -325,9 +325,10 @@ A.nomatch('不再提示重启', P, /重启 Operit 生效/);
 A.match('终态停轮询', P, /st === 'done' \|\| st === 'failed' \|\| st === 'missing'/);
 /* 工具注册 */
 var SA2 = A.src('packages/subagent.js');
-A.match('注册 check_update 工具', SA2, /"name": "subagent_check_update"/);
-A.match('注册 download_update 工具', SA2, /"name": "subagent_download_update"/);
-A.match('注册 download_status 工具', SA2, /"name": "subagent_download_status"/);
+A.match('update 大类已声明', SA2, /"name": "subagent_update"/);
+A.match('实现侧保留 check_update', SA2, /exports\.subagent_check_update/);
+A.match('实现侧保留 download_update', SA2, /exports\.subagent_download_update/);
+A.match('实现侧保留 download_status', SA2, /exports\.subagent_download_status/);
 /* ── 第三十一轮：下载到 Download + 自动安装 ── */
 A.match('下载目录改到 Download/Operit', UPDM, /var dir = "\/sdcard\/Download\/Operit"/);
 A.nomatch('不再写 baseDir/updates', UPDM, /var dir = CFG\.baseDir\(\) \+ "\/updates"/);
@@ -349,7 +350,7 @@ A.nomatch('返回不再带 need_restart', UPDM, /need_restart: true/);
 A.match('下载后默认自动安装', UPDM, /if \(params\.auto_install !== false\)/);
 A.match('自动安装调 installUpdate', UPDM, /inst = await installUpdate\(\{ path: path \}\)/);
 /* 工具与面板 */
-A.match('注册 install_update 工具', SA2, /"name": "subagent_install_update"/);
+A.match('实现侧保留 install_update', SA2, /exports\.subagent_install_update/);
 A.match('面板有立即安装按钮', A.src('ui/web/panel.html'), /data-act="updInstall"/);
 A.match('安装后提示已生效', P, /已写入 ' \+ d\.path/);
 A.match('未装上时显示手动安装', P, /ok && !installed/);
@@ -358,10 +359,10 @@ A.match('未装上时显示手动安装', P, /ok && !installed/);
 var realToolCount = (SA2.match(/"name": "subagent_/g) || []).length;
 /* 【第四十二轮】原来锁死 34，加工具就要改三处。改为动态比对：拿代码实际数量比对文档。 */
 A.chk('README 工具数与代码一致（' + realToolCount + ' 个）',
-  A.src('../README.md').indexOf('## 工具（' + realToolCount + ' 个）') >= 0);
+  A.src('../README.md').indexOf('## 工具（' + realToolCount + ' 个') >= 0);
 A.chk('README 文件说明与代码一致',
-  new RegExp('subagent\\.js\\s+' + realToolCount + ' 个工具的导出与声明').test(A.src('../README.md')));
-A.chk('实际工具数不少于 34（只增不减）', realToolCount >= 34);
+  new RegExp('subagent\\.js\\s+' + realToolCount + ' 个声明').test(A.src('../README.md')));
+A.chk('实际工具数不少于 20（合并后下限）', realToolCount >= 20);
 /* ── 第三十七轮：主页上滑彩蛋改为「整页上推」──
    旧版是从底部拉出一块板（egg-mask + egg-open），已整体废弃。
    新版是 viewport 裁切 + track 200% 两屏，track 上移 50% 露出彩蛋。 */
@@ -944,8 +945,14 @@ A.eq('拦 workflow:run', TL.isRecursive('workflow:run'), true);
 A.eq('放行 workflow:list', TL.isRecursive('workflow:workflow_list'), false);
 A.eq('仍放行 subagent_helper', TL.isRecursive('subagent_helper'), false);
 
+/* 【第七十九轮】新参数名与旧名都要认，否则模型按新 METADATA 传参会拿到空白名单 */
+A.match('spawn 认 tools 新名', A.src('packages/subagent.js'), /parseList\(params\.tools != null \? params\.tools : params\.allowed_tools\)/);
+A.match('spawn 认 wait 新名', A.src('packages/subagent.js'), /wantWait = \(params\.wait === true\) \|\| \(params\.sync === true\)/);
+A.match('spawn 认 budget 新名', A.src('packages/subagent.js'), /\(params\.budget != null\) \? Number\(params\.budget\)/);
+A.match('tools 传 * 等价全放开', A.src('packages/subagent.js'), /=== "\*"\) \{ allowed = \["\*"\]; break; \}/);
+A.match('wait 无 budget 时不设上限', A.src('packages/subagent.js'), /while \(!deadline \|\| Date\.now\(\) < deadline\)/);
 /* 【第七十三轮】allowed_tools 为空提示 */
-A.match('spawn 空 allowed 提示', A.src('packages/subagent.js'), /allowed_tools 为空，这个子代理没有任何工具可用/);
+A.match('spawn 空 tools 提示', A.src('packages/subagent.js'), /tools 为空，这个子代理没有任何工具可用/);
 /* 【第七十四轮】工具超时 + 循环检测 + cancel 逐步 + 转存扩 assistant */
 var TL2 = require(SRC + '/packages/sb_tools.js');
 A.eq('默认工具超时 120s', TL2.toolTimeoutOf({}), 120000);
@@ -970,11 +977,11 @@ A.eq('ctx 显式优先于工具自报', TL2.toolTimeoutOf({ tool_timeout_ms: 500
 A.eq('timeout_ms 下划线写法也认', TL2.toolTimeoutOf({}, 'x', { timeout_ms: 60000 }), 75000);
 A.match('runOne 把 name/args 传给超时函数', A.src('packages/sb_tools.js'), /toolTimeoutOf\(ctx, name, callArgs\)/);
 
-/* 【第七十五轮】sync 语义：unfinished / next / task_id / busy */
+/* 【第七十五轮】wait 语义：unfinished / next / task_id / busy */
 A.match('sync 补 unfinished 标志', A.src('packages/subagent.js'), /unfinished: unfinished/);
-A.match('sync 补 next 引导', A.src('packages/subagent.js'), /next: unfinished \? "advance" : null/);
+A.match('sync 补 next 引导', A.src('packages/subagent.js'), /next: unfinished \? "run" : null/);
 A.match('sync 补 task_id', A.src('packages/subagent.js'), /task_id: cur\.id/);
-A.match('sync 中途返回给继续命令', A.src('packages/subagent.js'), /继续推进：subagent_advance/);
+A.match('sync 中途返回给继续命令', A.src('packages/subagent.js'), /继续推进：subagent_run/);
 A.match('busy 单独分支不跳循环', A.src('packages/subagent.js'), /if \(r2 && r2\.busy\) \{/);
 A.match('busy 有上限防空转', A.src('packages/subagent.js'), /busyHits > 60/);
 A.nomatch('hook 不再劝退 sync', A.src('packages/sb_hook.js'), /不要用 sync=true/);

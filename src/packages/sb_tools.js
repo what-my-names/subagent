@@ -292,7 +292,15 @@ var paths = extractPaths(args);
     var roots = rootsOf(ctx);
     for (var i = 0; i < paths.length; i++) {
         var p = paths[i];
-        if (!inAnyRoot(p, roots)) continue;
+        /* 【第八十轮】原来越界路径静默 continue：备份列表里什么都看不到，
+           undo 时才发现「这个文件根本没备份」。改成记 warn 留痕。 */
+        if (!inAnyRoot(p, roots)) {
+            names.push({
+                type: "warn", path: p, backup: null, tool: toolName,
+                error: "路径在写入范围外，未备份：" + p + "（允许：" + roots.join(" 或 ") + "）"
+            });
+            continue;
+        }
         var ex = await exists(p);
         var base = p.split("/").pop() || "file";
         if (ex) {
@@ -663,9 +671,13 @@ function detectLoop(task, name, args) {
 async function undoAll(ctx, dryRun) {
     var list = ctx.loadUndo().slice().reverse();
     var plan = [];
+    var warnN = 0;
     for (var i = 0; i < list.length; i++) {
         var it = list[i] || {};
-        plan.push({ type: it.type, path: it.path, backup: it.backup });
+        /* 【第八十轮】warn 记录（备份失败/越界未备份）原样透出 error，
+           让 subagent_undo 调用方知道「哪些文件恢复不了」。 */
+        plan.push({ type: it.type, path: it.path, backup: it.backup, error: it.error || null });
+        if (it.type === "warn") { warnN++; continue; }
         if (dryRun) continue;
         try {
             if (it.type === "restore" && it.backup) {
@@ -675,8 +687,28 @@ async function undoAll(ctx, dryRun) {
             }
         } catch (e) {}
     }
-    if (!dryRun) ctx.clearUndo();
-    return plan;
+    if (!dryRun) {
+        ctx.clearUndo();
+        /* 【第八十轮】restore 型恢复完成后，undo 记录已清空，
+           对应的备份目录成孤儿垃圾。这里把空备份目录清掉。 */
+        try {
+            var undoRoot = ctx.productDir + "/.undo";
+            var r = await Tools.Files.list(undoRoot, "android");
+            var entries = (r && r.entries) || [];
+            for (var k = 0; k < entries.length; k++) {
+                var d = entries[k];
+                if (!d || !d.isDirectory) continue;
+                var dp = undoRoot + "/" + d.name;
+                try {
+                    var sub = await Tools.Files.list(dp, "android");
+                    if (!(sub && sub.entries && sub.entries.length)) {
+                        await Tools.Files.deleteFile(dp, true, "android");
+                    }
+                } catch (e2) {}
+            }
+        } catch (eU) {}
+    }
+    return { plan: plan, warns: warnN };
 }
 
 module.exports = {

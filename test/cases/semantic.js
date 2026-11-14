@@ -945,6 +945,12 @@ A.eq('拦 workflow:run', TL.isRecursive('workflow:run'), true);
 A.eq('放行 workflow:list', TL.isRecursive('workflow:workflow_list'), false);
 A.eq('仍放行 subagent_helper', TL.isRecursive('subagent_helper'), false);
 
+/* 【第八十轮】undo 改进：越界留痕 + warn 透出 + 空备份目录清理 */
+A.match('越界路径记 warn 不再静默', A.src('packages/sb_tools.js'), /路径在写入范围外，未备份/);
+A.match('warn 条目透出 error', A.src('packages/sb_tools.js'), /plan\.push\(\{ type: it\.type, path: it\.path, backup: it\.backup, error: it\.error \|\| null \}\)/);
+A.match('undoAll 返回 warns 数', A.src('packages/sb_tools.js'), /return \{ plan: plan, warns: warnN \}/);
+A.match('undo 后清理空备份目录', A.src('packages/sb_tools.js'), /空备份目录/);
+A.match('subagent_undo 报 warns', A.src('packages/subagent.js'), /未备份成功、恢复不了/);
 /* 【第七十九轮】新参数名与旧名都要认，否则模型按新 METADATA 传参会拿到空白名单 */
 A.match('spawn 认 tools 新名', A.src('packages/subagent.js'), /parseList\(params\.tools != null \? params\.tools : params\.allowed_tools\)/);
 A.match('spawn 认 wait 新名', A.src('packages/subagent.js'), /wantWait = \(params\.wait === true\) \|\| \(params\.sync === true\)/);

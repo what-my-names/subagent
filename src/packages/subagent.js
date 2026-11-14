@@ -289,8 +289,8 @@ METADATA
     {
       "name": "subagent_undo",
       "description": {
-        "zh": "列出或恢复该任务写过的文件（写前状态备份）。dry_run=true 只看不改。",
-        "en": "列出或恢复该任务写过的文件（写前状态备份）。dry_run=true 只看不改。"
+        "zh": "【Beta】列出或恢复该任务写过的文件（写前状态备份）。dry_run=true 只看不改。注意：terminal 命令的写入不备份，路径提取失败会漏备，重要文件先 dry_run 看计划再执行。",
+        "en": "【Beta】列出或恢复该任务写过的文件（写前状态备份）。dry_run=true 只看不改。terminal writes are not backed up; run dry_run first."
       },
       "parameters": [
         {
@@ -1158,9 +1158,16 @@ exports.subagent_undo = async function (params) {
     if (!t) { complete({ success: false, message: "找不到任务", data: {} }); return; }
     var ctx = await loadCtx(cfg, t);
     var dry = params.dry_run === undefined ? true : !!params.dry_run;
-    var plan = await TOOLS.undoAll(ctx, dry);
+    /* 【第八十轮】undoAll 现在返回 { plan, warns }：
+       warns 是「备份失败/越界未备份」条数，恢复不了的要明说。 */
+    var res = await TOOLS.undoAll(ctx, dry);
     if (ctx.save) await ctx.save();
-    complete({ success: true, message: dry ? ("将恢复 " + plan.length + " 项（未执行）") : ("已恢复 " + plan.length + " 项"), data: { dry_run: dry, plan: plan } });
+    var plan = res.plan || [];
+    var warns = res.warns || 0;
+    var msg = "【Beta】" + (dry ? ("将恢复 " + plan.length + " 项（未执行）") : ("已恢复 " + plan.length + " 项"));
+    if (warns > 0) msg += "，其中 " + warns + " 项未备份成功、恢复不了（见 plan 里 error 字段）";
+    msg += "（undo 为 Beta 功能：terminal 命令的写入不会备份，路径提取失败也会漏备，重要文件请先用 dry_run=true 看计划再执行）";
+    complete({ success: true, message: msg, data: { dry_run: dry, plan: plan, warns: warns, beta: true } });
 };
 
 exports.subagent_cancel = async function (params) {
@@ -1312,17 +1319,21 @@ exports.subagent_close = async function (params) {
         return;
     }
     var restored = null;
+    var rollbackWarn = 0;
     if (params.rollback === true) {
         var ctx = await loadCtx(cfg, t);
         restored = await TOOLS.undoAll(ctx, false);
         if (ctx.save) await ctx.save();
+        rollbackWarn = (restored && restored.warns) || 0;
     }
     if (params.delete_product === true) {
         try { await Tools.Files.deleteFile(t.product_dir, true, "android"); } catch (e) {}
     }
     t.status = "closed";
     await TASK.saveTask(t);
-    complete({ success: true, message: "已关闭" + (params.rollback === true ? "并回滚" : ""), data: { id: t.id, restored: restored } });
+    var closeMsg = "已关闭" + (params.rollback === true ? "并回滚" : "");
+    if (rollbackWarn > 0) closeMsg += "（" + rollbackWarn + " 项未备份成功、恢复不了）";
+    complete({ success: true, message: closeMsg, data: { id: t.id, restored: restored } });
 };
 
 exports.subagent_delete = async function (params) {

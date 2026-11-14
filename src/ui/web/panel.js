@@ -1600,6 +1600,15 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   function setThinkState(tb, st) {
     if (!tb) return;
     var n = (st === 1 || st === 2) ? st : 0;
+    /* 【第八十四轮】记住用户手动设过的档位。
+       根因：fillTrace 每次轮询重渲染都用 stInit（running=1 展开），
+       用户刚折叠，下一轮 trace 回来又被顶开，观感就是「关上了自己打开」；
+       运行中的任务则表现为「怎么点都折不上」。
+       key 用「turn 下标 + 段类型」，turn 下标只在追加时变化，老段稳定。 */
+    try {
+      var tk = tb.getAttribute('data-thk-key');
+      if (tk) { S.thk = S.thk || {}; S.thk[tk] = n; }
+    } catch (eK) {}
     /* 【第七十一轮】先取旧档位，thk-in 只在「从 0 升起」时播。
        之前每次切档都 remove 再 add thk-in，1↔2 之间也重播淡入上浮，
        观感就像整块内容重新加载了一遍（用户说「再点一下会重新刷新一次页面」）。 */
@@ -1655,6 +1664,37 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     if (!host || !host.querySelectorAll) return;
     var boxes = host.querySelectorAll('.thinkbox:not([data-state="0"])');
     for (var i = 0; i < boxes.length; i++) setThinkState(boxes[i], 0);
+  }
+  /* 【第八十四轮】把 data-state 落成真实视觉：补 h1/h2 高度类与角标文案。
+     为什么必须单独一步：渲染时只写了 data-state 属性，高度类在 .thk-body 上，
+     CSS 只会因为 `[data-state="0"]>.thk-body` 收起；1/2 档没有 .h1/.h2 就还是 120px，
+     表现为「点了展开，但只多露出一行」。
+     顺带清理已经从 turns 里消失的段的记忆，避免 S.thk 无限膨胀。 */
+  function applyThinkStates() {
+    var host = $('dtChat');
+    if (!host || !host.querySelectorAll) return;
+    var boxes = host.querySelectorAll('.thinkbox[data-thk-key]');
+    for (var i = 0; i < boxes.length; i++) {
+      var tb = boxes[i];
+      var n = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
+      var body = tb.querySelector('.thk-body');
+      if (body && body.classList) {
+        if (n === 0) body.classList.remove('h1', 'h2');
+        else if (n === 1) { body.classList.remove('h2'); body.classList.add('h1'); }
+        else { body.classList.add('h2'); }
+      }
+      var tip = tb.querySelector('.thk-tip');
+      if (tip) tip.textContent = THINK_TIPS[n];
+    }
+    /* 清理残留：本轮渲染没出现的 key 一律丢掉 */
+    try {
+      var stale = [];
+      for (var k in S.thk) {
+        if (!Object.prototype.hasOwnProperty.call(S.thk, k)) continue;
+        if (!S.thkRaw || !S.thkRaw[k]) stale.push(k);
+      }
+      for (var s = 0; s < stale.length; s++) delete S.thk[stale[s]];
+    } catch (eC) {}
   }
   /* 渲染后统一把 0 档思考块滚到底部 + 刷新悬浮按钮显隐。
    【为什么必须有】历史消息每次重新渲染（切换任务、轮询刷新）都会重建 DOM，
@@ -1796,6 +1836,28 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
        运行中要展开看实时进展；已结束就收起来，别撑满一屏。 */
     var live = (d.status === 'running' || d.status === 'queued');
     var stInit = live ? '1' : '0';
+    /* 【第八十四轮】每个折叠段带一个稳定 key：turn 下标 + 段类型。
+       重渲染时优先用用户手动设过的档位（S.thk），没设过才用默认 stInit。
+       这就是「关上之后又自己打开」的根治点：之前每次重渲染都无条件回 stInit。 */
+    S.thk = S.thk || {};
+    /* 【关键】折叠记忆必须按任务隔离。
+       否则切到另一个任务时，"3:think" 这种下标键会撞上上一个任务的档位，
+       表现为「打开新任务，思考块莫名是折叠的」。 */
+    var sid = String(d.id || '');
+    if (S.thkFor !== sid) { S.thk = {}; S.thkFor = sid; }
+    S.thkRaw = {};   /* 本轮渲染实际用到的 key，用于清理删掉的 turn 的残留记忆 */
+    function thinkState(key) {
+      if (Object.prototype.hasOwnProperty.call(S.thk, key)) return S.thk[key];
+      return stInit;
+    }
+    /* 折叠段的公共外壳，避免两处复制一份 HTML */
+    function thinkBoxOpen(key, cls, titleHtml) {
+      var stt = thinkState(key);
+      S.thkRaw[key] = 1;
+      return '<div class="thinkbox ' + cls + '" data-thk-key="' + esc(key) + '" data-state="' + stt + '">'
+        + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+        + '<span class="thk-tx">' + titleHtml + '</span>';
+    }
     var blkOpen = false;
     function openBlk() {
       if (!blkOpen) { h += '<div class="agent-block">'; blkOpen = true; }
@@ -1814,26 +1876,24 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         if (hasThink || hasTool) openBlk();
 
         if (hasThink) {
-          var tid = ++FOLD_SEQ;
-          h += '<div class="thinkbox thk-sec" data-think="' + tid + '" data-state="' + stInit + '">'
-            + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
-            + '<span class="thk-tx">思考过程</span>'
-            + '<span class="thk-tip">展开</span>'
+          var tkey = i + ':think';
+          var tst = thinkState(tkey);
+          h += thinkBoxOpen(tkey, 'thk-sec', '思考过程')
+            + '<span class="thk-tip">' + THINK_TIPS[tst] + '</span>'
             + '</div>'
-            + '<div class="thk-body" data-thk-body="' + tid + '">'
+            + '<div class="thk-body" data-thk-body="' + tkey + '">'
             + '<div class="agent-think">' + esc(m.reasoning) + '</div>'
             + '</div>'
             + '</div>';
         }
         if (hasTool) {
-          var tid2 = ++FOLD_SEQ;
-          h += '<div class="thinkbox toolcard thk-sec" data-think="' + tid2 + '" data-state="' + stInit + '">'
-            + '<div class="thk-head"><svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
-            + '<span class="thk-tx">工具调用</span>'
+          var kkey = i + ':tool';
+          var kst = thinkState(kkey);
+          h += thinkBoxOpen(kkey, 'toolcard thk-sec', '工具调用')
             + '<span class="tool-count">(' + t.length + ')</span>'
-            + '<span class="thk-tip">展开</span>'
+            + '<span class="thk-tip">' + THINK_TIPS[kst] + '</span>'
             + '</div>'
-            + '<div class="thk-body" data-thk-body="' + tid2 + '">';
+            + '<div class="thk-body" data-thk-body="' + kkey + '">';
           for (var j = 0; j < t.length; j++) {
             var tc = t[j];
             var res = resById[String(tc.id || '')];
@@ -1863,7 +1923,12 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
         var idx = resQueue.indexOf(m);
         if (idx >= 0 && usedRes[idx]) continue;
         openBlk();
-        h += '<div class="thinkbox toolcard thk-sec" data-state="' + stInit + '">'
+        /* 【第八十四轮】这条独立工具段也要带 key，否则它永远回 stInit，
+           用户折叠后重渲染又被顶开。 */
+        var loneKey = i + ':lone';
+        var loneSt = thinkState(loneKey);
+        S.thkRaw[loneKey] = 1;
+        h += '<div class="thinkbox toolcard thk-sec" data-thk-key="' + esc(loneKey) + '" data-state="' + loneSt + '">'
           + '<div class="thk-body">'
           + toolRow({ name: m.name || 'tool', args: null }, m)
           + '</div></div>';
@@ -1906,30 +1971,14 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
        用整串 HTML 做等值比较（几 KB 字符串比较，比 DOM 重建便宜几个量级）。 */
     var _h = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
     if (!STREAM.busy && _h !== S.chatSig) {
-      /* 【展开态保持】重建前按「第几个思考块」记录档位，重建后还原。
-         内容一变就重建（新增一步、工具返回），不记录的话用户刚展开的块立刻被弹回收起。
-         用序号而不是内容做 key：同一任务里思考块顺序稳定，内容会变（流式追加）。 */
-      var _keep = {};
-      try {
-        var _oldBoxes = $('dtChat') ? $('dtChat').querySelectorAll('.thinkbox') : [];
-        for (var _ki = 0; _ki < _oldBoxes.length; _ki++) {
-          var _ks = _oldBoxes[_ki].getAttribute('data-state') || '0';
-          if (_ks !== '0') _keep[_ki] = _ks;
-        }
-      } catch (eK) {}
+      /* 【第八十四轮】折叠态由 data-thk-key + S.thk 记忆，不再需要「按第几个块」的旧还原。
+         旧实现有两个洞：
+           1) 只记非 0 档 → 用户把某个块折起来，重渲染就按 stInit 又展开（「自己打开」）
+           2) 按 DOM 下标对齐 → turns 追加后下标全错位，档位套到别的段上
+         现在渲染时 data-state 已按 key 取好，这里只需要补 h1/h2 高度类 + 贴底。 */
       S.chatSig = _h;
       $('dtChat').innerHTML = _h;
-      /* 还原：只对非 0 档调用 setThinkState，0 档交给 syncThinkScroll 统一贴底 */
-      try {
-        if (_keep) {
-          var _newBoxes = $('dtChat') ? $('dtChat').querySelectorAll('.thinkbox') : [];
-          for (var _kj in _keep) {
-            if (!Object.prototype.hasOwnProperty.call(_keep, _kj)) continue;
-            var _bi = parseInt(_kj, 10);
-            if (_newBoxes[_bi]) setThinkState(_newBoxes[_bi], parseInt(_keep[_kj], 10) || 0);
-          }
-        }
-      } catch (eR) {}
+      applyThinkStates();
     }
     /* 思考块默认 0 档，渲染后统一滚到底跟随最新输出 */
     syncThinkScroll();

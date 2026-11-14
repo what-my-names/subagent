@@ -294,10 +294,18 @@ A.match('渲染后 0 档统一贴底', P, /function syncThinkScroll\(\)[\s\S]{0,
 /* 流式结束后历史块要继承当前档位，不能跳回收起 */
 A.match('历史块继承流式档位', P, /var _keepSt = parseInt\(\(thinkEl && thinkEl\.getAttribute\('data-state'\)\)/);
 A.match('继承档位后补设状态', P, /if \(_keepSt !== 0\) setThinkState\(tb2, _keepSt\)/);
-/* 重建 DOM 时必须保住用户展开的档位：轮询每 1.5s 一次，内容一变就重建，
-   不保住的话用户刚展开的块立刻被弹回收起 */
-A.match('重建前记录档位', P, /var _oldBoxes = \$\('dtChat'\) \? \$\('dtChat'\)\.querySelectorAll\('\.thinkbox'\)/);
-A.match('重建后还原档位', P, /if \(_newBoxes\[_bi\]\) setThinkState\(_newBoxes\[_bi\], parseInt\(_keep\[_kj\], 10\) \|\| 0\)/);
+/* 【第八十四轮】折叠态改为「key + S.thk 记忆」，不再按 DOM 下标存还原。
+   旧两条断言守的是已删除的实现，改为守新机制。
+   必须守住的原始需求：轮询 1.5s 一次、内容一变就重建，
+   用户手动设过的档位不能被冲掉。 */
+A.match('折叠态按稳定 key 记忆',
+    P, /S\.thk\[tk\] = n;/);
+A.match('渲染时优先取记忆档位',
+    P, /function thinkState\(key\)[\s\S]{0,200}?return S\.thk\[key\]/);
+A.match('重渲染后统一落高度类',
+    P, /function applyThinkStates\(\)[\s\S]{0,600}?body\.classList\.add\('h2'\)/);
+A.match('折叠记忆按任务隔离',
+    P, /if \(S\.thkFor !== sid\) \{ S\.thk = \{\}; S\.thkFor = sid; \}/);
 /* 三处创建都要带 data-state=0，否则流式区三态选择器全不命中 */
 var thinkCreate = (P.match(/sb-think" data-state="0"/g) || []).length;
 A.chk('三处流式区创建都带 data-state', thinkCreate === 3);
@@ -616,8 +624,8 @@ A.match('工具结果默认不截断', A.src('packages/sb_task.js'), /tool_resul
 A.match('配置默认值也改 0', A.src('packages/sb_config.js'), /tool_result_max_chars: 0,/);
 /* 前端：思考块与工具块是两个独立卡片，互不嵌套 */
 A.nomatch('已删 agent-card 合并卡', P, /class="thinkbox agent-card"/);
-A.match('思考段带 thk-sec', P, /class="thinkbox thk-sec"/);
-A.match('工具段带 toolcard thk-sec', P, /class="thinkbox toolcard thk-sec"/);
+A.match('思考段带 thk-sec', P, /thinkBoxOpen\(tkey, 'thk-sec', '思考过程'\)/);
+A.match('工具段带 toolcard thk-sec', P, /thinkBoxOpen\(kkey, 'toolcard thk-sec', '工具调用'\)/);
 A.match('思考正文包在 agent-think', P, /class="agent-think"/);
 A.match('工具块头部带计数', P, /class="tool-count">\(' \+ t\.length \+ '\)/);
 A.match('工具行用 toolRow 渲染', P, /h \+= toolRow\(tc, res\);/);
@@ -649,7 +657,7 @@ A.nomatch('CSS 已删 thk-len 规则', CSS2, /\.thk-len\{/);
 A.match('背景跟正文一致', CSS2, /\.thinkbox\{margin:0;background:var\(--bg3\)/);
 /* ── 【第五十七轮】两卡无缝 + 调用/返回两入口 + 失败红字 ── */
 A.match('外层是 agent-block 容器', P, /class="agent-block"/);
-A.match('思考段按任务状态定默认态', P, /data-think="' \+ tid \+ '" data-state="' \+ stInit/);
+A.match('思考段按任务状态定默认态', P, /return stInit;/);
 
 /* ── 【第六十轮】整轮共用一个卡片 ── */
 A.match('整轮共用开卡函数', P, /function openBlk\(\)/);
@@ -673,10 +681,10 @@ A.match('有收卡函数', P, /function closeBlk\(\)/);
 A.match('正文进同一卡片', P, /class="agent-text">/);
 A.match('流式正文也进卡', P, /_blk\.appendChild\(_txt\)/);
 A.match('正文段样式', CSS2, /\.agent-block>\.agent-text\{/);
-A.match('工具段按任务状态定默认态', P, /data-think="' \+ tid2 \+ '" data-state="' \+ stInit/);
+A.match('工具段按任务状态定默认态', P, /function thinkState\(key\)/);
 A.match('段间零边框', CSS2, /\.agent-block>\.thinkbox\+\.thinkbox\{border:0/);
-A.match('思考段在容器内', P, /class="thinkbox thk-sec"/);
-A.match('工具段在容器内', P, /class="thinkbox toolcard thk-sec"/);
+A.match('思考段在容器内', P, /thinkBoxOpen\(tkey, 'thk-sec', '思考过程'\)/);
+A.match('工具段在容器内', P, /thinkBoxOpen\(kkey, 'toolcard thk-sec', '工具调用'\)/);
 A.match('容器圆角只在外层', CSS2, /\.agent-block\{background:var\(--bg3\);border-radius:3px 14px 14px 14px/);
 A.match('段在容器内去圆角', CSS2, /\.agent-block>\.thinkbox\{background:transparent;border:0;border-radius:0/);
 A.nomatch('不再有分割线', CSS2, /border-top:1px solid rgba\(127,141,179,\.18\)/);

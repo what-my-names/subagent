@@ -159,3 +159,40 @@ A.match('openTask 进任务前自愈', P, /var termPre = \(stPre === 'done'[\s\S
 /* 停止后主动拉 trace，否则界面停在「模型生成中」 */
 A.match('停止后主动拉 trace', P, /call\('subagent:subagent_cancel', \{ id: S\.cur \}, 'cancel', function \(\) \{[\s\S]{0,120}?subagent_trace/);
 A.finish();
+
+/* ── 【第六十九轮】动画按需挂载：降常驻合成图层 ──
+ * 这些断言防的是：有人把 animation/will-change 又写回列表项静态声明，
+ * 导致图层数随卡片数线性增长，WebView 内存再度爆掉。
+ */
+A.match('chat-row 装饰动画下放到 .anim-on',
+    C, /\.chat-row\.anim-on::before\{will-change:transform;animation:gpuFlowY/);
+A.nomatch('chat-row::before 本体不得带 animation',
+    C, /\.chat-row::before\{[^}]*?animation:/);
+A.nomatch('chat-row::before 本体不得带 will-change',
+    C, /\.chat-row::before\{[^}]*?will-change:/);
+A.match('头像呼吸由行类控制',
+    C, /\.chat-row\.anim-on \.cr-avatar::after\{will-change:opacity;animation:gpuFade/);
+A.match('运行中状态呼吸由行类控制',
+    C, /\.chat-row\.anim-on \.cr-status\.running\{/);
+A.match('脉冲环由行类控制',
+    C, /\.chat-row\.anim-on \.cr-avatar\.r::before\{/);
+A.match('后台全局暂停动画',
+    C, /\.page-hidden \*, \.page-hidden \*::before[^{]*\{/);
+A.match('补了 prefers-reduced-motion 降级',
+    C, /@media \(prefers-reduced-motion: reduce\)/);
+A.match('IntersectionObserver 只给视口内行加类',
+    P, /if \(ents\[i\]\.isIntersecting\) t\.classList\.add\('anim-on'\)/);
+A.match('出视口移除动画类',
+    P, /else t\.classList\.remove\('anim-on'\)/);
+A.match('无 IntersectionObserver 时全量兜底',
+    P, /typeof IntersectionObserver === 'undefined'[\s\S]{0,200}?classList\.add\('anim-on'\)/);
+A.match('renderList 渲染后接入观察器',
+    P, /target\.innerHTML = h;[\s\S]{0,120}?watchRowAnim\(target\)/);
+A.match('切后台加 page-hidden',
+    P, /document\.body\.classList\.add\('page-hidden'\)/);
+A.match('回前台移除 page-hidden',
+    P, /document\.body\.classList\.remove\('page-hidden'\)/);
+A.match('shutdown 解绑观察器',
+    P, /function shutdown\(\)[\s\S]{0,300}?_animObs\.disconnect\(\)/);
+
+A.finish();

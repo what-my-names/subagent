@@ -26,6 +26,8 @@
   };
   function shutdown() {
     if (!ALIVE) return;
+    /* 【第六十九轮】页面销毁时解绑观察器，避免悬空引用 */
+    try { if (_animObs) { _animObs.disconnect(); _animObs = null; } } catch (eAO) {}
     /* 先置 false：后面的桥调用如果因为引擎已死而抛异常，
        也不会有其它定时器趁这个窗口再发请求。 */
     ALIVE = false;
@@ -1126,6 +1128,45 @@ function warnMsg(m) { toast(m, 'warn'); }
     }, 5000);
     call('subagent:subagent_list', {}, 'list');
   }
+  /* ── 【第六十九轮】列表动画按需挂载 ──
+     问题：.chat-row 的流光、头像呼吸、运行中脉冲都是无限循环动画，
+     且写在伪元素上，每个卡片各一份。50 个卡片 = 200 个无限动画
+     + 200 个常驻合成图层，WebView 内存直接爆。
+     
+     做法：动画声明移到 .chat-row.anim-on 下，这里用 IntersectionObserver
+     只给进入视口（含 80px 预加载边）的行加类。出视口立刻移除，
+     浏览器回收图层。视觉完全一样，图层数从「随行数增长」变「固定几个」。 */
+  var _animObs = null;
+  function _rowsOf(root) {
+    var out = [];
+    if (!root) return out;
+    var all = root.querySelectorAll('.chat-row');
+    for (var i = 0; i < all.length; i++) out.push(all[i]);
+    return out;
+  }
+  function watchRowAnim(root) {
+    var rows = _rowsOf(root);
+    if (!rows.length) return;
+    /* 兜底：老 WebView 没有 IntersectionObserver，直接全量开动画（等同旧行为） */
+    if (typeof IntersectionObserver === 'undefined') {
+      for (var k = 0; k < rows.length; k++) rows[k].classList.add('anim-on');
+      return;
+    }
+    if (!_animObs) {
+      _animObs = new IntersectionObserver(function (ents) {
+        for (var i = 0; i < ents.length; i++) {
+          var t = ents[i].target;
+          if (!t || !t.classList) continue;
+          if (ents[i].isIntersecting) t.classList.add('anim-on');
+          else t.classList.remove('anim-on');
+        }
+      }, { root: null, rootMargin: '80px 0px', threshold: 0 });
+    }
+    /* 旧节点已随 innerHTML 重建而失效，先解绑再逐个观察 */
+    try { _animObs.disconnect(); } catch (eOD) {}
+    for (var j = 0; j < rows.length; j++) _animObs.observe(rows[j]);
+  }
+
   function renderList(list, fromTool) {
     S.items = list || [];
     if (fromTool) { S.listAt = Date.now(); S.listBusy = false; try { clearTimeout(S.listUnlockT); S.listUnlockT = null; } catch (eLU) {} }
@@ -1163,6 +1204,7 @@ function warnMsg(m) { toast(m, 'warn'); }
         + (S.multi ? '' : '<span class="cr-go"><svg><use href="#i-chev-r"/></svg></span>') + '</div>';
     }
     target.innerHTML = h;
+    watchRowAnim(target);   /* 【第六十九轮】只给视口内的行开装饰动画 */
     syncMultiBar();
   }
 
@@ -1397,6 +1439,10 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   function setThinkState(tb, st) {
     if (!tb) return;
     var n = (st === 1 || st === 2) ? st : 0;
+    /* 【第七十一轮】先取旧档位，thk-in 只在「从 0 升起」时播。
+       之前每次切档都 remove 再 add thk-in，1↔2 之间也重播淡入上浮，
+       观感就像整块内容重新加载了一遍（用户说「再点一下会重新刷新一次页面」）。 */
+    var prev = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
     tb.setAttribute('data-state', String(n));
     /* 高度 class：0 档两个都不加，1 档 h1，2 档 h2 */
     var body = tb.querySelector('.thk-body');
@@ -1412,7 +1458,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
        改用双 rAF：下一帧再加类，浏览器自然分帧，不用同步取布局。 */
     if (body && body.classList) {
       body.classList.remove('thk-in');
-      if (n !== 0) {
+      /* 只在 0 → 非0 的首次升起时播浮入；1↔2 互切、收起都不播 */
+      if (n !== 0 && prev === 0) {
         requestAnimationFrame(function () {
           requestAnimationFrame(function () {
             if (body.isConnected) body.classList.add('thk-in');
@@ -1972,6 +2019,15 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
  /* 首次进入：欢迎页 + 后台刷新最近任务；1.2s 后与列表就绪二者都满足再进主页 */
  /* 可见性恢复：从主对话返回时若当前页不可见，兜底显示主页并刷新最近列表（防黑屏） */
 document.addEventListener('visibilitychange', function () {
+  /* 【第六十九轮】页面切后台时全局暂停动画，零开销；回前台自动继续。
+     放在原有逻辑外面，两个状态都要处理。 */
+  try {
+    var hid = (document.visibilityState === 'hidden');
+    if (document.body && document.body.classList) {
+      if (hid) document.body.classList.add('page-hidden');
+      else document.body.classList.remove('page-hidden');
+    }
+  } catch (ePH) {}
   try {
     if (document.visibilityState === 'visible') {
       var pid = S && S.page ? 'page-' + S.page : null;
@@ -4115,13 +4171,14 @@ document.addEventListener('visibilitychange', function () {
   /* 【第五十六轮】返回详情弹窗：点遮罩或叉关闭 */
   if ($('retMask')) $('retMask').addEventListener('click', closeRetDlg);
 
-  /* 思考块交互（2026-11-07 用户定稿，第二十八轮）：
-       每次点击前进一档 0 → 1 → 2 → 0（累进循环）
+  /* 思考块交互（2026-11-07 用户定稿第二十八轮；第七十轮修复累进断链）：
+       单击前进一档 0 → 1 → 2 → 0（累进循环，立即响应不等待）
        0 = 收起/流式中（限高 120px，自动滚到底）
        1 = 部分展开（限高 320px）
        2 = 全部展开（不限高）
-       双击自然等于两次点击，从 0 直接到 2，满足「点两次才全部展开」。
-       不再拦截双击 —— 原来那个 300ms 判定会把第二次点击吃掉，导致永远到不了 2 档。
+       双击 = 抄近路，从任何档位一步到 2（全展开）。
+       【第七十轮】单击必须能自己走到 2 档，不能只靠双击；
+       否则单击到 1 档后停手再点会变回收起，永远看不到全部内容。
    【触发范围】历史块只认 .thk-head（标题行），不认正文。
    正文区域要留给长按选词复制，点一下就换档会让用户没法选文字。
    流式区 .sb-think 没有标题行，整块可点。 */
@@ -4146,20 +4203,22 @@ document.addEventListener('visibilitychange', function () {
       var sel = window.getSelection && window.getSelection();
       if (sel && String(sel).length) return;
     } catch (eS) {}
-    /* 【第六十三轮】单击立即响应，不再等 240ms。
-       旧逻辑为了区分双击，单击要 setTimeout 240ms 后才动，手感发滞。
-       新逻辑：单击立刻切（0<->1）；若 260ms 内来了第二击，再累进到 2。
-       双击的最终结果一样（全展开），但第一下即时反馈。 */
+    /* 【第七十一轮】用户定稿的语义：
+       单击 = 「半展开 ↔ 收起」二元往返（0↔1），不跨到 2 档；
+       双击 = 一步到 2（全展开）；2 档上单击 = 收回 0。
+       第七十轮试过 0→1→2→0 三态累进，用户明确否决：那样点两下就全展开了，
+       失去「双击才全展开」的区分度。 */
     var st0 = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
     var now = Date.now();
     if (S._tapEl === tb && now - (S._tapAt || 0) < 260) {
-      /* 第二击：从刚切到的 1 再推到 2；若已经是 2 则收回 0 */
+      /* 第二击（双击）：从任何状态一步到全展开 2 档 */
       S._tapEl = null; S._tapAt = 0;
-      setThinkState(tb, st0 === 2 ? 0 : 2);
+      setThinkState(tb, 2);
       return;
     }
     S._tapEl = tb;
     S._tapAt = now;
+    /* 单击：0→1，1→0（二元往返）；已在 2 档则收回 0 */
     setThinkState(tb, st0 === 0 ? 1 : 0);
   });
   /* 思考块点击已统一到上面的累进循环处理 */

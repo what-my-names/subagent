@@ -168,8 +168,9 @@ async function readSkill(name) {
 
 /* 把清单格式化成给模型看的一段文本。
    入：list（listSkills 的返回）或 name 数组（只要这几个）
+       hint：当前任务文本，用来把相关 skill 顶到前面（第七十三轮）
    出：字符串，无可用 skill 时返回空串 */
-function formatSkillList(list, only) {
+function formatSkillList(list, only, hint) {
     var arr = list || [];
     var want = null;
     if (only && only.length) {
@@ -182,12 +183,79 @@ function formatSkillList(list, only) {
         picked.push(arr[j]);
     }
     if (!picked.length) return "";
+    /* 【第七十三轮】按触发词把相关的顶上来。
+       用户原话：「44 个 skill，skill 不一般都有触发词吗」—— 对，触发词就写在 description 里
+       （「当用户说…时使用」「中文触发词：A、B」）。
+       这里从 description 抽词跟任务文本比对，命中的排前面并标注，清单本身不删。 */
+    var h = String(hint || "").toLowerCase();
+    /* 每轮先把 _score 清零，避免上一次调用残留（listSkills 返回的是同一批对象引用） */
+    for (var z = 0; z < picked.length; z++) picked[z]._score = 0;
+    if (h && h.length >= 2) {
+        for (var s = 0; s < picked.length; s++) picked[s]._score = matchScore(picked[s], h);
+        picked.sort(function (a, b) {
+            var d = (b._score || 0) - (a._score || 0);
+            if (d !== 0) return d;
+            return a.name < b.name ? -1 : 1;
+        });
+    }
     var lines = [];
+    var hot = [];
     for (var k = 0; k < picked.length; k++) {
-        var d = String(picked[k].description || "").replace(/\s+/g, " ").trim();
-        lines.push("- " + picked[k].name + (d ? "：" + d : ""));
+        if ((picked[k]._score || 0) > 0 && hot.length < 5) hot.push(picked[k].name);
+        var d2 = String(picked[k].description || "").replace(/\s+/g, " ").trim();
+        var mark = (picked[k]._score || 0) > 0 ? "【可能相关】" : "";
+        lines.push(mark + "- " + picked[k].name + (d2 ? "：" + d2 : ""));
+    }
+    if (hot.length) {
+        lines.unshift("与当前任务可能相关的 skill（建议先读）：" + hot.join("、"));
     }
     return lines.join("\n");
+}
+
+/* 从 description 里抽触发词，跟任务文本比对打分。
+   抽法：
+     1) 「当用户说 X 时使用」「当用户提到 X」→ 取引号/顿号之间的短语
+     2) 「中文触发词：A、B、C」→ 直接取逗号顿号分隔的列表
+     3) 「英文触发词：a, b」同理
+     4) name 本身（diagnosing-bugs → bugs）也算弱信号
+   返回命中个数（0 = 不相关）。
+   为什么不用分词：中文没空格，引包又得上依赖；按标点切短语足够用。 */
+var TRIGGER_RE = /(?:当用户(?:说|提到|要|想|询问)|中文触发词|英文触发词|触发词|Triggers?|Use when(?: the user)?)\s*[:：]?\s*([^\n]{1,400})/gi;
+function matchScore(skill, hintLow) {
+    try {
+        var desc = String((skill && skill.description) || "");
+        var pool = [];
+        var m;
+        TRIGGER_RE.lastIndex = 0;
+        while ((m = TRIGGER_RE.exec(desc)) !== null) {
+            var seg = String(m[1] || "");
+            seg = seg.replace(/[。；;"'（）()\[\]]/g, "、");
+            var parts = seg.split(/[、,，\/|]/);
+            for (var i = 0; i < parts.length && i < 40; i++) {
+                var p = String(parts[i] || "").trim();
+                if (p.length >= 2 && p.length <= 30) pool.push(p);
+            }
+        }
+        /* name 里的英文词也当弱信号（diagnosing-bugs → diagnosing / bugs） */
+        var nm = String((skill && skill.name) || "").toLowerCase();
+        var nparts = nm.split(/[-_\s]+/);
+        for (var q = 0; q < nparts.length; q++) {
+            if (nparts[q].length >= 4) pool.push(nparts[q]);
+        }
+        var score = 0;
+        var seen = {};
+        for (var r = 0; r < pool.length; r++) {
+            var w = String(pool[r]).toLowerCase();
+            if (!w || seen[w]) continue;
+            seen[w] = 1;
+            /* 空串或极短任务文本不参与匹配 —— indexOf("") 恒真，会把所有 skill 都标成相关 */
+            if (hintLow.length < 2) continue;
+            if (hintLow.indexOf(w) >= 0) score++;
+        }
+        return score;
+    } catch (e) {
+        return 0;
+    }
 }
 
 exports.SKILL_ROOTS = SKILL_ROOTS;
@@ -196,3 +264,5 @@ exports.parseFrontmatter = parseFrontmatter;
 exports.listSkills = listSkills;
 exports.readSkill = readSkill;
 exports.formatSkillList = formatSkillList;
+exports.matchScore = matchScore;
+exports.TRIGGER_RE = TRIGGER_RE;

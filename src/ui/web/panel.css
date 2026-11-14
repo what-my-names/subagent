@@ -195,7 +195,10 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
   border-bottom:1px solid var(--ln);position:relative;overflow:hidden}
 .chat-row::before{content:'';position:absolute;left:0;top:0;width:2px;height:70%;
   background:linear-gradient(180deg,transparent,rgba(74,141,255,.7),rgba(57,197,207,.7),transparent);
-  will-change:transform;animation:gpuFlowY 3.2s linear infinite;opacity:.6}
+  opacity:.6}
+/* 【第六十九轮】装饰动画改为按需挂载：只有进入视口的行才加 .anim-on，
+   图层和动画实例数不再随列表行数线性增长。视觉完全一致。 */
+.chat-row.anim-on::before{will-change:transform;animation:gpuFlowY 3.2s linear infinite}
 .chat-row:active{background:rgba(255,255,255,.04)}
 /* 位置 7 · 头像：静态描边 + 内部柔光淡入淡出 */
 .cr-avatar{width:34px;height:34px;border-radius:8px;background:var(--bg3);
@@ -204,8 +207,8 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
   position:relative;overflow:hidden}
 .cr-avatar::after{content:'';position:absolute;inset:0;pointer-events:none;
   background:radial-gradient(circle at 30% 25%,rgba(57,197,207,.30),transparent 70%),
-             radial-gradient(circle at 75% 80%,rgba(74,141,255,.26),transparent 70%);
-  will-change:opacity;animation:gpuFade 4.2s ease-in-out infinite}
+             radial-gradient(circle at 75% 80%,rgba(74,141,255,.26),transparent 70%)}
+.chat-row.anim-on .cr-avatar::after{will-change:opacity;animation:gpuFade 4.2s ease-in-out infinite}
 .cr-avatar svg{width:17px;height:17px;fill:none;stroke:var(--acc);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .cr-avatar.r svg{stroke:var(--warn)}
 .cr-avatar.f svg{stroke:var(--bad)}
@@ -217,7 +220,8 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
 .cr-pv{overflow:hidden;text-overflow:ellipsis;flex:1}
 .cr-status{font-size:10.5px;flex-shrink:0;color:var(--mut)}
 /* 位置 8 · 运行中状态：只用 opacity 呼吸，颜色不动（0.9s） */
-.cr-status.running{color:var(--warn);will-change:opacity;animation:gpuFade .9s ease-in-out infinite}
+.cr-status.running{color:var(--warn)}
+.chat-row.anim-on .cr-status.running{will-change:opacity;animation:gpuFade .9s ease-in-out infinite}
 .cr-status.done{color:var(--ok)}
 .cr-status.failed{color:var(--bad)}
 .cr-status.queued{color:var(--pri)}
@@ -353,11 +357,11 @@ textarea{resize:vertical;min-height:72px}
 .md-body{white-space:normal}
 .md-body .md-p{margin:0 0 2px}
 .md-body .md-gap{height:7px}
-.md-body .md-h{margin:9px 0 5px;font-weight:600;line-height:1.35;color:var(--fg)}
+.md-body .md-h{margin:9px 0 5px;font-weight:600;line-height:1.35;color:var(--fg);overflow-wrap:anywhere}
 .md-body h3.md-h{font-size:14px}
 .md-body h4.md-h{font-size:13.5px}
 .md-body h5.md-h,.md-body h6.md-h{font-size:13px}
-.md-body ul,.md-body ol{margin:4px 0 6px;padding-left:19px}
+.md-body ul,.md-body ol{margin:4px 0 6px;padding-left:17px}
 .md-body li{margin:1px 0;line-height:1.55}
 .md-body li::marker{color:var(--mut)}
 .md-body strong{font-weight:600;color:var(--fg)}
@@ -368,7 +372,7 @@ textarea{resize:vertical;min-height:72px}
 .md-body .md-ic{padding:1px 5px;border-radius:4px;background:var(--bg3);font-family:ui-monospace,monospace;font-size:12px;color:var(--acc)}
 .md-body .md-code{margin:7px 0;padding:9px 11px;border-radius:8px;background:#0f1115;border:1px solid var(--ln);overflow-x:auto}
 .md-body .md-code code{font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;white-space:pre;color:#c8d3e0}
-.md-body .md-tbl{width:100%;border-collapse:collapse;margin:7px 0;font-size:12px;display:block;overflow-x:auto}
+.md-body .md-tbl{width:100%;max-width:100%;border-collapse:collapse;margin:7px 0;font-size:12px;display:block;overflow-x:auto}
 .md-body .md-tbl th,.md-body .md-tbl td{border:1px solid var(--ln);padding:5px 8px;text-align:left}
 .md-body .md-tbl th{background:var(--bg3);font-weight:600}
 .md-body .md-a{color:var(--pri);text-decoration:none;border-bottom:1px solid rgba(74,141,255,.35)}
@@ -406,11 +410,15 @@ textarea{resize:vertical;min-height:72px}
 .agent-block>.thinkbox+.thinkbox{border:0;margin:0;padding:0}
 .agent-block+.agent-block{margin-top:2px}
 /* 工具段内的工具行缩进对齐思考正文，视觉上连续 */
-.agent-block>.thinkbox>.thk-body{padding:0 10px 8px 10px}
+.agent-block>.thinkbox>.thk-body{padding:0 12px 8px 14px}
 .agent-block>.thinkbox>.thk-head{padding:6px 10px}
 /* 【第六十轮】正文段：同一张卡里的正文，不再单独用 .bubble */
-.agent-block>.agent-text{padding:2px 10px 8px;font-size:13px;color:var(--fg);
-  white-space:normal;word-break:break-word}
+/* 【第七十二轮】左内边距 10px → 14px。
+   原因：.thk-head 里有 12px 箭头 + 7px gap，文字视觉起点在 29px；
+   正文只有 10px，两者差 19px，正文看起来像被挤出卡片左侧（用户报「左侧被截断」）。
+   加到 14px 后与标题行形成合理的缩进层级，不会再顶到圆角边。 */
+.agent-block>.agent-text{padding:2px 12px 8px 14px;font-size:13px;color:var(--fg);
+  white-space:normal;word-break:break-word;overflow-wrap:anywhere}
 .agent-block>.thinkbox+.agent-text{padding-top:2px}
 .thk-head{display:flex;align-items:center;gap:7px;padding:6px 10px;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .thk-head:active{background:rgba(127,141,179,.12)}
@@ -432,10 +440,21 @@ textarea{resize:vertical;min-height:72px}
   transition:max-height .16s cubic-bezier(.25,.9,.35,1),padding .14s ease,
     opacity .13s ease}
 .thk-body.h1{max-height:320px;opacity:1}
-.thk-body.h2{max-height:none;overflow:visible;opacity:1}
+/* 【第七十一轮】h2 从 max-height:none 改为 9999px。
+   原因：none ←→ 数值不同单位，CSS 无法插值过渡，从全展开收起会瞬跳。
+   9999px 超过任何思考正文实际高度，视觉上就是“不限高”，但可平滑过渡。 */
+.thk-body.h2{max-height:9999px;overflow:visible;opacity:1}
+.thk-body.h2.thk-in{overflow:visible}
 /* 【第五十六轮】收起就是真隐藏：不看内容，点开才给看。
-   之前只把高度改小，内容还在，所以用户看到「没收起」。 */
-.thinkbox[data-state="0"]>.thk-body,
+   【第七十一轮】从 display:none 改为 max-height:0 平滑折叠。
+   原因：display 不可过渡，收起瞬间高度从 320px 归 0，整页内容上跳，
+   用户观感就是「重新刷新了一次页面」。改用 max-height 后复用上面
+   .thk-body 的 transition，平滑折叠，且高度/透明度/内边距全为 0，内容真不可见。 */
+.thinkbox[data-state="0"]>.thk-body{
+  max-height:0 !important;opacity:0;overflow:hidden;
+  padding-top:0;padding-bottom:0;
+  transition:max-height .18s cubic-bezier(.25,.9,.35,1),padding .16s ease,opacity .12s ease}
+/* 工具组收起：它没有高度过渡需求，保持直接隐藏 */
 .thinkbox[data-state="0"]>.thk-tools{display:none}
 /* 思考正文：原文全放，不截断，靠滚动看 */
 .agent-think{white-space:pre-wrap;word-break:break-word}
@@ -761,8 +780,8 @@ textarea{resize:vertical;min-height:72px}
 /* 头像脉冲：原来动 box-shadow（每帧重绘），改成叠一层光圈用 opacity+scale */
 .cr-avatar.r{position:relative}
 .cr-avatar.r::before{content:'';position:absolute;inset:-2px;border-radius:10px;
-  border:1.5px solid rgba(57,197,207,.55);pointer-events:none;
-  will-change:transform,opacity;animation:ringPulse 1.8s ease-out infinite}
+  border:1.5px solid rgba(57,197,207,.55);pointer-events:none}
+.chat-row.anim-on .cr-avatar.r::before{will-change:transform,opacity;animation:ringPulse 1.8s ease-out infinite}
 @keyframes ringPulse{
   0%{transform:scale(1);opacity:.75}
   70%{transform:scale(1.35);opacity:0}
@@ -1129,3 +1148,23 @@ textarea{resize:vertical;min-height:72px}
 .ret-bd{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;
   padding:11px 13px 15px;font-family:ui-monospace,monospace;font-size:11.5px;
   line-height:1.62;color:#b8c2d8;white-space:pre-wrap;word-break:break-word}
+
+/* ── 【第六十九轮】性能：页面不在前台时全局暂停所有动画 ──
+ * 原理：animation-play-state:paused 后浏览器会释放动画驱动，不再逐帧重绘。
+ * 触发：panel.js 监听 visibilitychange，切 body.page-hidden。
+ * 视觉：回到前台自动继续，用户感知不到。
+ */
+.page-hidden *, .page-hidden *::before, .page-hidden *::after{
+  animation-play-state:paused !important}
+
+/* ── 【第六十九轮】性能：系统「减弱动效」时整体降级 ──
+ * 原来一处都没有。开了系统省电/减弱动效时，所有无限装饰动画全停，
+ * 只保留功能反馈（且时长短到近乎瞬间），内存吃紧设备立装受益。
+ */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important}
+}

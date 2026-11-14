@@ -1,5 +1,15 @@
 /* sb_tools.js — 工具代理：白名单、写类校验、undo 备份、执行与序列化 */
 "use strict";
+/* 【第七十三轮】工具调用失败诊断：缺必填 / 参数名错 / 类型错。
+   只用于失败分支拼错误信息，不影响正常路径。require 失败也不报错 */
+var DIAG = null;
+try { DIAG = require("./sb_diag.js"); } catch (eDiag) { DIAG = null; }
+function _diag(toolName, args, errText) {
+    try {
+        if (!DIAG) return String(errText == null ? "" : errText);
+        return DIAG.attach(toolName, args, errText);
+    } catch (e) { return String(errText == null ? "" : errText); }
+}
 
 /* ── ctx 契约（由 sb_task.js 构造并传入 runOne / undoAll）──
    ctx = {
@@ -83,6 +93,12 @@ function isRecursive(name) {
        不靠猜前缀。 */
     var low = n.toLowerCase();
     if (low === "subagent" || low === "subagent:*") return true;
+    /* 【第七十三轮】间接递归：子代理调 workflow 触发一个会派活的工作流，
+       工作流里再派子代理 -> 绕过了名字前缀拦截。
+       这里拦「能派活的工作流类工具」：workflow 包里带 run / trigger / exec / start 的。
+       保守起见不拦整个 workflow 包（读列表/看详情仍可用）。 */
+    if (/workflow[:._-]/.test(low) && /(run|trigger|exec|start|invoke)/.test(low)) return true;
+    if (low === "workflow:workflow_run" || low === "workflow:run") return true;
     if (low.indexOf("subagent:") === 0) return true;
     if (low === "*:subagent" || low === "*:subagent:*") return true;
     /* 通配符里带 subagent 也算（`*subagent*` 这种明显是冲本包来的） */
@@ -517,12 +533,14 @@ async function runOne(ctx, request) {
         if (callArgs.cwd == null) callArgs.cwd = ctx.workspace;
     }
     try {
-        out = await toolCall(name, callArgs);
+        out = await _withTimeout(toolCall(name, callArgs), toolTimeoutOf(ctx), name);
     } catch (e) {
         err = String((e && e.message) || e);
     }
     var ms = Date.now() - tTool;
-    if (err) return { ok: false, tool: name, error: err, ms: ms };
+    /* 【第七十三轮】失败时补结构化诊断：缺必填 / 参数名错 / 类型错。
+       只拼在 error 里，不改白名单与写边界任何行为。 */
+    if (err) return { ok: false, tool: name, error: _diag(name, callArgs, err), ms: ms };
     var text = serialize(out);
     var c = clip(text, ctx.maxChars);
     var res = { ok: true, tool: name, chars: c.chars, ms: ms, truncated: c.truncated, result: c.text };
@@ -531,6 +549,92 @@ async function runOne(ctx, request) {
         res.note = "该工具会写盘，但命令是自由文本，无法做路径校验，不受 workspace 写范围约束";
     }
     return res;
+}
+
+/* ── 【第七十四轮】工具级超时与循环检测 ──
+ *
+ * 为什么需要超时：
+ *   原来 runOne 是裸 await，工具内部卡住就永久钉在那儿。
+ *   super_admin:terminal 自己管 timeoutMs，但包工具五花八门，外层没有任何保险，
+ *   用户点「停止」也拦不住（cancel 只在进循环前查一次）。
+ *
+ * 为什么 120 秒：
+ *   单步模型请求超时是 90 秒，工具超时设得比它宽一点，
+ *   避免「工具还在正常跑，模型那层先超时」这种互相打架。
+ *   需要更长的工具自己在 args 里传 timeoutMs，由工具自己管。
+ */
+var DEFAULT_TOOL_TIMEOUT_MS = 120000;
+function toolTimeoutOf(ctx) {
+    var n = Number((ctx && ctx.tool_timeout_ms) || 0);
+    return n > 0 ? n : DEFAULT_TOOL_TIMEOUT_MS;
+}
+/* 给一个 promise 套超时。超时抛错，由 runOne 的 catch 接住转成 ok:false。
+   注意：Promise.race 不能真正取消底层操作，只是让上层不再等。
+   底层工具若真卡死，线程仍占着 —— 这是 JS 的固有限制，至少不会把整个任务锁死。 */
+function _withTimeout(p, ms, toolName) {
+    var limit = Number(ms) > 0 ? Number(ms) : DEFAULT_TOOL_TIMEOUT_MS;
+    return new Promise(function (resolve, reject) {
+        var done = false;
+        var t = setTimeout(function () {
+            if (done) return;
+            done = true;
+            reject(new Error("工具 " + String(toolName || "") + " 执行超时（超过 " + Math.round(limit / 1000)
+                + " 秒）。如果是长命令，请在该工具参数里显式传 timeoutMs，或拆成几步跑"));
+        }, limit);
+        p.then(function (v) {
+            if (done) return;
+            done = true;
+            try { clearTimeout(t); } catch (e) {}
+            resolve(v);
+        }, function (e) {
+            if (done) return;
+            done = true;
+            try { clearTimeout(t); } catch (e2) {}
+            reject(e);
+        });
+    });
+}
+
+/* 循环检测：同工具 + 同参数连续出现太多次 = 模型在原地打转。
+ *
+ * 为什么只看「连续」：模型合理地连读两个不同文件不该被判；
+ * 只有一模一样地重复才算问题。
+ * 为什么阈值 3：两次可能是重试，三次基本确定是卡住了。
+ * 为什么不直接失败：给模型一次纠错机会 —— 回一条提示，让它换路。
+ *   直接 fail 会让本来能救的任务白费。
+ *
+ * 入：task（读 turns）、name、args（对象）
+ * 出：null = 没重复；否则 { times: N, key: 归一化后的签名 }
+ */
+var LOOP_MAX_SAME = 3;
+var LOOP_SCAN = 8;          /* 往回扫几条 tool 消息 */
+function _sigOf(name, args) {
+    var a = (args && typeof args === "object") ? args : {};
+    var keys = Object.keys(a).sort();
+    var parts = [];
+    for (var i = 0; i < keys.length; i++) parts.push(keys[i] + "=" + JSON.stringify(a[keys[i]]));
+    return String(name || "") + "|" + parts.join("&");
+}
+function detectLoop(task, name, args) {
+    try {
+        var turns = (task && task.turns) || [];
+        var want = _sigOf(name, args);
+        var times = 1;                     /* 算上这一次 */
+        var scanned = 0;
+        for (var i = turns.length - 1; i >= 0 && scanned < LOOP_SCAN; i--) {
+            var t = turns[i] || {};
+            if (String(t.role || "") !== "tool") continue;
+            scanned++;
+            /* args 在 turn 里是 JSON 字符串，解析回来比对 */
+            var ta = {};
+            try { ta = JSON.parse(String(t.args || "{}")); } catch (e) { ta = {}; }
+            if (_sigOf(t.name, ta) === want) times++;
+            else break;                    /* 不连续了，停 */
+        }
+        return times >= LOOP_MAX_SAME ? { times: times, key: want } : null;
+    } catch (e) {
+        return null;
+    }
 }
 
 async function undoAll(ctx, dryRun) {
@@ -571,6 +675,10 @@ module.exports = {
     CMD_DANGER: CMD_DANGER,
     runOne: runOne,
     undoAll: undoAll,
+    detectLoop: detectLoop,
+    _sigOf: _sigOf,
+    DEFAULT_TOOL_TIMEOUT_MS: DEFAULT_TOOL_TIMEOUT_MS,
+    toolTimeoutOf: toolTimeoutOf,
     PATH_KEYS: PATH_KEYS,
     WRITE_TOOLS: WRITE_TOOLS,
     WRITE_NO_PATH_TOOLS: WRITE_NO_PATH_TOOLS,

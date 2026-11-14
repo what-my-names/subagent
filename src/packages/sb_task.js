@@ -179,7 +179,7 @@ function buildSystemPrompt(task, cfg) {
         var skillTxt = "";
         try {
             var all = task._skillList || null;
-            if (all) skillTxt = SKILL.formatSkillList(all, task.skills);
+            if (all) skillTxt = SKILL.formatSkillList(all, task.skills, String(task.task || "") + " " + String((kp.goal || "")));
         } catch (eS) { skillTxt = ""; }
         if (skillTxt) {
             lines.push("可用 skill：");
@@ -310,20 +310,43 @@ function buildSummary(task, level, last) {
     return base;
 }
 
+/* 【第七十三轮】结果提取不再死找「结论」两个字。
+   旧行为：只认「结论」，模型没写这两字就取开头 800 字 ——
+   而模型的收尾总结通常在**末尾**，取开头等于把过程当结论。
+   新行为：按优先缀找标记词，找不到则取末尾 800 字（不是开头）。 */
+var BRIEF_MARKS = ["结论", "总结", "完成情况", "完成后", "结果如下", "综上", "已全部", "已完成",
+                   "Summary", "Conclusion", "Done", "Result"];
 function pickBrief(text) {
     var t = String(text || "");
-    var idx = t.indexOf("结论");
-    if (idx >= 0) return clipText(t.slice(idx), 800);
-    return clipText(t, 800);
+    var best = -1;
+    for (var i = 0; i < BRIEF_MARKS.length; i++) {
+        var idx = t.indexOf(BRIEF_MARKS[i]);
+        if (idx >= 0 && (best < 0 || idx < best)) best = idx;
+    }
+    if (best >= 0) return clipText(t.slice(best), 800);
+    /* 没标记词：取末尾 —— 收尾总结在后面，不在开头 */
+    if (t.length <= 800) return t;
+    return "…" + t.slice(t.length - 800);
 }
 
+/* 【第七十三轮】结果末尾附产物目录。
+   旧行为：只给文字结论，主 agent 不知道子代理写了哪些文件，还得自己去 ls。 */
 function buildResult(task, level) {
     var lv = String(level || task.result_level || "standard").toLowerCase();
     var raw = String(task.result || "");
-    if (lv === "brief") return pickBrief(stripThinking(raw));
-    if (lv === "full") return clipText(stripThinking(raw), 20000);
-    var body = stripToolBlocks(stripThinking(raw));
-    return clipText(body || raw, 4000);
+    var body;
+    if (lv === "brief") body = pickBrief(stripThinking(raw));
+    else if (lv === "full") body = clipText(stripThinking(raw), 20000);
+    else {
+        var b2 = stripToolBlocks(stripThinking(raw));
+        body = clipText(b2 || raw, 4000);
+    }
+    /* 产物目录：只列实际存在的路径，不凭空造 */
+    var pd = String(task.product_dir || "");
+    if (pd) {
+        body = body + "\n\n产物目录：" + pd + "\n（写过的文件都在这里，reports/ 存报告，work/ 存中间结果）";
+    }
+    return body;
 }
 
 async function steerTask(cfg, task, text) {
@@ -331,6 +354,22 @@ async function steerTask(cfg, task, text) {
     if (!t) return { ok: false, task: task, message: "消息为空" };
     if (task.status === "closed") return { ok: false, task: task, message: "任务已关闭，不能追加" };
     task.turns.push({ role: "user", content: t });
+    /* 【第七十三轮】system prompt 跟着刷新。
+       为什么：key_points / context_text / skills 改了之后，turns[0] 里那份 system 还是老的，
+       模型下一轮看到的仍是旧要求 —— 用户以为改好了，实际没生效。
+       做法：重算一遍，有变化才替换；永远只改 turns[0]，不新增 system 轮。 */
+    try {
+        var sysNew = buildSystemPrompt(task, cfg);
+        var si = -1;
+        for (var qi = 0; qi < task.turns.length; qi++) {
+            if (String((task.turns[qi] || {}).role || "") === "system") { si = qi; break; }
+        }
+        if (si >= 0) {
+            if (String(task.turns[si].content || "") !== sysNew) task.turns[si].content = sysNew;
+        } else if (sysNew) {
+            task.turns.unshift({ role: "system", content: sysNew });
+        }
+    } catch (eSys) {}
     /* 【第六十七轮】自动加步数上限要明说，不能偷偷加。
        原来悄悄改 max_steps，用户以为自己在 20 步内，其实已经 25 了。 */
     var extended = 0;
@@ -471,7 +510,12 @@ async function prepareTurnsForModel(task, cfg) {
     for (var j = 0; j < turns.length; j++) {
         var m = turns[j] || {};
         var c = String(m.content || "");
-        if (m.role !== "tool" || j === lastIdx || c.length < EXTRACT_MIN_CHARS) {
+        /* 【第七十四轮】转存范围从「只有 tool」扩到「tool + assistant 的正文」。
+           原因：模型自己写一篇 5 万字分析时，旧逻辑完全不转存，下一轮照样超限。
+           为什么不转 reasoning：思考是叙事主线，且多数端点不回传，转了也读不回来。
+           为什么跳过最后一条：最新的工具结果/正文模型马上要用，转存等于白跑一步。 */
+        var canSpill = (m.role === "tool" || m.role === "assistant") && j !== lastIdx && c.length >= EXTRACT_MIN_CHARS;
+        if (!canSpill) {
             out.push(m);
             continue;
         }
@@ -488,7 +532,8 @@ async function prepareTurnsForModel(task, cfg) {
         }
         var cp = {};
         for (var k in m) { if (Object.prototype.hasOwnProperty.call(m, k)) cp[k] = m[k]; }
-        cp.content = "[内容过长已转存] 这段工具返回共 " + c.length
+        var what = (m.role === "tool") ? "这段工具返回共 " : "这段正文共 ";
+        cp.content = "[内容过长已转存] " + what + c.length
             + " 字符，全文在 " + path
             + "，需要细节时用 read_file 读它。";
         out.push(cp);
@@ -562,6 +607,8 @@ async function _advanceTaskInner(cfg, task) {
         /* 【第五十二轮】allowDanger 透传给 analyzeCommand。
            task 级优先（建任务时指定），否则用全局配置。 */
         allowDanger: task.allow_danger === true || cfg.allow_danger === true,
+            /* 【第七十四轮】单工具超时，缺省 120 秒（sb_tools 内部兜底） */
+            tool_timeout_ms: Number(task.tool_timeout_ms || cfg.tool_timeout_ms || 0),
             roots: [task.workspace_resolved || "", task.product_dir || ""].filter(Boolean),
             nextSeq: function () { seq = seq + 1; return seq; },
             loadUndo: function () { return undo.items || []; },
@@ -571,6 +618,51 @@ async function _advanceTaskInner(cfg, task) {
         for (var i = 0; i < res.toolCalls.length; i++) {
             var tc = res.toolCalls[i];
             var req = tc.args && tc.args.tool ? tc.args : { tool: tc.name, args: tc.args || {} };
+            /* 【第七十四轮】每次迭代都查取消。
+               旧行为只在进循环前查一次（见 _advanceTaskInner 开头），
+               模型一次返回 5 个工具时，用户点停止要等 5 个全跑完才生效。
+               跳过的工具必须补一条 tool 消息 —— 否则下一轮模型看到 tool_calls
+               没有对应的 tool 回复，端点直接 400。 */
+            if (task.cancel) {
+                for (var ci = i; ci < res.toolCalls.length; ci++) {
+                    var tcC = res.toolCalls[ci] || {};
+                    task.turns.push({
+                        role: "tool",
+                        tool_call_id: tcC.id,
+                        name: String((tcC.args && tcC.args.tool) || tcC.name || ""),
+                        args: "{}",
+                        elapsed_ms: 0,
+                        ok: false,
+                        content: "已取消，未执行"
+                    });
+                }
+                task.status = "cancelled";
+                await saveUndo(task.id, undo);
+                await saveTask(task);
+                return { ok: false, task: task, message: "任务已取消（已执行的工具保留结果）" };
+            }
+            /* 【第七十四轮】循环检测：同工具同参数连续 3 次 = 原地打转。
+               不直接失败，回一条提示让模型换路 —— 直接 fail 会让本来能救的任务白费。 */
+            var dup = TOOLS.detectLoop(task, String(req.tool || tc.name), req.args || {});
+            if (dup) {
+                var loopMsg = "检测到重复调用：工具 " + String(req.tool || tc.name)
+                    + " 用完全相同的参数已连续调用 " + dup.times + " 次，本次未执行。"
+                    + "请换一个思路：换参数、换工具，或直接基于已有结果收尾。";
+                moves.push({ tool: String(req.tool || tc.name), ok: false, chars: 0, error: loopMsg, ms: 0 });
+                argsOut.push({ tool: String(req.tool || tc.name), args: clipText(JSON.stringify(req.args || {}), 120) });
+                resultHeads.push({ tool: String(req.tool || tc.name), head: clipText(loopMsg, 150) });
+                task.turns.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    name: String(req.tool || tc.name),
+                    args: JSON.stringify(req.args || {}),
+                    elapsed_ms: 0,
+                    ok: false,
+                    content: loopMsg
+                });
+                await saveTask(task);
+                continue;
+            }
             /* 工具执行前先标记阶段：前端能显示「正在跑 xxx」，不会像卡死 */
             await setPhase(task, "tool", { tool_now: String(req.tool || tc.name) });
             var out = await TOOLS.runOne(ctx, req);

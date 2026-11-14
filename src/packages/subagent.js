@@ -924,6 +924,7 @@ async function loadCtx(cfg, task) {
         productDir: task.product_dir,
         maxChars: Number(cfg.tool_result_max_chars || 0),
         allowDanger: (task && task.allow_danger === true) || cfg.allow_danger === true,
+        tool_timeout_ms: Number((task && task.tool_timeout_ms) || cfg.tool_timeout_ms || 0),
         roots: [task.workspace_resolved || "", task.product_dir || ""].filter(Boolean),
         nextSeq: function () { seq = seq + 1; return seq; },
         loadUndo: function () { return undo.items || []; },
@@ -1186,7 +1187,15 @@ exports.subagent_spawn = async function (params) {
         return;
     }
 
-    complete({ success: true, message: "已建任务 " + task.id + inboxSuffix(), data: { task: briefOf(task), next: "advance" } });
+    /* 【第七十三轮】allowed_tools 为空时把后果说清楚。
+       旧文案只有「已建任务 xxx」，用户以为能跑，advance 才撞「工具不在允许范围」。
+       与 sb_hook.js 的「参数纪律」提示保持一致。 */
+    var emptyTip = "";
+    if (!allowed.length) {
+        emptyTip = "（注意：allowed_tools 为空，这个子代理没有任何工具可用，只能凭上下文空想。"
+            + "要让它读文件请传 allowed_tools=\"read_file\"，要全放开传 all=true）";
+    }
+    complete({ success: true, message: "已建任务 " + task.id + emptyTip + inboxSuffix(), data: { task: briefOf(task), next: "advance", allowed_count: allowed.length } });
 };
 
 exports.subagent_advance = async function (params) {
@@ -1929,6 +1938,7 @@ exports.subagent_tool_once = async function (params) {
         productDir: (task && task.product_dir) || "",
         maxChars: Number(cfg.tool_result_max_chars || 0),
         allowDanger: (task && task.allow_danger === true) || cfg.allow_danger === true,
+        tool_timeout_ms: Number((task && task.tool_timeout_ms) || cfg.tool_timeout_ms || 0),
         roots: roots.filter(Boolean),
         nextSeq: function () { seq = seq + 1; return seq; },
         loadUndo: function () { return undo.items || []; },

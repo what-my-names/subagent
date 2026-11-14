@@ -250,7 +250,7 @@ var CSS2 = A.src('ui/web/panel.css');
 /* 三档高度必须都存在：基础=0档，h1=1档，h2=2档。缺一档就退化回两态。 */
 A.match('0 档基础限高 120', CSS2, /\.thk-body\{[^}]*max-height:120px/);
 A.match('1 档 h1 限高 320', CSS2, /\.thk-body\.h1\{max-height:320px;opacity:1\}/);
-A.match('2 档 h2 不限高', CSS2, /\.thk-body\.h2\{max-height:none;overflow:visible;opacity:1\}/);
+A.match('2 档 h2 可过渡的全高', CSS2, /\.thk-body\.h2\{max-height:9999px;overflow:visible;opacity:1\}/);
 /* 基础态必须容器内滚（这是 0 档能跟手的前提） */
 A.match('0 档容器内滚', CSS2, /\.thk-body\{[^}]*overflow-y:auto/);
 /* 嵌套滚动必须 contain，否则「划到最下面」会突然跳到整页 */
@@ -265,7 +265,7 @@ A.match('两档角标文案', P, /var THINK_TIPS = \['展开', '收起', '收起
 A.match('JS 挂 h1/h2 class', P, /body\.classList\.add\('h1'\)/);
 A.match('JS 清 h1/h2 class', P, /body\.classList\.remove\('h1', 'h2'\)/);
 /* 点击必须累进循环，不能是两态互换 */
-A.match('单击立即切换', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);
+A.match('单击在 0/1 间切换（第七十一轮定稿）', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);
 /* 双击拦截必须删掉，否则第二次点击被吃掉，永远到不了 2 档 */
 A.nomatch('不再拦截双击', P, /_thinkTapEl/);
 /* setThinkState 必须接受 2 档（原来只认 0/1） */
@@ -648,8 +648,8 @@ A.nomatch('不再有分割线', CSS2, /border-top:1px solid rgba\(127,141,179,\.
 A.match('可点击色变量', CSS2, /--click:#5d9bff/);
 A.match('折叠头用可点击色', CSS2, /\.thk-tx\{[^}]*color:var\(--click\)/);
 A.match('工具名用可点击色', CSS2, /\.trow-name\{[^}]*color:var\(--click\)/);
-A.match('单击立即切换', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);
-A.match('双击全展开', P, /st0 === 2 \? 0 : 2/);
+A.match('单击在 0/1 间切换（第七十一轮定稿）', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);
+A.match('双击一步到全展开', P, /S\._tapEl === tb[\s\S]{0,200}?setThinkState\(tb, 2\)/);
 A.match('双击窗口用时间戳', P, /now - \(S\._tapAt \|\| 0\) < 260/);
 A.nomatch('不再用 240ms 延时', P, /setTimeout\(function \(\) \{\n\s+S\._tapTimer/);
 A.nomatch('不再强制同步回流', P, /void body\.offsetWidth/);
@@ -880,7 +880,9 @@ A.match('workspace 工具固定用 workspaceDir', SUB2, /var defWs = CFG\.worksp
 /* 【第六十七轮】上下文转存 + 备份保护 + 磁盘锁 + steer 透明 */
 A.match('tmp 目录已定义', A.src('packages/sb_config.js'), /function tmpDir\(\)/);
 A.match('转存软上限存在', A.src('packages/sb_task.js'), /CTX_SOFT_LIMIT/);
-A.match('只转存 tool 讯息', A.src('packages/sb_task.js'), /m\.role !== "tool"/);
+/* 【第七十四轮】转存范围扩到 tool + assistant 正文 */
+A.match('转存覆盖 tool 与 assistant', A.src('packages/sb_task.js'), /m\.role === "tool" \|\| m\.role === "assistant"/);
+A.nomatch('转存不再排除 assistant', A.src('packages/sb_task.js'), /m\.role !== "tool" \|\| j === lastIdx/);
 A.match('转存不改落盘', A.src('packages/sb_task.js'), /prepareTurnsForModel/);
 A.match('备份失败就中止', A.src('packages/sb_update.js'), /备份现役包失败，已中止/);
 A.match('磁盘锁跨上下文', A.src('packages/sb_task.js'), /tryDiskLock/);
@@ -894,6 +896,71 @@ A.match('deepseek 已入表', TM, /def\("deepseek_search:deepseek_search"/);
 A.match('subagent_skill 已入表', TM, /def\("subagent:subagent_skill"/);
 A.match('run_tool 说明带示例', A.src('packages/sb_llm.js'), /示例：\{.*tool/);
 A.match('run_tool 提醒不多套一层', A.src('packages/sb_llm.js'), /不要再多套一层 args/);
+/* 【第七十轮】三态累进不能被退化成二元往返 */
+A.nomatch('单击不得变成三态累进', P, /st0 === 2 \? 0 : st0 \+ 1/);
+A.match('双击一步到全展开', P, /S\._tapEl === tb[\s\S]{0,200}?setThinkState\(tb, 2\)/);
+/* 【第七十一轮】收起必须平滑折叠，不能 display:none 硬切（否则整页跳动像刷新） */
+A.match('0 档用 max-height:0 平滑折叠', CSS2, /\.thinkbox\[data-state="0"\]>\.thk-body\{[\s\S]{0,120}?max-height:0 !important/);
+A.nomatch('0 档 thinkbody 不得用 display:none', CSS2, /\.thinkbox\[data-state="0"\]>\.thk-body\{[^}]*display:none/);
+A.match('thk-in 只在从 0 升起时播', P, /if \(n !== 0 && prev === 0\) \{/);
+/* 【第七十二轮】正文左边距必须真留出来，不能贴着卡片圆角 */
+A.match('正文段左内边距 14px', CSS2, /\.agent-block>\.agent-text\{padding:2px 12px 8px 14px/);
+A.match('思考正文左内边距同步 14px', CSS2, /\.agent-block>\.thinkbox>\.thk-body\{padding:0 12px 8px 14px\}/);
+A.match('正文允许长串换行不溢出', CSS2, /\.agent-block>\.agent-text\{[^}]*overflow-wrap:anywhere/);
+A.match('表格不超出容器宽度', CSS2, /\.md-body \.md-tbl\{[^}]*max-width:100%/);
+/* 【第七十三轮】工具失败结构化诊断 */
+var DIAG = require(SRC + '/packages/sb_diag.js');
+A.eq('诊断：缺必填', DIAG.diagnose('read_file', {}).indexOf('缺少必填参数：path') >= 0, true);
+A.eq('诊断：参数名错给正确名', DIAG.diagnose('read_file', { filepath: '/a' }).indexOf('你是不是想传 path') >= 0, true);
+A.eq('诊断：类型错', DIAG.diagnose('read_file_part', { path: '/a', start_line: 'abc' }).indexOf('要 integer') >= 0, true);
+A.eq('诊断：全对不报', DIAG.diagnose('read_file', { path: '/a' }), '');
+A.eq('诊断：整数型字符串不算错', DIAG.diagnose('read_file_part', { path: '/a', start_line: '3' }), '');
+A.match('runOne 失败拼诊断', A.src('packages/sb_tools.js'), /_diag\(name, callArgs, err\)/);
+
+/* 【第七十三轮】结果提取不再死找「结论」 */
+A.match('brief 多标记词', A.src('packages/sb_task.js'), /BRIEF_MARKS/);
+A.match('brief 兑底取末尾', A.src('packages/sb_task.js'), /t\.slice\(t\.length - 800\)/);
+A.match('result 带产物目录', A.src('packages/sb_task.js'), /产物目录：/);
+
+/* 【第七十三轮】steer 刷新 system prompt */
+A.match('steer 重算 system', A.src('packages/sb_task.js'), /var sysNew = buildSystemPrompt\(task, cfg\)/);
+
+/* 【第七十三轮】skill 触发词匹配 */
+var SK = require(SRC + '/packages/sb_skill.js');
+var fake = [
+    { name: 'diagnosing-bugs', description: '中文触发词：诊断、调试这个。' },
+    { name: 'tdd', description: '中文触发词：TDD、测试优先。' }
+];
+var withHint = SK.formatSkillList(fake, null, '帮我诊断这个崩溃');
+A.eq('skill 命中排前面', withHint.indexOf('建议先读') >= 0, true);
+A.eq('skill 仅命中项标相关', withHint.split('【可能相关】').length - 1, 1);
+var noHint = SK.formatSkillList(fake, null, '');
+A.eq('skill 空 hint 不标相关', noHint.indexOf('【可能相关】'), -1);
+
+/* 【第七十三轮】workflow 间接递归拦截 */
+var TL = require(SRC + '/packages/sb_tools.js');
+A.eq('拦 workflow:workflow_run', TL.isRecursive('workflow:workflow_run'), true);
+A.eq('拦 workflow:run', TL.isRecursive('workflow:run'), true);
+A.eq('放行 workflow:list', TL.isRecursive('workflow:workflow_list'), false);
+A.eq('仍放行 subagent_helper', TL.isRecursive('subagent_helper'), false);
+
+/* 【第七十三轮】allowed_tools 为空提示 */
+A.match('spawn 空 allowed 提示', A.src('packages/subagent.js'), /allowed_tools 为空，这个子代理没有任何工具可用/);
+/* 【第七十四轮】工具超时 + 循环检测 + cancel 逐步 + 转存扩 assistant */
+var TL2 = require(SRC + '/packages/sb_tools.js');
+A.eq('默认工具超时 120s', TL2.toolTimeoutOf({}), 120000);
+A.eq('工具超时可覆盖', TL2.toolTimeoutOf({ tool_timeout_ms: 5000 }), 5000);
+A.eq('超时 0 回落默认', TL2.toolTimeoutOf({ tool_timeout_ms: 0 }), 120000);
+function _mkT(n, a) { return { role: 'tool', name: n, args: JSON.stringify(a), content: 'x' }; }
+A.eq('循环检测：两条历史+本次=3 触发', TL2.detectLoop({ turns: [_mkT('read_file', { path: '/a' }), _mkT('read_file', { path: '/a' })] }, 'read_file', { path: '/a' }).times, 3);
+A.eq('循环检测：一条历史不触发', TL2.detectLoop({ turns: [_mkT('read_file', { path: '/a' })] }, 'read_file', { path: '/a' }), null);
+A.eq('循环检测：参数不同不触发', TL2.detectLoop({ turns: [_mkT('read_file', { path: '/a' }), _mkT('read_file', { path: '/b' })] }, 'read_file', { path: '/a' }), null);
+A.eq('循环检测：工具不同不触发', TL2.detectLoop({ turns: [_mkT('read_file', { path: '/a' }), _mkT('write_file', { path: '/a' })] }, 'read_file', { path: '/a' }), null);
+A.match('runOne 包超时', A.src('packages/sb_tools.js'), /_withTimeout\(toolCall/);
+A.match('工具循环内查 cancel', A.src('packages/sb_task.js'), /if \(task\.cancel\) \{[\s\S]{0,900}?已取消，未执行/);
+A.match('cancel 补齐剩余 tool 消息', A.src('packages/sb_task.js'), /for \(var ci = i; ci < res\.toolCalls\.length; ci\+\+\)/);
+A.match('循环命中补 tool 消息', A.src('packages/sb_task.js'), /检测到重复调用：工具/);
+A.match('转存 assistant 文案区分', A.src('packages/sb_task.js'), /这段正文共/);
 A.finish();
 
 /* run_tool 后门的行为测试：异步跑完再单独 report，

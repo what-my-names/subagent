@@ -533,7 +533,7 @@ async function runOne(ctx, request) {
         if (callArgs.cwd == null) callArgs.cwd = ctx.workspace;
     }
     try {
-        out = await _withTimeout(toolCall(name, callArgs), toolTimeoutOf(ctx), name);
+        out = await _withTimeout(toolCall(name, callArgs), toolTimeoutOf(ctx, name, callArgs), name);
     } catch (e) {
         err = String((e && e.message) || e);
     }
@@ -564,9 +564,32 @@ async function runOne(ctx, request) {
  *   需要更长的工具自己在 args 里传 timeoutMs，由工具自己管。
  */
 var DEFAULT_TOOL_TIMEOUT_MS = 120000;
-function toolTimeoutOf(ctx) {
-    var n = Number((ctx && ctx.tool_timeout_ms) || 0);
-    return n > 0 ? n : DEFAULT_TOOL_TIMEOUT_MS;
+var MAX_TOOL_TIMEOUT_MS = 600000;      /* 硬顶 10 分钟：模型传个 1 小时也不能真等 1 小时 */
+var TOOL_TIMEOUT_MARGIN_MS = 15000;    /* 工具自报超时 + 15s 余量 */
+
+/* 决定外层超时。
+ *
+ * 【第七十五轮】这里修了一个真 bug：
+ *   上一版写死 120000，而 terminal_wait 的 schema 是 default:300000（5 分钟）。
+ *   结果工具自己允许等 5 分钟，外层 120 秒先把它杀了 ——
+ *   工具内部的 timeoutMs 形同虚设。
+ *
+ * 优先级：
+ *   1. ctx.tool_timeout_ms（全局/任务级显式配置，最高优先）
+ *   2. args.timeoutMs / args.timeout_ms（模型给这个工具指定的超时）+ 15 秒余量
+ *   3. DEFAULT_TOOL_TIMEOUT_MS
+ *   任何来源超过 MAX_TOOL_TIMEOUT_MS 一律截到硬顶。
+ *
+ * 为什么要余量：工具内部计时到返回之间有个尾巴（序列化、写盘），
+ * 外层卡得跟工具一样紧，就会在工具刚要返回时被掐。
+ */
+function toolTimeoutOf(ctx, toolName, args) {
+    var explicit = Number((ctx && ctx.tool_timeout_ms) || 0);
+    if (explicit > 0) return Math.min(explicit, MAX_TOOL_TIMEOUT_MS);
+    var a = (args && typeof args === "object") ? args : {};
+    var self = Number(a.timeoutMs || a.timeout_ms || 0);
+    if (self > 0) return Math.min(self + TOOL_TIMEOUT_MARGIN_MS, MAX_TOOL_TIMEOUT_MS);
+    return DEFAULT_TOOL_TIMEOUT_MS;
 }
 /* 给一个 promise 套超时。超时抛错，由 runOne 的 catch 接住转成 ok:false。
    注意：Promise.race 不能真正取消底层操作，只是让上层不再等。

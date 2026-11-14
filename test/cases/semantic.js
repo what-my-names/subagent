@@ -961,6 +961,24 @@ A.match('工具循环内查 cancel', A.src('packages/sb_task.js'), /if \(task\.c
 A.match('cancel 补齐剩余 tool 消息', A.src('packages/sb_task.js'), /for \(var ci = i; ci < res\.toolCalls\.length; ci\+\+\)/);
 A.match('循环命中补 tool 消息', A.src('packages/sb_task.js'), /检测到重复调用：工具/);
 A.match('转存 assistant 文案区分', A.src('packages/sb_task.js'), /这段正文共/);
+/* 【第七十五轮】超时分层：外层不能拍死工具自己的 timeoutMs */
+A.eq('无配置无参数 默认 120s', TL2.toolTimeoutOf({}, 'read_file', {}), 120000);
+A.eq('terminal 自报 15s 给 30s 余量', TL2.toolTimeoutOf({}, 'terminal', { timeoutMs: 15000 }), 30000);
+A.eq('terminal_wait 自报 300s 不被误杀', TL2.toolTimeoutOf({}, 'terminal_wait', { timeoutMs: 300000 }), 315000);
+A.eq('模型传 1 小时被硬顶 10 分钟', TL2.toolTimeoutOf({}, 'x', { timeoutMs: 3600000 }), 600000);
+A.eq('ctx 显式优先于工具自报', TL2.toolTimeoutOf({ tool_timeout_ms: 5000 }, 'x', { timeoutMs: 300000 }), 5000);
+A.eq('timeout_ms 下划线写法也认', TL2.toolTimeoutOf({}, 'x', { timeout_ms: 60000 }), 75000);
+A.match('runOne 把 name/args 传给超时函数', A.src('packages/sb_tools.js'), /toolTimeoutOf\(ctx, name, callArgs\)/);
+
+/* 【第七十五轮】sync 语义：unfinished / next / task_id / busy */
+A.match('sync 补 unfinished 标志', A.src('packages/subagent.js'), /unfinished: unfinished/);
+A.match('sync 补 next 引导', A.src('packages/subagent.js'), /next: unfinished \? "advance" : null/);
+A.match('sync 补 task_id', A.src('packages/subagent.js'), /task_id: cur\.id/);
+A.match('sync 中途返回给继续命令', A.src('packages/subagent.js'), /继续推进：subagent_advance/);
+A.match('busy 单独分支不跳循环', A.src('packages/subagent.js'), /if \(r2 && r2\.busy\) \{/);
+A.match('busy 有上限防空转', A.src('packages/subagent.js'), /busyHits > 60/);
+A.nomatch('hook 不再劝退 sync', A.src('packages/sb_hook.js'), /不要用 sync=true/);
+A.match('hook 说明 sync 超时语义', A.src('packages/sb_hook.js'), /返回 unfinished \+ 继续推进/);
 A.finish();
 
 /* run_tool 后门的行为测试：异步跑完再单独 report，

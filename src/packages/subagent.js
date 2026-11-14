@@ -1166,22 +1166,49 @@ exports.subagent_spawn = async function (params) {
         var deadline = Date.now() + waitMs;
         var last = null;
         var lastMsg = "";
+        var busyHits = 0;
         while (Date.now() < deadline) {
             var r2 = await TASK.advanceTask(cfg, task);
             notifyDone(r2 && r2.task);
+            /* 【第七十五轮】busy 单独处理。
+               并发时 advanceTask 返回 {ok:false, busy:true}，但任务本身在正常跑。
+               旧代码 `if (!r2.ok) break;` 会把它当失败跳出，
+               把「别人正在推」报成「没在预算内完成」——两件完全不同的事。 */
+            if (r2 && r2.busy) {
+                busyHits++;
+                if (busyHits > 60) { lastMsg = String(r2.message || "任务持续被其他处推进"); break; }
+                await new Promise(function (rr) { setTimeout(rr, 800); });
+                continue;
+            }
             last = r2;
             lastMsg = String(r2.message || lastMsg || "");
             if (r2.task && (r2.task.status === "done" || r2.task.status === "failed" || r2.task.status === "cancelled")) break;
             if (!r2.ok) break;
         }
         var cur = (last && last.task) ? last.task : task;
+        /* 【第七十五轮】把「还在跑」和「真失败」分开。
+           旧版 success 只看 status === "done"，中途返回也是 false，
+           data.result 是 null，也没有 task_id / next ——
+           调用方拿到 success:false 完全分不清是哪种情况。 */
+        var stCur = String(cur.status || "");
+        var unfinished = (stCur !== "done" && stCur !== "failed" && stCur !== "cancelled");
+        var msgOut;
+        if (stCur === "done") msgOut = "子代理完成（" + cur.step + " 步）";
+        else if (unfinished) {
+            msgOut = "任务还在跑（已 " + cur.step + "/" + cur.max_steps + " 步），未在等待预算内完成。"
+                + "继续推进：subagent_advance(id=\"" + cur.id + "\")；"
+                + "或等结果：subagent_wait(id=\"" + cur.id + "\")";
+        } else msgOut = (cur.error || lastMsg || "任务未完成");
         complete({
-            success: cur.status === "done",
-            message: (cur.status === "done" ? "子代理完成（" + cur.step + " 步）" : (cur.error || lastMsg || "未在等待预算内完成")) + inboxSuffix(),
+            success: stCur === "done",
+            message: msgOut + inboxSuffix(),
             data: {
                 task: briefOf(cur),
+                task_id: cur.id,
+                unfinished: unfinished,
+                next: unfinished ? "advance" : null,
                 summary: TASK.buildSummary(cur, params.summary_level || cur.summary_level, cur.last),
-                result: cur.status === "done" ? TASK.buildResult(cur, params.result_level || cur.result_level) : null
+                result: stCur === "done" ? TASK.buildResult(cur, params.result_level || cur.result_level) : null
             }
         });
         return;

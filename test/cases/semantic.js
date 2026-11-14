@@ -180,7 +180,7 @@ A.match('钩子限制条数', HOOK, /var MAX_ITEMS = 5;/);
 A.match('钩子限制正文长度', HOOK, /var MAX_TEXT = 120;/);
 /* 不能教 sync=true（桥 20 秒硬超时） */
 A.nomatch('能力提示不再教 sync=true', HOOK, /sync=true\)/);
-A.match('能力提示教 advance/wait', HOOK, /subagent_advance\(id=\.\.\.\)/);
+A.match('能力提示教 spawn 用法', HOOK, /subagent_spawn\(task=/);
 /* 回调必须是模块导出函数 */
 A.match('钩子是模块导出函数', HOOK, /exports\.subagentInboxHook = subagentInboxHook;/);
 /* toolmeta 补齐两个只读终端工具 */
@@ -218,8 +218,8 @@ A.chk('中英提示词内容不同', HK2.CAPABILITY_HINT_ZH !== HK2.CAPABILITY_H
 A.chk('英文提示词不含中日韩字符', !/[\u4e00-\u9fa5]/.test(HK2.CAPABILITY_HINT_EN));
 A.chk('中文提示词含中文', /[\u4e00-\u9fa5]/.test(HK2.CAPABILITY_HINT_ZH));
 /* 两份都要教对用法：不能用 sync=true（桥 20 秒硬超时） */
-A.chk('中文提示词警告 sync 超时', /sync=true/.test(HK2.CAPABILITY_HINT_ZH));
-A.chk('英文提示词警告 sync 超时', /sync=true/.test(HK2.CAPABILITY_HINT_EN));
+A.chk('中文提示词教 wait 两种姿势', /spawn 时 wait=true/.test(HK2.CAPABILITY_HINT_ZH));
+A.chk('英文提示词教 wait 两种姿势', /Two ways to wait/.test(HK2.CAPABILITY_HINT_EN));
 /* P2-2/P2-3 常量键名必须与 subagent_inbox 读的一致，写错就读不到 */
 A.chk('时间戳键名一致', HK2.SP_LAST_AT === 'hook_last_at');
 A.chk('跳过计数键名一致', HK2.SP_SKIPS === 'hook_disabled_skips');
@@ -682,7 +682,7 @@ A.match('思考正文不截断', CSS2, /\.agent-think\{white-space:pre-wrap/);
 /* 钩子补三条 */
 A.match('钩子讲参数纪律', A.src('packages/sb_hook.js'), /【参数纪律】/);
 A.match('钩子讲 context_files', A.src('packages/sb_hook.js'), /【长规格】/);
-A.match('钩子讲无 create_file', A.src('packages/sb_hook.js'), /【子代理环境】/);
+A.match('钩子讲工具授权', A.src('packages/sb_hook.js'), /【工具授权】/);
 
 /* ── 第四十八轮：写边界三洞 + 边角 ── */
 /* 洞1：terminal/shell 归无路径写工具，不再被 extractPaths 卡死 */
@@ -978,7 +978,45 @@ A.match('sync 中途返回给继续命令', A.src('packages/subagent.js'), /继�
 A.match('busy 单独分支不跳循环', A.src('packages/subagent.js'), /if \(r2 && r2\.busy\) \{/);
 A.match('busy 有上限防空转', A.src('packages/subagent.js'), /busyHits > 60/);
 A.nomatch('hook 不再劝退 sync', A.src('packages/sb_hook.js'), /不要用 sync=true/);
-A.match('hook 说明 sync 超时语义', A.src('packages/sb_hook.js'), /返回 unfinished \+ 继续推进/);
+A.match('hook 说明 spawn wait 语义', A.src('packages/sb_hook.js'), /不传 budget 会一直等到结束/);
+/* 【第七十六轮】未读跟着任务生死走：删任务就出箱 */
+A.match('delete 成功后出箱', A.src('packages/subagent.js'), /3\. 收件箱里这条结论一并出箱/);
+A.match('delete 找不到任务时也出箱', A.src('packages/subagent.js'), /点删除没反应，未读数也不降/);
+A.match('inbox 自愈清理死信', A.src('packages/subagent.js'), /对应任务已不存在的，自动出箱/);
+A.match('自愈漏掉无 id 项', A.src('packages/subagent.js'), /if \(!mid\) continue;/);
+A.match('清理后才重算 count', A.src('packages/subagent.js'), /if \(pruned > 0\) st = BUS\.stat\(\)/);
+A.match('报出清了见条', A.src('packages/subagent.js'), /已清掉 " \+ pruned \+ " 条对应任务已删除的/);
+/* 【第七十七轮】入箱判据：用户建的不算、失败的不算 */
+A.match('ui 与 failed 不入箱', A.src('packages/subagent.js'), /skipInbox = \(origin === "ui"\) \|\| \(task\.status === "failed"\)/);
+A.match('入箱受 skipInbox 控制', A.src('packages/subagent.js'), /if \(mode !== "off" && !skipInbox\)/);
+A.nomatch('mode=off 不再提前 return 吞掉通知', A.src('packages/subagent.js'), /if \(mode === "off"\) return;/);
+A.match('系统通知不受 skipInbox 影响', A.src('packages/subagent.js'), /mode === "system" && Tools && Tools\.System && Tools\.System\.sendNotification/);
+A.match('自愈清 ui 旧信', A.src('packages/subagent.js'), /if \(mo === "ui" \|\| String\(mt\.status/);
+A.match('自愈不存在任务后 continue', A.src('packages/subagent.js'), /catch \(eP\) \{\} continue;/);
+/* 【第七十八轮】提示词跟上新工具名口径 */
+var HK = A.src('packages/sb_hook.js');
+/* 只查提示词正文，别扫整份源码 —— 顶部注释里会提到旧名做说明 */
+var HK_BODY = (function () {
+    var i = HK.indexOf('var CAPABILITY_HINT_ZH');
+    var j = HK.indexOf('function pickHint');
+    return (i >= 0 && j > i) ? HK.slice(i, j) : HK;
+})();
+A.nomatch('提示词不再教 sync=true', HK_BODY, /sync=true/);
+A.nomatch('提示词不再提旧名 advance', HK_BODY, /subagent_advance/);
+A.nomatch('提示词不再提旧名 wait', HK_BODY, /subagent_wait/);
+A.nomatch('提示词不再提旧名 result', HK_BODY, /subagent_result\(id/);
+A.nomatch('提示词不再提旧名 trace', HK_BODY, /subagent_trace/);
+A.nomatch('提示词不再写 allowed_tools=', HK_BODY, /allowed_tools=/);
+A.nomatch('提示词不再说没 create_file', HK_BODY, /没有 create_file/);
+A.eq('提示词写 tools=', HK_BODY.indexOf('tools=') >= 0 && HK_BODY.indexOf('read_file,edit_file,create_file') >= 0, true);
+A.eq('提示词写 files=', HK_BODY.indexOf('files=') >= 0 && HK_BODY.indexOf('/sdcard/x/tmp/spec.md') >= 0, true);
+A.match('提示词教 spawn wait', HK_BODY, /spawn \时 wait=true/);
+A.match('提示词教 subagent_run', HK_BODY, /subagent_run\(id=/);
+A.match('提示词教 subagent_get', HK_BODY, /subagent_get\(id=/);
+A.match('提示词教 subagent_ctrl', HK_BODY, /subagent_ctrl\(id=/);
+A.match('提示词教 subagent_box', HK_BODY, /subagent_box\(\)/);
+A.match('提示词教 subagent_del', HK_BODY, /subagent_del\(id=/);
+A.match('英文也不提 sync', HK_BODY, /Two ways to wait/);
 A.finish();
 
 /* run_tool 后门的行为测试：异步跑完再单独 report，

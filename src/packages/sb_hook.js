@@ -50,28 +50,37 @@ var MAX_ITEMS = 5;
 var MAX_TEXT = 120;
 
 /* 能力提示：只在没有未读结论时注入。
-   注意不要教 sync=true —— 桥有 20 秒硬超时，sync 会等几十秒导致界面假死。
-   正确路径是「建任务 → advance 推进 / wait 等结果」。
+   【第七十八轮】按「大类 + 参数」重构后的口径重写。
+   旧版有四个坑，都在这次修掉：
+   1) 教的是 subagent_advance / subagent_wait / subagent_result / subagent_trace 四个工具，
+      它们已合并成 run / get 两类 —— 旧名会让模型调到不存在的工具
+   2) 写 allowed_tools=\\"read_file,edit_file\\"，现在参数名是 tools
+   3) 说「没有 create_file」，已过时：宿主侧 create_file 早就可授权
+   4) 「sync=true 只等 60 秒」——sync 已改名 wait，且语义改成「不填 budget 就等到完成」
    中英两份：官方 payload 有 useEnglish 字段，英文界面下塞中文会诱导模型混语言。 */
 var CAPABILITY_HINT_ZH = [
   "[子代理能力] 可以把一整件独立的事派给子代理：它自己发模型请求、自己执行工具，回来只交结论。",
   "适合：多文件改造、大范围调研、需要反复试错的任务。",
-  "派活：subagent_spawn(task=\"...\", allowed_tools=\"read_file,edit_file\", workspace=\"/sdcard/x/...\")",
-  "【参数纪律】task 只写任务本身。allowed_tools 和 workspace 是独立参数，不要塞进 task 字符串——塞进去会把 JSON 撑坏，调用直接失败。",
-  "【长规格】要交代的细节多（规格、验收标准、代码片段），写进一个文件，用 context_files=\"/sdcard/x/tmp/spec.md\" 传，不要硬塞 task。",
-  "【子代理环境】没有 create_file，写不了新文件；派它写文档会白跑。让它改已有文件、或返回内容由你落盘。",
-  "推进：subagent_advance(id=...)；等结果：subagent_wait(id=...)。sync=true 只等 60 秒，超了会返回 unfinished + 继续推进的方法，不会白跑。",
-  "取结论：subagent_result(id=...)；看进度：subagent_trace(id=...)。"
+  "派活：subagent_spawn(task=\"...\", tools=\"read_file,edit_file,create_file\", workspace=\"/sdcard/x/...\")",
+  "【参数纪律】task 只写任务本身。tools 和 workspace 是独立参数，不要塞进 task 字符串——塞进去会把 JSON 撑坏，调用直接失败。",
+  "【工具授权】tools 留空 = 一个工具都用不了；传 \"*\" 放开全部（派子代理仍被硬拦）。",
+  "【长规格】要交代的细节多（规格、验收标准、代码片段），写进一个文件，用 files=\"/sdcard/x/tmp/spec.md\" 传，不要硬塞 task。",
+  "【等结果两种姿势】spawn 时 wait=true 就当场跑完并返回结论，不传 budget 会一直等到结束；不等就用返回的 id 调 subagent_run(id=..., wait=true)。",
+  "取产出：subagent_get(id=..., detail=brief|standard|full|trace)。detail=trace 才拿逐步明细。",
+  "改状态：subagent_ctrl(id=..., action=cancel|resume|steer|close)。追加指令用 action=steer + message。",
+  "未读：subagent_box()；删任务：subagent_del(id=..., confirm=true)。"
 ].join(String.fromCharCode(10));
 var CAPABILITY_HINT_EN = [
   "[Subagent capability] You can delegate a whole self-contained job to a subagent: it issues its own model requests, runs its own tools, and returns only the conclusion.",
   "Good for: multi-file refactors, broad research, tasks that need repeated trial and error.",
-  "Delegate: subagent_spawn(task=\"...\", allowed_tools=\"read_file,edit_file\", workspace=\"/sdcard/x/...\")",
-  "[Parameter discipline] task holds the job only. allowed_tools and workspace are separate parameters; stuffing them into the task string breaks the JSON and the call fails.",
-  "[Long specs] Put detailed specs/acceptance criteria/code snippets in a file and pass context_files=\"/sdcard/x/tmp/spec.md\" instead of cramming them into task.",
-  "[Subagent env] No create_file, so it cannot write new files; asking it to write docs is a wasted run. Have it edit existing files, or return content for you to save.",
-  "Advance: subagent_advance(id=...); wait: subagent_wait(id=...). sync=true waits only 60s; past that it returns unfinished plus how to continue, so nothing is wasted.",
-  "Get result: subagent_result(id=...); check progress: subagent_trace(id=...)."
+  "Delegate: subagent_spawn(task=\"...\", tools=\"read_file,edit_file,create_file\", workspace=\"/sdcard/x/...\")",
+  "[Parameter discipline] task holds the job only. tools and workspace are separate parameters; stuffing them into the task string breaks the JSON and the call fails.",
+  "[Tool grants] Empty tools means no tools at all; pass \"*\" to allow everything (spawning subagents stays blocked).",
+  "[Long specs] Put detailed specs/acceptance criteria/code snippets in a file and pass files=\"/sdcard/x/tmp/spec.md\" instead of cramming them into task.",
+  "[Two ways to wait] spawn with wait=true runs it to completion and returns the conclusion; omit budget to wait until it finishes. Otherwise use the returned id with subagent_run(id=..., wait=true).",
+  "Get output: subagent_get(id=..., detail=brief|standard|full|trace). Only detail=trace yields step-by-step detail.",
+  "Change state: subagent_ctrl(id=..., action=cancel|resume|steer|close). Append instructions with action=steer plus message.",
+  "Unread: subagent_box(); delete: subagent_del(id=..., confirm=true)."
 ].join(String.fromCharCode(10));
 
 /* 语言选择：只有 payload.useEnglish === true 才用英文。

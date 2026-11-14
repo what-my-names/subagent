@@ -938,14 +938,21 @@ async function notifyDone(task) {
     try {
         if (!task) return;
         if (task.status !== "done" && task.status !== "failed") return;
+        /* 【第七十七轮】两个不该入箱的情况，按用户定义「用户建立以及查看的不算」：
+           1) origin=ui —— 用户自己在面板建的任务，结论就在面板里，不用额外提醒
+           2) failed —— 失败不是「产出了结论」，进箱只是噪音（例如端点连不上）
+           注意：这两个条件只挡收件箱，系统通知照旧，别把故障信息也吞了。 */
+        var origin = String(task.origin || "");
+        var skipInbox = (origin === "ui") || (task.status === "failed");
         var cfg = await CFG.load();
         var mode = String(cfg.notice_mode || "inbox");
-        if (mode === "off") return;
         var title = String(task.title || task.id);
         /* 全文入库（第七轮）：旧版截 160 字，邮件正文打不开——现在存全量，
            由 sb_bus 的 20000 上限统一兜底 */
         var text = task.result ? String(task.result) : String(task.error || "已结束");
-        try { BUS.add({ id: task.id, title: title, task_id: task.id, task_title: task.title || title, text: text, finished_at: Date.now(), created_at: Date.now() }); } catch (e0) {}
+        if (mode !== "off" && !skipInbox) {
+            try { BUS.add({ id: task.id, title: title, task_id: task.id, task_title: task.title || title, text: text, finished_at: Date.now(), created_at: Date.now() }); } catch (e0) {}
+        }
         if (mode === "system" && Tools && Tools.System && Tools.System.sendNotification) {
             Tools.System.sendNotification(text.slice(0, 120), "子代理：" + title);
         }
@@ -1384,6 +1391,32 @@ exports.subagent_inbox = async function (params) {
        - hook_last_at：上次钩子被调用的时间戳（毫秒，0 = 从未调用）
        - hook_enabled：钩子开关当前状态 */
     var st = BUS.stat();
+    /* 【第七十六轮】自愈：收件箱里对应任务已不存在的，自动出箱。
+       为什么：未读的本质是「子代理产出了结论、用户还没取走」，
+       任务（对话）都不在了，这条结论无从取起，留着只会让未读数永远不降。
+       用户原话：「我在删除对话之后，这个未读消息它不会减少，
+       这个未读消息应当是检测对话状态的」。
+       覆盖场景：任务文件被外部删掉、装了新包丢了 tasks 目录、
+       或者早期版本删除时没清理收件箱。 */
+    var pruned = 0;
+    try {
+        var allMails = BUS.list();
+        for (var pi = 0; pi < allMails.length; pi++) {
+            var mid = String((allMails[pi] || {}).id || "");
+            if (!mid) continue;
+            var mt = await TASK.loadTask(mid);
+            /* 任务已不存在 → 出箱 */
+            if (!mt) { try { BUS.remove(mid); pruned++; } catch (eP) {} continue; }
+            /* 【第七十七轮】任务还在但不该在箱里的旧数据也顺手清掉：
+               origin=ui（用户自己建的）+ failed（失败不是结论）。
+               这两条是新的入箱判据，装包前积下的旧邮件靠这里自愈。 */
+            var mo = String(mt.origin || "");
+            if (mo === "ui" || String(mt.status || "") === "failed") {
+                try { BUS.remove(mid); pruned++; } catch (eP2) {}
+            }
+        }
+        if (pruned > 0) st = BUS.stat();
+    } catch (ePr) {}
     var calls = 0, skips = 0, lastAt = 0, enabled = true;
     try {
         var p = Java.getApplicationContext().getSharedPreferences("subagent_inbox", 0);
@@ -1409,7 +1442,8 @@ exports.subagent_inbox = async function (params) {
     complete({
 success: true,
         message: "未读 " + st.count + " 条；钩子调用 " + calls + " 次（上次 " + agoTxt
-            + "，开关" + (enabled ? "已开启" : "已关闭") + (skips > 0 ? "，关闭期间跳过 " + skips + " 次" : "") + "）",
+            + "，开关" + (enabled ? "已开启" : "已关闭") + (skips > 0 ? "，关闭期间跳过 " + skips + " 次" : "")
+            + (pruned > 0 ? "；已清掉 " + pruned + " 条对应任务已删除的" : "") + "）",
         data: {
             count: st.count,
             hook_calls: calls,
@@ -1471,6 +1505,9 @@ exports.subagent_delete = async function (params) {
     var t = await TASK.loadTask(id);
     if (!t) {
         try { await Tools.Files.deleteFile(CFG.baseDir() + "/tasks/" + id + ".json", false, "android"); } catch (e) {}
+        /* 任务文件已不在，收件箱里若还留着这条也要一并出箱 ——
+           否则会变成「点删除没反应，未读数也不降」的死角。 */
+        try { BUS.remove(id); } catch (eB) {}
         complete({ success: true, message: "任务文件已删除", data: { id: id } });
         return;
     }
@@ -1486,6 +1523,12 @@ exports.subagent_delete = async function (params) {
     try { await Tools.Files.deleteFile(CFG.baseDir() + "/tasks/" + id + ".json", false, "android"); } catch (e) {}
     /* 2. 产物目录 + undo 快照 */
     try { await Tools.Files.deleteFile(t.product_dir || TASK.productDirOf(id), true, "android"); } catch (e) {}
+    /* 3. 收件箱里这条结论一并出箱。
+       为什么：未读的本质是「子代理产出了结论、用户还没取走」。
+       对话（任务）都删了，那条结论也就无从取起，留着只会让未读数永远不降。
+       用户原话：「我在删除对话之后，这个未读消息它不会减少，
+       这个未读消息应当是检测对话状态的」。 */
+    try { BUS.remove(id); } catch (eB) {}
     TASK.dropCache(id);
     complete({ success: true, message: "已删除任务", data: { id: id, deleted: true } });
 };

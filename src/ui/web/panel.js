@@ -502,6 +502,11 @@ function mathHtml(texEsc, display) {
   var LIST_TTL = 8000;
   var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, page: 'welcome', probed: false };
   var WRITE_RE = /(create_file|edit_file|delete_file|move_file|copy_file|write)/;
+  /* 【第八十三轮补丁C】群组展示状态：
+     groupList = 后端返回的群组清单（code/name/readonly/mask）
+     grpClosed = 列表页手动折叠过的分组 key 集合，刷新后保持折叠 */
+  S.groupList = [];
+  S.grpClosed = {};
   var HIGH = /(delete_file|move_file|terminal|shell)/;
   var FALLBACK = [
     ['read_file', '读文件', 0], ['read_file_part', '读文件片段', 0], ['list_files', '列目录', 0],
@@ -515,11 +520,28 @@ function mathHtml(texEsc, display) {
   /* 思考等级的英文标签：面板上显示英文，和后端档位名一致，也更好看 */
   var THINK_EN = { off: 'Off', low: 'Low', medium: 'Medium', high: 'High' };
   function stCn(s) { return ST_CN[s] || (s || '-'); }
+  /* 【第八十三轮补丁C】陈旧 running 自愈判定。
+     问题：_advanceTaskInner 只在被推时改状态。进程重启/被系统杀掉后，
+     running 标记留在 task.json 里没人清，面板就永久显示「运行中」，
+     用户既等不到结果也点不了「继续推进」。
+     做法：running/queued 且 updated_at_ms 距今超过 STALE_MS → 展示成「已中断」。
+     只改前端展示，不动后端状态 —— 真在跑的长任务最多显示延迟，不会被写坏。
+     一点「继续推进」或刷新拉回新状态，eff 自然恢复。 */
+  var STALE_MS = 3 * 60 * 1000;
+  function effStatus(it) {
+    var st = String((it && it.status) || '');
+    if (st !== 'running' && st !== 'queued') return st;
+    var t0 = Number((it && it.updated_at_ms) || 0);
+    if (!t0) return st;
+    if ((Date.now() - t0) > STALE_MS) return 'interrupted';
+    return st;
+  }
   /* 状态文案：running 时按 phase 细分，让用户知道它此刻在思考还是在跑工具。
      it 是任务对象，带 phase / phase_at / tool_now。 */
   function stLabel(it) {
     if (!it) return '-';
-    var st = String(it.status || '');
+    var st = effStatus(it);
+    if (st === 'interrupted') return '已中断';
     if (st !== 'running' && st !== 'queued') return stCn(st);
     var ph = String(it.phase || 'idle');
     var base = PH_CN[ph] || '运行中';
@@ -946,7 +968,12 @@ function warnMsg(m) { toast(m, 'warn'); }
   window.__sbResult = function (json, kind, id) {
     var r; try { r = JSON.parse(json); } catch (e) { return; }
     var d = r.data || r;
-    if (kind === 'list') return renderList(d.items || r.items || d, true);
+    if (kind === 'list') {
+      /* 【第八十三轮补丁C】群组清单跟列表一起回来，先存进 S.groupList，
+         分组渲染时用来把 6 位群组码翻译成群组名。 */
+      S.groupList = d.groups || r.groups || [];
+      return renderList(d.items || r.items || d, true);
+    }
     if (kind === 'tools') { d.loaded = true; S.tools = d; if (S.dlg) renderDlg($('dlgSearch').value || ''); return; }
     /* kind === 'chats' 分支已随「附带主对话上下文」功能一并移除：
        页面不再有对话选择入口，也就没有调用方会发 subagent_chats。 */
@@ -982,10 +1009,10 @@ function warnMsg(m) { toast(m, 'warn'); }
       if (S.cur) {
         /* 停止后立刻拉一次 trace：把已经产出的思考、正文、工具块都留在页面上，
            不能让用户觉得「点了停止，内容就没了」 */
-        call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+        call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
         /* 取消是异步生效的（后端下一步才认标记），再过一会儿补拉一次终态 */
         setTimeout(function () {
-          if (S.cur && ALIVE) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+          if (S.cur && ALIVE) call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
         }, 900);
       }
       refreshList(false);
@@ -1016,7 +1043,7 @@ function warnMsg(m) { toast(m, 'warn'); }
       if (st2) S.curStatus = st2;
       if (r && r.success === false) err(r.message || '推进失败');
       /* 拉最新明细回填（真源） */
-      if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+      if (S.cur) call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
       /* 只有 queued/running 才继续推；done/failed/cancelled 一律停手，
          绝不在这里调 resume，否则会把刚跑完的任务重置回 queued */
       if (st2 === 'queued' || st2 === 'running') {
@@ -1049,7 +1076,7 @@ function warnMsg(m) { toast(m, 'warn'); }
       }
       return;
     }
-    if (kind === 'steer') { okMsg('已发送'); setTimeout(function () { if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40 }, 'trace'); }, 1200); return; }
+    if (kind === 'steer') { okMsg('已发送'); setTimeout(function () { if (S.cur) call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace'); }, 1200); return; }
     if (kind === 'trace' && d.turns) return renderTrace(d);
     if (kind === 'modelsRefreshed') {
       var mm = d.models || {};
@@ -1094,7 +1121,7 @@ function warnMsg(m) { toast(m, 'warn'); }
          不刷新页面还会一直用旧端点 → 旧端点没 CORS → 一直走中继 → 用户看到
          「明明配了 CORS 还不是流式」。 */
       try { STREAM.ctx = null; STREAM.key = ''; STREAM.relay = false; STREAM.fellBack = false; } catch (eS) {}
-      call('subagent:subagent_config', { action: 'status' }, 'cfg');
+      call('subagent:subagent_cfg', { action: 'status' }, 'cfg');
       return;
     }
     /* 密钥写入后：不清空输入框、不重载表单，避免把用户正在填的端点/模型覆盖回旧值 */
@@ -1126,7 +1153,7 @@ function warnMsg(m) { toast(m, 'warn'); }
       if (!ALIVE) return;
       if (S.listBusy) { S.listBusy = false; }
     }, 5000);
-    call('subagent:subagent_list', {}, 'list');
+    call('subagent:subagent_get', { all: true }, 'list');
   }
   /* ── 【第六十九轮】列表动画按需挂载 ──
      问题：.chat-row 的流光、头像呼吸、运行中脉冲都是无限循环动画，
@@ -1183,29 +1210,163 @@ function warnMsg(m) { toast(m, 'warn'); }
       src = [];
       for (var q = 0; q < S.items.length; q++) {
         var it0 = S.items[q];
-        var hay = ((it0.title || '') + ' ' + (it0.id || '') + ' ' + stCn(it0.status) + ' ' + (it0.last_text || '')).toLowerCase();
+        var hay = ((it0.title || '') + ' ' + (it0.id || '') + ' ' + stCn(it0.status) + ' ' + (it0.last_text || '') + ' ' + (it0.group_name || it0.group || '') + ' ' + (it0.parent_chat_id || '')).toLowerCase();
         if (hay.indexOf(kw) >= 0) src.push(it0);
       }
     }
-    var limited = (target === rbox) ? src.slice(0, 6) : src;   // 首屏只显示最近 6 条
-    if (!limited.length) { target.innerHTML = '<div class="empty small">' + (kw ? '没有匹配的任务。' : '还没有任务，点右下 ＋ 新建一个。') + '</div>'; return; }
-    var h = '';
-    for (var i = 0; i < limited.length; i++) {
-      var it = limited[i];
-      var picked = !!(S.multi && S.selIds && S.selIds[it.id]);
-      /* 多选模式下整行点击 = 勾选，不进详情；勾选框只在多选时出现 */
-      h += '<div class="chat-row' + (S.multi ? ' multi' : '') + (picked ? ' picked' : '') + '" data-act="' + (S.multi ? 'toggleSel' : 'open') + '" data-val="' + esc(it.id) + '">'
-        + (S.multi ? '<span class="selbox">' + (picked ? '<svg><use href="#i-check"/></svg>' : '') + '</span>' : '')
-        + '<div class="cr-avatar ' + (it.status === 'failed' ? 'f' : (it.status === 'running' ? 'r' : 'o')) + '">' + esc(String(it.title || it.id || '·').slice(0, 1)) + '</div>'
-        + '<div class="cr-main"><div class="cr-top"><span class="cr-title">' + esc(it.title || it.id) + '</span><span class="cr-time">' + esc((it.last_at || it.created_at || '').slice(5, 16)) + '</span></div>'
-        + '<div class="cr-sub"><span class="cr-status ' + it.status + '">' + stLabel(it) + '</span>'
-        + (it.last_text || it.result_preview ? '<span class="cr-pv">' + esc(String(it.last_text || it.result_preview).slice(0, 50)) + '</span>' : '')
-        + '</div></div>'
-        + (S.multi ? '' : '<span class="cr-go"><svg><use href="#i-chev-r"/></svg></span>') + '</div>';
+    if (!src.length) { target.innerHTML = '<div class="empty small">' + (kw ? '没有匹配的任务。' : '还没有任务，点右下 ＋ 新建一个。') + '</div>'; return; }
+    /* 首屏（最近任务）保持平铺：只有 6 条，分组反而切割视线。
+       列表页才是「按群组 / 按父 agent 分类」的完整视图。 */
+    if (target === rbox) {
+      var lim0 = src.slice(0, 6), h0 = '';
+      for (var i0 = 0; i0 < lim0.length; i0++) h0 += taskRow(lim0[i0]);
+      target.innerHTML = h0;
+      watchRowAnim(target);
+      syncMultiBar();
+      return;
     }
-    target.innerHTML = h;
+    target.innerHTML = groupHtml(src, !!kw);
     watchRowAnim(target);   /* 【第六十九轮】只给视口内的行开装饰动画 */
     syncMultiBar();
+  }
+
+  /* 单条任务的 HTML。抽出来是因为分组渲染与首屏平铺共用同一套行结构，
+     复制两份迟早会改花一份。 */
+  function taskRow(it) {
+    var picked = !!(S.multi && S.selIds && S.selIds[it.id]);
+    var st = effStatus(it);
+    /* 多选模式下整行点击 = 勾选，不进详情；勾选框只在多选时出现 */
+    return '<div class="chat-row' + (S.multi ? ' multi' : '') + (picked ? ' picked' : '') + (st === 'interrupted' ? ' stale' : '') + '" data-act="' + (S.multi ? 'toggleSel' : 'open') + '" data-val="' + esc(it.id) + '">'
+      + (S.multi ? '<span class="selbox">' + (picked ? '<svg><use href="#i-check"/></svg>' : '') + '</span>' : '')
+      + '<div class="cr-avatar ' + (st === 'failed' ? 'f' : (st === 'running' ? 'r' : 'o')) + '">' + esc(String(it.title || it.id || '·').slice(0, 1)) + '</div>'
+      + '<div class="cr-main"><div class="cr-top"><span class="cr-title">' + esc(it.title || it.id) + '</span><span class="cr-time">' + esc((it.last_at || it.created_at || '').slice(5, 16)) + '</span></div>'
+      + '<div class="cr-sub"><span class="cr-status ' + st + '">' + stLabel(it) + '</span>'
+      + (it.last_text || it.result_preview ? '<span class="cr-pv">' + esc(String(it.last_text || it.result_preview).slice(0, 50)) + '</span>' : '')
+      + '</div></div>'
+      + (S.multi ? '' : '<span class="cr-go"><svg><use href="#i-chev-r"/></svg></span>') + '</div>';
+  }
+
+  /* 【第八十三轮补丁C】群组分级渲染 + 群组详情 */
+  /* 分组 key 形如 "g:263142" / "c:<chatId>" / "c:_"；
+     只有 "g:" 前缀才是真群组，能查详情。 */
+  function gc0(bucketKey) {
+    var k = String(bucketKey || '');
+    return k.slice(0, 2) === 'g:' ? k.slice(2) : '';
+  }
+
+  /* 权限位 → 中文短语。后端给的是数字掩码，直接显示数字用户看不懂。 */
+  function permCn(mask) {
+    var m = Number(mask || 0), out = [];
+    if (m & 1) out.push('读');
+    if (m & 2) out.push('写');
+    if (m & 4) out.push('建');
+    if (m & 8) out.push('删');
+    if (m & 16) out.push('管');
+    return out.length ? out.join(' ') : '无';
+  }
+  function permRole(mask) {
+    var m = Number(mask || 0);
+    if (m === 31) return '创始人';
+    if (m === 3) return '受邀';
+    if (m === 1) return '只读';
+    return '自定义';
+  }
+
+  /* 群组详情：点分组头右侧的信息图标打开，走底部抽屉。
+     里面给：群组码（可长按复制）、成员与权限位、黑名单、
+     当前我的权限；有 KICK 位的还给剔除/解禁入口。 */
+  function openGrpInfo(code) {
+    var c = String(code || '');
+    if (!c) return;
+    call('subagent:subagent_group', { action: 'info', code: c }, 'grpInfo', function (r0, d) {
+      /* callRaw 的 onOk 签名是 (r, d)。必须用第二参 d —— 第一参是外层
+         {success, message, data}，直接读 r0.members 永远拿不到成员。 */
+      var g = (d && (d.group || d)) || {};
+      var mem = g.members || [], kicked = g.kicked || [];
+      var mine = Number(g.my_mask != null ? g.my_mask : (g.mask || 0));
+      var canManage = !!(mine & 16);
+      var g0 = '<div class="gi-code"><div class="gi-code-k">群组码（长按复制给别的 agent）</div>'
+        + '<input class="gi-code-v" readonly value="' + esc(c) + '"></div>'
+        + '<div class="mi-grid">'
+        + cell('名称', g.name || '-', true)
+        + cell('我的权限', permCn(mine) + '（' + permRole(mine) + '）', true)
+        + cell('状态', g.readonly ? '只读（无人可建）' : '正常', false)
+        + cell('成员', String(mem.length) + ' 人', false)
+        + '</div>';
+      g0 += '<div class="mi-sec">成员</div>';
+      for (var i = 0; i < mem.length; i++) {
+        var m = mem[i] || {}, mid = String(m.chat_id || ''), mm = Number(m.mask || 0);
+        g0 += '<div class="gi-row"><div class="gi-row-main"><div class="gi-row-t">'
+          + esc(mid ? mid.slice(-12) : '（空）') + '</div><div class="gi-row-s">'
+          + esc(permRole(mm)) + ' · ' + esc(permCn(mm)) + '</div></div>'
+          + (canManage && mid !== String(g.founder || '')
+            ? '<button class="gi-btn" data-act="grpKick" data-val="' + esc(c + '|' + mid) + '">剔除</button>' : '')
+          + '</div>';
+      }
+      if (kicked.length) {
+        g0 += '<div class="mi-sec">已剔除</div>';
+        for (var j = 0; j < kicked.length; j++) {
+          var kid = String(kicked[j] || '');
+          g0 += '<div class="gi-row"><div class="gi-row-main"><div class="gi-row-t">'
+            + esc(kid ? kid.slice(-12) : '（空）') + '</div><div class="gi-row-s">输入群组码也进不来</div></div>'
+            + (canManage ? '<button class="gi-btn" data-act="grpUnkick" data-val="' + esc(c + '|' + kid) + '">解禁</button>' : '')
+            + '</div>';
+        }
+      }
+      if (!canManage) g0 += '<div class="gi-tip">你没有管理权限（KICK 位），只能查看。</div>';
+      S.grpCur = c;
+      openSheet('群组 ' + c, g0);
+    });
+  }
+
+  /* 【第八十三轮补丁C】群组一级分类 + 无群组按父 agent 分组。
+     规则（用户定）：
+       1) 有群组的任务归到该群组，群组标题带群组名 + 码 + 成员权限提示
+       2) 无群组的任务按 parent_chat_id 分组，标题只显示父对话原 ID 后 8 位
+       3) 群组还没建对应任务时也显示（空群组不渲染，避免噪音）
+     搜索时退化成平铺：结果跨组散落，分组反而难找。 */
+  function groupHtml(src, searching) {
+    if (searching || S.multi) {
+      var hl = '';
+      for (var i = 0; i < src.length; i++) hl += taskRow(src[i]);
+      return hl;
+    }
+    var gmap = {}, order = [];
+    function bucket(key, title, sub) {
+      if (!gmap[key]) { gmap[key] = { key: key, title: title, sub: sub || '', items: [] }; order.push(key); }
+      return gmap[key];
+    }
+    for (var j = 0; j < src.length; j++) {
+      var it = src[j];
+      var gc = String(it.group || '');
+      if (gc) {
+        var gi = null;
+        for (var k = 0; k < (S.groupList || []).length; k++) { if (String(S.groupList[k].code || '') === gc) { gi = S.groupList[k]; break; } }
+        var gname = gi && gi.name ? gi.name : ('群组 ' + gc);
+        var gsub = gc + (gi && gi.readonly ? '｜只读' : '');
+        bucket('g:' + gc, gname, gsub).items.push(it);
+      } else {
+        var pc = String(it.parent_chat_id || '');
+        bucket('c:' + (pc || '_'), pc ? ('父对话 ' + pc.slice(-8)) : '无归属', pc ? pc : '').items.push(it);
+      }
+    }
+    var html = '';
+    for (var o = 0; o < order.length; o++) {
+      var b = gmap['#' + order[o]];
+      if (!b || !b.items.length) continue;
+      html += '<div class="grp-head" data-act="foldGrp" data-val="' + esc(order[o]) + '">'
+        + '<svg class="grp-chv' + (S.grpClosed && S.grpClosed[order[o]] ? ' closed' : '') + '" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
+        + '<span class="grp-name">' + esc(b.title) + '</span>'
+        + (b.sub ? '<span class="grp-code">' + esc(b.sub) + '</span>' : '')
+        + '<span class="grp-n">' + b.items.length + '</span>'
+        /* 群组头右侧的「详情」：只有真群组才给（父对话桶没有码可查） */
+        + (gc0(order[o]) ? '<button class="grp-info" data-act="grpInfo" data-val="' + esc(gc0(order[o])) + '" title="群组详情"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.5"/></svg></button>' : '')
+        + '</div>';
+      if (!(S.grpClosed && S.grpClosed[order[o]])) {
+        for (var m = 0; m < b.items.length; m++) html += taskRow(b.items[m]);
+      }
+    }
+    return html;
   }
 
   /* ── 详情页：对话时间线 ── */
@@ -1239,7 +1400,7 @@ function warnMsg(m) { toast(m, 'warn'); }
       $('dtChat').innerHTML = '<div class="scanline"></div>';
     }
     syncDtBar();
-    call('subagent:subagent_trace', { id: id, limit: 40, compact: true }, 'trace');
+    call('subagent:subagent_get', { id: id, detail: 'trace', limit: 40 }, 'trace');
     /* 运行中/排队中的任务必须重启轮询：从主页、列表、收件箱切回来时
        pollOnce 早已因 page 不是 detail 而退出，不重启就永远停在拉取那一刻 */
     var stNow = String(S.curStatus || '');
@@ -1351,7 +1512,7 @@ function warnMsg(m) { toast(m, 'warn'); }
        startRun(S.cur);
      };
      if (st === 'cancelled' || st === 'failed' || st === 'done' || st === 'queued') {
-       call('subagent:subagent_resume', { id: S.cur }, 'resume', function () {
+       call('subagent:subagent_ctrl', { id: S.cur, action: 'resume' }, 'resume', function () {
          start();
        });
      } else {
@@ -1385,8 +1546,8 @@ function warnMsg(m) { toast(m, 'warn'); }
     /* 停止后主动拉一次 trace：把后端真实状态（cancelled）取回来。
        不这么做的话，界面会停在「模型生成中…」，因为轮询已经停了，
        没有任何东西再去读后端状态。 */
-    call('subagent:subagent_cancel', { id: S.cur }, 'cancel', function () {
-      if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+    call('subagent:subagent_ctrl', { id: S.cur, action: 'cancel' }, 'cancel', function () {
+      if (S.cur) call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
     });
   }
 var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>';
@@ -1802,7 +1963,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     if (!S.cur) { err('先选一个任务'); return; }
     if (S.dFailed) { err('任务已失败，无法继续对话'); return; }
     inp.value = '';
-    call('subagent:subagent_steer', { id: S.cur, message: v }, 'steer');
+    call('subagent:subagent_ctrl', { id: S.cur, action: 'steer', message: v }, 'steer');
   }
 
   /* ── 详情抽屉（消息信息：模型/时间/耗时/用量） ── */
@@ -1918,8 +2079,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     try {
       callRaw(job.tool, job.params, '', ++S.seq, function (r) {
         if (r && r.success === false) { err(r.message || '操作失败'); dropRollback(job); }
-        else if (job.tool === 'subagent:subagent_delete') dropRow(job.params.id);
-        else if (job.tool === 'subagent:subagent_close') markClosed(job.params.id);
+        else if (job.tool === 'subagent:subagent_del') dropRow(job.params.id);
+        else if (job.tool === 'subagent:subagent_ctrl') markClosed(job.params.id);
         done();
       });
     } catch (e) { done(); }
@@ -1943,7 +2104,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     markClosed(id);                       // 界面立刻变「已关闭」
     hf();
     okMsg('已关闭');
-    DEL_Q.push({ tool: 'subagent:subagent_close', params: { id: id, confirm: true, delete_product: false } });
+    DEL_Q.push({ tool: 'subagent:subagent_ctrl', params: { id: id, action: 'close', confirm: true, drop_product: false } });
     runDelQueue();
   }
   /* 详情页 / 列表长按 = 彻底删除，用是/否确认框，不再复用带搜索的选择器弹窗 */
@@ -1954,7 +2115,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
       dropRow(id);                        // 秒删：DOM 立刻没了
       if (S.cur === id) { S.cur = null; show('list'); }
       okMsg('已删除');
-      DEL_Q.push({ tool: 'subagent:subagent_delete', params: { id: id, confirm: true } });
+      DEL_Q.push({ tool: 'subagent:subagent_del', params: { id: id, confirm: true } });
       runDelQueue();
     });
   }
@@ -1996,7 +2157,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     openCfm('删除 ' + ids.length + ' 个任务', '连同各自产物目录与快照一起删，不可恢复。', function () {
       for (var i = 0; i < ids.length; i++) {
         dropRow(ids[i]);
-        DEL_Q.push({ tool: 'subagent:subagent_delete', params: { id: ids[i], confirm: true } });
+        DEL_Q.push({ tool: 'subagent:subagent_del', params: { id: ids[i], confirm: true } });
       }
       okMsg('已删除 ' + ids.length + ' 个');
       if (S.cur && S.selIds && S.selIds[S.cur]) { S.cur = null; }
@@ -2106,7 +2267,7 @@ document.addEventListener('visibilitychange', function () {
     var need = false;
     for (var i = 0; i < S.sel.length; i++) if (WRITE_RE.test(S.sel[i].toLowerCase())) need = true;
     if (need && !($('inWs').value || '').trim()) { err('含写类工具，必须选择目录'); return; }
-    if (need) { call('subagent:subagent_check_path', { path: ($('inWs').value || '').trim() }, 'checkpath'); return; }
+    if (need) { call('subagent:subagent_env', { what: 'path', path: ($('inWs').value || '').trim() }, 'checkpath'); return; }
     doCreate();
   }
   function doCreate() {
@@ -2843,7 +3004,7 @@ document.addEventListener('visibilitychange', function () {
         return;
       }
       /* 从后端拿任务的消息历史作为起点 */
-      call('subagent:subagent_trace', { id: id, limit: 60, compact: false }, 'trace', function (r) {
+      call('subagent:subagent_get', { id: id, detail: 'trace', limit: 60 }, 'trace', function (r) {
         var d = (r && r.data) || {};
         var turns = d.turns || [];
         var msgs = [];
@@ -2944,7 +3105,7 @@ document.addEventListener('visibilitychange', function () {
           if (out.usage) _sv.usage = out.usage;
           if (out.finishReason) _sv.finish_reason = String(out.finishReason);
           call('subagent:subagent_save_turn', _sv, 'saveTurn', function () {
-            if (S.cur) call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+            if (S.cur) call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
           });
           refreshList(false);
           return;
@@ -3149,7 +3310,7 @@ document.addEventListener('visibilitychange', function () {
     S.curStatus = 'running';
     setLive('模型生成中…');
     startPoll();
-    call('subagent:subagent_advance', { id: id, steps: steps || 1 }, 'advance');
+    call('subagent:subagent_run', { id: id, wait: false, max_steps: Math.min(3, Math.max(1, steps || 1)) }, 'advance');
   }
   /* 轮询：整个界面的进度真源。每 1.5 秒读一次 trace，
      桥超时也不停——后端还在跑，trace 会一直变化。 */
@@ -3178,7 +3339,7 @@ document.addEventListener('visibilitychange', function () {
       S.pollT = setTimeout(pollOnce, 600);
       return;
     }
-    call('subagent:subagent_trace', { id: S.cur, limit: 40, compact: true }, 'trace');
+    call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
     /* 桥已超时说明后端还在跑，这时把轮询降频：原来 1.5s 一次会让整页发烫变卡。
        恢复正常后再回到高频，保证有进展时界面跟得上。 */
     var gap = S.bridgeDropped ? 2200 : 1500;
@@ -3192,7 +3353,7 @@ document.addEventListener('visibilitychange', function () {
     startPoll();
   }
   function openTools() {
-    if (!S.tools) call('subagent:subagent_tools', {}, 'tools');
+    if (!S.tools) call('subagent:subagent_env', { what: 'tools' }, 'tools');
     /* 多选：点选即时改 S.sel，右下的「确定」只是关闭并回读，不会丢选择 */
     openDlg('允许工具', toolGroups(), true, function (picked) {
       if (picked && picked.length) S.sel = picked.slice();
@@ -3316,10 +3477,10 @@ document.addEventListener('visibilitychange', function () {
     /* 版本号：后端 status 里带 version 就直接显示，没有就拉一次 */
     if (d && d.version && $('updCur')) $('updCur').textContent = d.version;
     if ($('updCur') && (!$('updCur').textContent || $('updCur').textContent === '—')) {
-      call('subagent:subagent_version', {}, 'updStatus');
+      call('subagent:subagent_env', { what: 'version' }, 'updStatus');
     }
     /* 进页面时拉一次下载状态：上次没下完的话进度要能续上显示 */
-    call('subagent:subagent_download_status', {}, 'updStatus');
+    call('subagent:subagent_update', { step: 'status' }, 'updStatus');
   }
 
   /* ── 版本更新（第三十轮，仿 on_air）──
@@ -3341,7 +3502,7 @@ document.addEventListener('visibilitychange', function () {
     var btn = document.querySelector('[data-act="updCheck"]');
     if (btn) btn.classList.add('spin');
     updMsg('正在检查…');
-    call('subagent:subagent_check_update', { force: !!force }, 'updCheck', function () {
+    call('subagent:subagent_update', { step: 'check', force: !!force }, 'updCheck', function () {
       UPD.checking = false;
       if (btn) btn.classList.remove('spin');
     });
@@ -3434,12 +3595,12 @@ document.addEventListener('visibilitychange', function () {
     if ($('updProgMsg')) $('updProgMsg').textContent = '正在连接 GitHub…';
     if ($('updBarIn')) $('updBarIn').style.width = '0%';
     if ($('updPath')) $('updPath').textContent = '';
-    call('subagent:subagent_download_update', {}, 'updDownload');
+    call('subagent:subagent_update', { step: 'download' }, 'updDownload');
     /* 轮询状态：下载是后端阻塞的，页面只能靠轮询看进度 */
     if (UPD.timer) { try { clearInterval(UPD.timer); } catch (e0) {} }
     UPD.timer = setInterval(function () {
       if (!ALIVE) { try { clearInterval(UPD.timer); } catch (e1) {} return; }
-      call('subagent:subagent_download_status', {}, 'updStatus');
+      call('subagent:subagent_update', { step: 'status' }, 'updStatus');
     }, 1500);
   }
 
@@ -3470,13 +3631,13 @@ document.addEventListener('visibilitychange', function () {
     if ($('updInstall')) {
       $('updInstall').style.display = (ok && !installed) ? '' : 'none';
     }
-    call('subagent:subagent_download_status', {}, 'updStatus');
+    call('subagent:subagent_update', { step: 'status' }, 'updStatus');
   }
 
   /* 手动安装（下载完成但自动安装失败时用） */
   function updInstall() {
     if ($('updInstall')) { $('updInstall').disabled = true; $('updInstall').textContent = '安装中…'; }
-    call('subagent:subagent_install_update', {}, 'updInstall');
+    call('subagent:subagent_update', { step: 'install' }, 'updInstall');
   }
 
   function renderUpdInstall(r) {
@@ -3611,7 +3772,7 @@ document.addEventListener('visibilitychange', function () {
         var cur = ($('inEp') ? $('inEp').value : '').trim();
         if (!cur) { if ($('inEp')) $('inEp').value = ep; payload.base_url = ep; }
       }
-      call('subagent:subagent_config', { action: 'set', payload: payload }, 'cfgset');
+      call('subagent:subagent_cfg', { action: 'set', payload: payload }, 'cfgset');
     }, false);
   }
   /* API 端点右侧下拉：只给「协议后缀」两个选项，不是常用端点列表。
@@ -3669,7 +3830,7 @@ document.addEventListener('visibilitychange', function () {
     var p = { action: 'refresh_models' };
     if (ep) p.base_url = epNorm(ep);
     if (force === true) p.force = true;
-    call('subagent:subagent_config', p, 'modelsRefreshed');
+    call('subagent:subagent_cfg', p, 'modelsRefreshed');
   }
   function modelRows(list) {
     var cur = (($('inModel') ? $('inModel').value : '') || '').trim();
@@ -3752,7 +3913,7 @@ document.addEventListener('visibilitychange', function () {
     if (!k) return;
     if (S.keySaving) return;
     S.keySaving = true;
-    call('subagent:subagent_config', { action: 'key', api_key: k }, 'cfgkey');
+    call('subagent:subagent_cfg', { action: 'key', api_key: k }, 'cfgkey');
   }
   /* 保存端点 + 模型：从输入框读，端点会做后缀补全 */
   function saveCfg() {
@@ -3764,7 +3925,7 @@ document.addEventListener('visibilitychange', function () {
     if ($('inEp') && ep !== raw) $('inEp').value = ep;
     /* formDirty 不能在发请求前清：后端拒绝（如模型名像密钥）时要保持「有未保存改动」，
        否则回包渲染会把用户的输入覆盖成旧值。清标志由 cfgset 成功分支负责。 */
-    call('subagent:subagent_config', { action: 'set', payload: { base_url: ep, model: model } }, 'cfgset');
+    call('subagent:subagent_cfg', { action: 'set', payload: { base_url: ep, model: model } }, 'cfgset');
   }
   function probe() {
     /* 测的是眼前输入框里的值，不是已保存的值：用户改完端点/模型直接点测试也能测对 */
@@ -3776,7 +3937,7 @@ document.addEventListener('visibilitychange', function () {
     if ($('cfgConn')) { $('cfgConn').textContent = '测试中…'; $('cfgConn').className = 'cfg-val'; }
     if ($('probeLayers')) $('probeLayers').innerHTML = '<div class="probe-card"><div class="pv-detail">正在测试端点 / 密钥 / 模型…</div></div>';
     S.probed = false;
-    call('subagent:subagent_probe', p, 'probe');
+    call('subagent:subagent_env', Object.assign({ what: 'probe' }, p), 'probe');
   }
   /* 模型右侧放大镜：只探测当前这个模型能不能真跑起来 */
   function probeModel() {
@@ -3790,7 +3951,7 @@ document.addEventListener('visibilitychange', function () {
     if ($('cfgConn')) { $('cfgConn').textContent = '测试中…'; $('cfgConn').className = 'cfg-val'; }
     if ($('probeLayers')) $('probeLayers').innerHTML = '<div class="probe-card"><div class="pv-detail">正在探测模型 ' + esc(m) + '…</div></div>';
     S.probed = false;
-    call('subagent:subagent_probe', p, 'probe');
+    call('subagent:subagent_env', Object.assign({ what: 'probe' }, p), 'probe');
   }
 
   /* ── 收件箱 ── */
@@ -3800,7 +3961,7 @@ document.addEventListener('visibilitychange', function () {
     show('inbox');
     var box = $('inboxList');
     if (box) box.innerHTML = '<div class="mail-empty">读取中…</div>';
-    call('subagent:subagent_inbox', {}, 'inbox');
+    call('subagent:subagent_box', {}, 'inbox');
   }
   /* 时间戳格式化：毫秒数 → "MM-DD HH:mm"；非数字原样截断 */
   function fmtMailTime(v) {
@@ -3934,7 +4095,7 @@ document.addEventListener('visibilitychange', function () {
   }
   function browseTo(p) {
     openDlg('选择目录', [{ title: '', items: [{ val: '__loading', label: '读取中…', desc: '' }] }], false, null, false);
-    call('subagent:subagent_list_dir', { path: p || '/sdcard' }, 'ls');
+    call('subagent:subagent_env', { what: 'dir', path: p || '/sdcard' }, 'ls');
   }
 
   /* ── 事件绑定 ── */
@@ -3947,6 +4108,40 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'deleteTask') { e.stopPropagation(); return deleteTask(val); }
     if (act === 'goHome') return goHome();
     if (act === 'goList') return goList();
+    /* 【第八十三轮补丁C】列表页分组折叠：只切 S.grpClosed，重渲染一次。
+       走重渲染而不是直接改 DOM —— 分组内行还有动画观察者，直接藏节点会残留观察。 */
+    if (act === 'foldGrp') {
+      var gk = val;
+      S.grpClosed[gk] = !S.grpClosed[gk];
+      renderList(S.items);
+      return;
+    }
+    /* 群组详情入口。注意 e.stopPropagation()：这个按钮在可折叠的分组头里，
+       不拦会把点击冒泡成折叠，等于点详情顺手把列表收起来。 */
+    if (act === 'grpInfo') { e.stopPropagation(); return openGrpInfo(val); }
+    /* 剔除 / 解禁：val 是 "群组码|chatId" */
+    if (act === 'grpKick' || act === 'grpUnkick') {
+      e.stopPropagation();
+      var gp = String(val || '').split('|');
+      var gc1 = gp[0], gt = gp[1] || '';
+      if (!gc1 || !gt) return;
+      var isKick = (act === 'grpKick');
+      openCfm(isKick ? '剔除成员' : '解禁成员',
+        (isKick ? '剔除后 ' : '解禁后 ') + gt.slice(-12) + (isKick ? ' 输群组码也进不来。' : ' 可以凭群组码重新访问。'),
+        function () {
+          call('subagent:subagent_group', {
+            action: isKick ? 'kick' : 'unkick', code: gc1, chat_id: gt
+          }, 'grpAct', function (r1, d1) {
+            if (r1 && r1.success === false) { err(r1.message || '操作失败'); return; }
+            okMsg(isKick ? '已剔除' : '已解禁');
+            /* 详情抽屉内容已过期，重开一次刷成最新成员列表 */
+            closeSheet();
+            openGrpInfo(gc1);
+            refreshList(true);
+          });
+        });
+      return;
+    }
     if (act === 'backList') { S.cur = null; show('list'); return; }
     if (act === 'fold') {
       var f = el;
@@ -3984,7 +4179,7 @@ document.addEventListener('visibilitychange', function () {
     }
     if (act === 'retClose') return closeRetDlg();
     if (act === 'sheetClose') return closeSheet();
-    if (act === 'goNew') { show('new'); if (!S.tools) call('subagent:subagent_tools', {}, 'tools'); loadNewForm(); return; }
+    if (act === 'goNew') { show('new'); if (!S.tools) call('subagent:subagent_env', { what: 'tools' }, 'tools'); loadNewForm(); return; }
     if (act === 'goCfg') {
       S.formDirty = false;
       S.keyFilled = false;
@@ -3992,14 +4187,14 @@ document.addEventListener('visibilitychange', function () {
       if ($('inKey')) { $('inKey').value = ''; $('inKey').type = 'password'; }
       if ($('btnEye')) { $('btnEye').innerHTML = '<svg><use href="#i-eye"/></svg>'; $('btnEye').setAttribute('title', '显示密钥'); }
       show('cfg');
-      call('subagent:subagent_config', { action: 'status' }, 'cfg');
+      call('subagent:subagent_cfg', { action: 'status' }, 'cfg');
       /* 有磁盘缓存的话进页面就有模型数，不必等用户点列表 */
       return;
     }
     if (act === 'openInboxBtn') return openInbox();
     if (act === 'openMail') return openMail(Number(el.dataset.idx));
     if (act === 'backToInbox') return openInbox();
-    if (act === 'inboxClearAll') { call('subagent:subagent_inbox', { action: 'read' }, 'inboxClear'); return; }
+    if (act === 'inboxClearAll') { call('subagent:subagent_box', { action: 'read' }, 'inboxClear'); return; }
     if (act === 'deleteCur') { if (S.cur) deleteTask(S.cur); return; }
     if (act === 'closeCur') { if (S.cur) closeTask(S.cur); return; }
     /* 确认框 */
@@ -4062,7 +4257,7 @@ document.addEventListener('visibilitychange', function () {
       else closeDlg();
       return;
     }
-    if (act === 'inboxClear') { call('subagent:subagent_inbox', { action: 'read' }, 'inboxClear'); return; }
+    if (act === 'inboxClear') { call('subagent:subagent_box', { action: 'read' }, 'inboxClear'); return; }
     if (act === 'pickProv') return pickProv();
     if (act === 'pickEp') return pickEp();
     if (act === 'pickModel') return pickModel();
@@ -4078,7 +4273,7 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'doCreate') return createTask();
     if (act === 'openTools') return openTools();
     if (act === 'usePrivateWs') {
-      call('subagent:subagent_workspace', { action: 'init' }, 'privateWs');
+      call('subagent:subagent_env', { what: 'workspace', action: 'init' }, 'privateWs');
       return;
     }
     if (act === 'pickWs') {
@@ -4446,7 +4641,7 @@ var THRESHOLD = 56;        /* 兜底阈值（屏高拿不到时用） */
     /* 版本号：复用已有的 updStatus 处理（那里会把 version 写进 updCur），
        这里单独写一份，因为 eggVer 在主页而不是配置页 */
     if ($('eggVer')) {
-      call('subagent:subagent_version', {}, 'eggVer');
+      call('subagent:subagent_env', { what: 'version' }, 'eggVer');
     }
   })();
 
@@ -4456,7 +4651,7 @@ show('welcome');
   setTimeout(function () { S.initAnim = true; if (S.initLoaded) show('home'); }, 1200);
   /* 兜底：3 秒后无论如何都进主页，避免桥不回导致永远停在欢迎页 */
   setTimeout(function () { if (S.page === 'welcome') show('home'); }, 3000);
-  call('subagent:subagent_config', { action: 'status' }, 'cfg');
+  call('subagent:subagent_cfg', { action: 'status' }, 'cfg');
   /* KaTeX 外接（第七轮）：用户把 katex.min.js 放到
      /sdcard/Download/Operit/subagent/vendor/ 后，这里经桥读入并注入。
      失败静默走内置渲染器，不打扰用户。仅尝试一次。 */

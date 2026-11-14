@@ -5,6 +5,7 @@ var CFG = require("./sb_config.js");
 var LLM = require("./sb_llm.js");
 var TOOLS = require("./sb_tools.js");
 var SKILL = require("./sb_skill.js");
+var GRP = require("./sb_group.js");
 
 /* 任务产物根：并入三目录约定，落在 workspace 下（config 注释里 workspace 就是「任务产物与可写根」）。
  * 惰性求值：不能写成 var TEMP_ROOT = CFG.workspaceDir() + ...，因为 require 阶段 CFG 可能还没就绪；
@@ -20,37 +21,103 @@ function nowText() {
     function p(n) { return n < 10 ? "0" + n : "" + n; }
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
 }
-/* 任务 id。
-   【为什么优先用 getToolSessionId】ToolPkg API 1.2.0 新增，官方注释：
-   「Host-assigned tool session identity; distinct for every delegated subtask run」
-   宿主保证每次委派都不同。原来用「时间戳 + 随机数」，同一毫秒内并发派两个任务
-   有撞号风险（随机数只有 46656 种，同毫秒撞概率不低）。
-   【为什么还要拼时间戳】session id 只在同一次工具调用内稳定，跨调用可能重复，
-   拼上时间戳保证全局唯一。
-   【为什么要 typeof 判存在】这是 1.2.0 新增 API，老版本宿主没有，
-   直接调会抛 ReferenceError。 */
-function newId() {
-    var sid = "";
-    try {
-        if (typeof getToolSessionId === "function") {
-            sid = String(getToolSessionId() || "");
-        }
-    } catch (e) { sid = ""; }
-    /* session id 可能含非法文件名字符，只留字母数字，截断防过长 */
-    if (sid) {
-        sid = sid.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
-    }
-    var tail = nowMs().toString(36) + Math.floor(Math.random() * 46656).toString(36).padStart(3, "0");
-    return sid ? ("sa_" + sid + "_" + tail) : ("sa_" + tail);
+/* 【第八十三轮】任务 id 全新规则。
+ *
+ * 【为什么弃用 getToolSessionId】它是「一次委派」的票号，不是对话身份，
+ * 每次委派都换，名字长得像 UID 实际是流水号，用户实测会变。
+ *
+ * 【现在的规则】全哈希，路径上不出现明文群组码：
+ *   有群组：sa_<hash6>_<hash6>
+ *           前段 = hash6(群组创建时间 + 当前时间 + 群组码)
+ *           后段 = hash6(子代理创建时间 + 当前时间 + 子代理码)
+ *   无群组：sa_<hash6>
+ *           = hash6(创建时间 + 当前时间 + 子代理码)
+ *
+ * 【为什么掺「当前时间」】用户定：创建时间与当前时间一起。
+ * 代价是同群组的任务 ID 前缀不一致；归属靠目录与 index.json 判定，不靠前缀。
+ * 好处是同一个群组不同批次建的任务看不出规律。
+ *
+ * 【不加盐】用户拍板：威胁模型是同设备几个 agent 互相别串，不是公网对抗。
+ * 防暴力枚举是给公网 API 操的心，这里加盐只增复杂度、没有对应攻击者。
+ */
+function newTaskId(nowMsVal, groupCode, groupCreatedAt) {
+    var now = Number(nowMsVal || Date.now());
+    var sub = GRP.rand6();
+    var subSeg = GRP.hash6(String(now) + String(now) + sub);
+    var gc = String(groupCode || "");
+    if (!gc) return "sa_" + subSeg;
+    var gSeg = GRP.hash6(String(groupCreatedAt || 0) + String(now) + gc);
+    return "sa_" + gSeg + "_" + subSeg;
 }
 
 function tasksDir() { return CFG.tasksDir(); }
-function taskPath(id) { return tasksDir() + "/" + id + ".json"; }
+function groupsRoot() { return CFG.baseDir() + "/groups"; }
 /* 用量与请求日志是可再生的统计，放 cache */
 function usagePath() { return CFG.cacheDir() + "/usage.json"; }
 function reqLogPath() { return CFG.cacheDir() + "/reqlog.jsonl"; }
-function undoPath(id) { return productDirOf(id) + "/undo.json"; }
-function productDirOf(id) { return tempRoot() + "/" + id; }
+
+/* 【第八十三轮】任务目录解析。
+ * 新结构：一个任务一棵自足目录树，路径不再靠 id 拼接猜出来，
+ * 而是由 task 里的 group 字段决定它住在 tasks/ 还是 groups/<hash>/。
+ *
+ * 优先级：
+ *   1) task 对象给了 group → groups/<哈希目录>/<id>/
+ *   2) 只有 id（不知道 group）→ 双树查找 _findTaskDir
+ *   3) 老任务（tasks/<id>.json 单文件）→ 兼容返回 tasks/ 根，由 loadTask 走旧路
+ */
+function taskDirOf(task) {
+    if (!task) return "";
+    var id = String(task.id || "");
+    var g = task.group;
+    if (g && task.group_created_at) {
+        /* 【遗留】group 字段存群组码，group_created_at 存群组创建时间（定位哈希目录要用） */
+        var cfgNew = String(task.group);
+        if (String(task.group_dir || "")) {
+            return groupsRoot() + "/" + String(task.group_dir) + "/" + id;
+        }
+        return GRP.groupDirOf(cfgNew, task.group_created_at) + "/" + id;
+    }
+    return tasksDir() + "/" + String(id || "");
+}
+/* 老接口保留：调用方还很多，语义改为「该任务的目录」 */
+function productDirOf(id) { return tasksDir() + "/" + String(id || ""); }
+
+/* 任务本体 / undo 都进任务目录 */
+function taskFilePath(task) { return taskDirOf(task) + "/task.json"; }
+function undoPathOf(task) { return taskDirOf(task) + "/undo.json"; }
+
+/* 按 id 在双树里找任务目录。找不到返回空串。
+ * 目录名就是任务 id，所以列目录即可，不用读文件内容。 */
+async function _findTaskDir(id) {
+    var want = String(id || "");
+    if (!want) return "";
+    /* 先在 tasks 根目录下找 */
+    var p1 = tasksDir() + "/" + want;
+    try {
+        var raw1 = await readText(p1 + "/task.json");
+        if (raw1) return p1;
+    } catch (e1) {}
+    /* 群组目录下的同名子目录 */
+    try {
+        var gr = await Tools.Files.list(groupsRoot(), "android");
+        var garr = (gr && gr.entries) ? gr.entries : [];
+        for (var i = 0; i < garr.length; i++) {
+            var gname = String(garr[i].name || "");
+            if (!gname) continue;
+            var p2 = groupsRoot() + "/" + gname + "/" + want;
+            var raw2 = await readText(p2 + "/task.json");
+            if (raw2) return p2;
+        }
+    } catch (e2) {}
+    return "";
+}
+
+/* 索引文件路径：tasks/index.json 与 groups/<hash>/index.json */
+function rootIndexPath() { return tasksDir() + "/index.json"; }
+function groupIndexPathOf(taskOrNil, groupDir) {
+    if (groupDir) return groupsRoot() + "/" + String(groupDir) + "/index.json";
+    return rootIndexPath();
+}
 
 async function readText(path) {
     try {
@@ -71,37 +138,157 @@ async function writeJson(path, obj) {
 
 async function mkdirs(p) { try { await Tools.Files.mkdir(p, true, "android"); } catch (e) {} }
 
+/* 【第八十三轮】读任务：先按新结构找目录，找不到再回退老单文件。
+ * 老任务（tasks/<id>.json）优先迁移，迁移完成前双读保证不丢。 */
 async function loadTask(id) {
-    var raw = await readText(taskPath(id));
-    if (!raw) return null;
-    try { return JSON.parse(raw); } catch (e) { return null; }
+    var want = String(id || "");
+    if (!want) return null;
+    /* 1) 新结构 */
+    var dir = await _findTaskDir(want);
+    if (dir) {
+        var raw = await readText(dir + "/task.json");
+        if (raw) { try { return JSON.parse(raw); } catch (e) {} }
+    }
+    /* 2) 老单文件（迁移前兼容） */
+    var rawOld = await readText(tasksDir() + "/" + want + ".json");
+    if (rawOld) { try { return JSON.parse(rawOld); } catch (e) {} }
+    return null;
 }
 
+/* 【第八十三轮】写任务：按新结构落到任务目录，并同步 index.json。
+ * 若任务还是老单文件格式（没有 task.json 目录），这里会顺手建目录并迁移，
+ * 调用方无需关心。 */
 async function saveTask(task) {
-    await mkdirs(tasksDir());
+    if (!task || !task.id) return false;
     task.updated_at = nowMs();
-    await writeJson(taskPath(task.id), task);
-    _listCache.at = 0; _listCache.data = null;   // 写任务后列表缓存失效
+    var dir = taskDirOf(task);
+    await mkdirs(dir + "/reports");
+    await mkdirs(dir + "/work");
+    await writeJson(dir + "/task.json", task);
+    /* 老单文件若还存在，删掉避免双份 */
+    try { await Tools.Files.deleteFile(tasksDir() + "/" + task.id + ".json", false, "android"); } catch (eD) {}
+    await _syncIndex(task);
+    _listCache.at = 0; _listCache.data = null;
     return true;
 }
 
-async function listTasks(force) {
+/* 把一条任务摘要写进它所属的 index.json。条目已存在则更新，否则追加。 */
+async function _syncIndex(task) {
+    try {
+        var isGroup = !!task.group;
+        var ip = isGroup
+            ? groupIndexPathOf(task, task.group_dir || GRP.hash6("g" + String(task.group) + String(task.group_created_at || 0)))
+            : rootIndexPath();
+        var raw = await readText(ip);
+        var idx = null;
+        try { idx = raw ? JSON.parse(raw) : null; } catch (e) { idx = null; }
+        if (!idx || !Array.isArray(idx.tasks)) idx = isGroup ? { code: String(task.group || ""), tasks: [] } : { tasks: [] };
+        var hit = false;
+        for (var i = 0; i < idx.tasks.length; i++) {
+            if (String((idx.tasks[i] || {}).id || "") === String(task.id)) {
+                idx.tasks[i] = _indexEntry(task);
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) idx.tasks.push(_indexEntry(task));
+        await mkdirs(ip.slice(0, ip.lastIndexOf("/")));
+        await writeJson(ip, idx);
+    } catch (e) {}
+}
+function _indexEntry(task) {
+    return {
+        id: String(task.id || ""),
+        title: String(task.title || ""),
+        status: String(task.status || ""),
+        group: task.group ? String(task.group) : "",
+        parent_chat_id: String(task.parent_chat_id || ""),
+        created_at: Number(task.created_at || 0)
+    };
+}
+
+/* 从 index.json 移除一条。删任务时调。 */
+async function _dropFromIndex(task) {
+    try {
+        var isGroup = !!task.group;
+        var ip = isGroup
+            ? groupIndexPathOf(task, task.group_dir || GRP.hash6("g" + String(task.group) + String(task.group_created_at || 0)))
+            : rootIndexPath();
+        var raw = await readText(ip);
+        if (!raw) return;
+        var idx = null;
+        try { idx = JSON.parse(raw); } catch (e) { return; }
+        if (!idx || !Array.isArray(idx.tasks)) return;
+        var out = [];
+        for (var i = 0; i < idx.tasks.length; i++) {
+            if (String((idx.tasks[i] || {}).id || "") !== String(task.id)) out.push(idx.tasks[i]);
+        }
+        idx.tasks = out;
+        await writeJson(ip, idx);
+    } catch (e) {}
+}
+
+/* 【第八十二轮】filterChatId 非空时只返回该对话创建的任务。
+   缓存永远存全量：按对话过滤在返回时做，否则 A 对话查过之后
+   B 对话会拿到 A 的缓存结果——比不过滤更糟。
+   【第八十三轮】加了 groupFilter：给了群组码就只返回该群组的任务。 */
+async function listTasks(force, filterChatId, groupFilter) {
+    var all = await _listTasksAll(force);
+    var fid = String(filterChatId || "");
+    var gf = String(groupFilter || "");
+    if (!fid && !gf) return all;
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+        var t = all[i] || {};
+        if (fid && String(t.parent_chat_id || "") !== fid) continue;
+        if (gf && String(t.group || "") !== gf) continue;
+        out.push(t);
+    }
+    return out;
+}
+
+/* 扫全量任务：走 index.json 拿 id 列表，读不到的靠目录扫兜底。
+ * 【为什么优先 index】任务多了以后读每个 task.json 太慢；
+ * index 里已有 id/title/status，够列表用。但 index 可能损坏或缺失，
+ * 所以最后一步永远是「扫目录比对」，保证不丢。 */
+async function _listTasksAll(force) {
     if (!force && _listCache.data && (nowMs() - _listCache.at) < LIST_CACHE_MS) return _listCache.data;
     var ids = [];
+    var seen = {};
+    function push(id) {
+        var k = String(id || "");
+        if (!k || seen[k]) return;
+        seen[k] = 1;
+        ids.push(k);
+    }
+    /* 1) tasks/ 目录：新结构是子目录，老结构是 .json 文件 */
     try {
         var r = await Tools.Files.list(tasksDir(), "android");
         var arr = (r && r.entries) ? r.entries : [];
         for (var i = 0; i < arr.length; i++) {
             var n = String(arr[i].name || "");
-            if (n.slice(-5) !== ".json") continue;
-            var tid = n.slice(0, -5);
-            /* index.json 是任务目录表，不是任务本体。不排除的话它会被当任务解析，
-               得到一个没有 id 字段的对象塞进列表 → 前端渲染出 data-val="undefined"
-               的幽灵行，点进去 loadTask("undefined") 又找不到。 */
-            if (tid === "index") continue;
-            ids.push(tid);
+            if (!n) continue;
+            if (n === "index.json") continue;
+            if (n.slice(-5) === ".json") { push(n.slice(0, -5)); continue; }   // 老单文件
+            push(n);                                                          // 新目录
         }
     } catch (e) {}
+    /* 2) groups/<hash>/ 下每个群组的任务子目录 */
+    try {
+        var gr = await Tools.Files.list(groupsRoot(), "android");
+        var garr = (gr && gr.entries) ? gr.entries : [];
+        for (var gi = 0; gi < garr.length; gi++) {
+            var gname = String(garr[gi].name || "");
+            if (!gname) continue;
+            var tr = await Tools.Files.list(groupsRoot() + "/" + gname, "android");
+            var tarr = (tr && tr.entries) ? tr.entries : [];
+            for (var ti = 0; ti < tarr.length; ti++) {
+                var tn = String(tarr[ti].name || "");
+                if (!tn || tn === "index.json" || tn === "group.json") continue;
+                push(tn);
+            }
+        }
+    } catch (e2) {}
     var out = [];
     var CHUNK = 8;
     for (var j = 0; j < ids.length; j += CHUNK) {
@@ -228,7 +415,11 @@ async function bumpUsage(cfg, usage) {
 }
 
 async function createTask(cfg, opts) {
-    var id = newId();
+    var createdAt = nowMs();
+    /* 【第八十三轮】id 由群组码 + 时间哈希生成，不再用 getToolSessionId */
+    var grpCode = String(opts.group || "");
+    var grpCreatedAt = Number(opts.group_created_at || 0);
+    var id = newTaskId(createdAt, grpCode, grpCreatedAt);
     var task = {
         id: id,
         title: String(opts.title || (opts.task || "").slice(0, 20)),
@@ -248,11 +439,18 @@ async function createTask(cfg, opts) {
         /* 【第五十二轮】允许危险命令（建任务时可覆盖全局） */
         allow_danger: opts.allow_danger === true,
         workspace_resolved: String(opts.workspace_resolved || ""),
-        product_dir: productDirOf(id),
+        /* 【第八十三轮】product_dir 指向任务自己的目录（不再有 .products）。
+           自足目录树：task.json / undo.json / reports / work 都在这一个盒子里。 */
+        product_dir: "",
         profile_override: { base_url: opts.base_url || "", model: opts.model || "" },
         summary_level: String(opts.summary_level || cfg.summary_level || "t1"),
         result_level: String(opts.result_level || cfg.result_level || "standard"),
-        group: opts.group ? String(opts.group) : null,
+        /* 【第八十三轮】群组归属。group 存群组码（6 位数字），
+           group_dir 存哈希目录名（路径用），group_created_at 用于重算目录名。
+           三个一起存，任何一个丢了都能从另外两个恢复。 */
+        group: grpCode ? String(grpCode) : null,
+        group_dir: grpCode ? String(opts.group_dir || GRP.hash6("g" + grpCode + String(grpCreatedAt))) : "",
+        group_created_at: grpCode ? grpCreatedAt : 0,
         turns: [],
         usage: { in: 0, out: 0, est_cost: 0 },
         last: null,
@@ -260,13 +458,18 @@ async function createTask(cfg, opts) {
         error: null,
         cancel: false,
         origin: String(opts.origin || "agent"),
+        /* 【第八十二轮】任务归属：创建它的对话 id。空串 = 无归属（老任务或非对话来源）。
+           用于让父级对话只看自己派的子代理，避免多对话并行时互相干扰。 */
+        parent_chat_id: String(opts.parent_chat_id || ""),
         max_depth: Number(opts.max_depth || 0),
         created_at: nowMs(),
         updated_at: nowMs()
     };
-    await mkdirs(productDirOf(id) + "/reports");
-    await mkdirs(productDirOf(id) + "/work");
-    await mkdirs(tasksDir());
+    /* 【第八十三轮】目录树在 saveTask 里建（那时才知道 group），
+       这里只把 product_dir 定下来 */
+    task.product_dir = taskDirOf(task);
+    await mkdirs(task.product_dir + "/reports");
+    await mkdirs(task.product_dir + "/work");
     /* 【第六十五轮】有 skill 需求时先扫一遍目录，把清单缓存到 _skillList，
        供 buildSystemPrompt 拼提示词。扫不到不报错，只是清单为空。 */
     if (task.skills && task.skills.length) {
@@ -702,24 +905,129 @@ async function _advanceTaskInner(cfg, task) {
     return { ok: true, task: task, done: task.status === "done" };
 }
 
+/* 【第八十三轮】undo 落进任务自己的目录。id 找不到目录时退回 tasks/<id>。 */
+async function _undoPathById(id) {
+    var dir = await _findTaskDir(String(id || ""));
+    if (!dir) dir = tasksDir() + "/" + String(id || "");
+    return dir + "/undo.json";
+}
 async function loadUndo(id) {
-    var raw = await readText(undoPath(id));
+    var raw = await readText(await _undoPathById(id));
     if (!raw) return { items: [], seq: 0 };
     try { return JSON.parse(raw); } catch (e) { return { items: [], seq: 0 }; }
 }
 
 async function saveUndo(id, undo) {
     try {
-        await mkdirs(productDirOf(id));
-        await writeJson(undoPath(id), undo || { items: [], seq: 0 });
+        var p = await _undoPathById(id);
+        await mkdirs(p.slice(0, p.lastIndexOf("/")));
+        await writeJson(p, undo || { items: [], seq: 0 });
     } catch (e) {}
+}
+
+/* 【第八十三轮】删任务：整个目录树一次删干净（任务本体 + undo + 产物）。
+   同时从 index.json 移除条目。老单文件格式也一并清理。 */
+async function deleteTask(taskOrId) {
+    var t = null;
+    if (taskOrId && typeof taskOrId === "object") t = taskOrId;
+    else t = await loadTask(String(taskOrId || ""));
+    var id = String((t && t.id) || taskOrId || "");
+    if (!id) return false;
+    /* 1) 新结构：整目录删 */
+    var dir = await _findTaskDir(id);
+    if (dir) { try { await Tools.Files.deleteFile(dir, true, "android"); } catch (e1) {} }
+    /* 2) 老单文件 */
+    try { await Tools.Files.deleteFile(tasksDir() + "/" + id + ".json", false, "android"); } catch (e2) {}
+    /* 3) 老产物目录（迁移前留下的） */
+    try { await Tools.Files.deleteFile(tempRoot() + "/" + id, true, "android"); } catch (e3) {}
+    /* 4) 索引 */
+    if (t) await _dropFromIndex(t);
+    _listCache.at = 0; _listCache.data = null;
+    return true;
+}
+
+/* 【第八十三轮】老数据迁移：tasks/<id>.json 单文件 + .products/<id>/ 目录
+ * → tasks/<id>/task.json + 同目录下的 reports/work/undo。
+ *
+ * 【为什么要迁移】新结构 loadTask 优先找目录，老单文件只能兜底读。
+ * 不迁移的话老任务的产物还在 .products（已弃用），undo 路径也对不上。
+ *
+ * 【安全】迁移前先把老 json 备份成 .bak，迁移失败可人工恢复。
+ * 返回 { migrated, failed, skipped }。 */
+async function migrateLegacy() {
+    var res = { migrated: 0, failed: 0, skipped: 0, backup: "" };
+    var legacyIds = [];
+    try {
+        var r = await Tools.Files.list(tasksDir(), "android");
+        var arr = (r && r.entries) ? r.entries : [];
+        for (var i = 0; i < arr.length; i++) {
+            var n = String(arr[i].name || "");
+            if (n === "index.json") continue;
+            if (n.slice(-5) === ".json" && n.indexOf(".bak") < 0) legacyIds.push(n.slice(0, -5));
+        }
+    } catch (e) { return res; }
+    if (!legacyIds.length) return res;
+    for (var j = 0; j < legacyIds.length; j++) {
+        var id = legacyIds[j];
+        try {
+            var rawOld = await readText(tasksDir() + "/" + id + ".json");
+            if (!rawOld) { res.skipped++; continue; }
+            var t = null;
+            try { t = JSON.parse(rawOld); } catch (eP) { res.failed++; continue; }
+            if (!t || !t.id) { res.failed++; continue; }
+            /* 已迁移过（目录已存在）就跳过 */
+            var exist = await readText(tasksDir() + "/" + id + "/task.json");
+            if (exist) { res.skipped++; continue; }
+            /* 建目录、搬产物、写 task.json */
+            var dir = tasksDir() + "/" + id;
+            await mkdirs(dir + "/reports");
+            await mkdirs(dir + "/work");
+            /* 老产物目录：能搬就搬，搬不了不影响任务本体 */
+            try {
+                var oldPD = String(t.product_dir || (tempRoot() + "/" + id));
+                var pr = await Tools.Files.list(oldPD + "/reports", "android");
+                var parr = (pr && pr.entries) ? pr.entries : [];
+                for (var pi = 0; pi < parr.length; pi++) {
+                    var pn = String(parr[pi].name || "");
+                    if (!pn) continue;
+                    try {
+                        var content = await readText(oldPD + "/reports/" + pn);
+                        if (content) await Tools.Files.write(dir + "/reports/" + pn, content, false, "android");
+                    } catch (eRC) {}
+                }
+            } catch (eRep) {}
+            /* undo：老的在 product_dir/undo.json */
+            try {
+                var uRaw = await readText(String(t.product_dir || (tempRoot() + "/" + id)) + "/undo.json");
+                if (uRaw) await Tools.Files.write(dir + "/undo.json", uRaw, false, "android");
+            } catch (eU) {}
+            /* 改字段：product_dir 指向新目录 */
+            t.product_dir = dir;
+            await writeJson(dir + "/task.json", t);
+            /* 备份老文件后删除 */
+            try {
+                await Tools.Files.write(tasksDir() + "/" + id + ".json.bak", rawOld, false, "android");
+                await Tools.Files.deleteFile(tasksDir() + "/" + id + ".json", false, "android");
+            } catch (eDel) {}
+            /* 同步 index */
+            await _syncIndex(t);
+            res.migrated++;
+        } catch (eOne) { res.failed++; }
+    }
+    _listCache.at = 0; _listCache.data = null;
+    return res;
 }
 
 function dropCache(id) { _listCache.at = 0; _listCache.data = null; }
 
 module.exports = {
     tempRoot: tempRoot,
-    newId: newId,
+    groupsRoot: groupsRoot,
+    newTaskId: newTaskId,
+    taskDirOf: taskDirOf,
+    taskFilePath: taskFilePath,
+    deleteTask: deleteTask,
+    migrateLegacy: migrateLegacy,
     productDirOf: productDirOf,
     createTask: createTask,
     loadTask: loadTask,

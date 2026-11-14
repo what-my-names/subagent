@@ -62,7 +62,7 @@ function Screen(ctx) {
         catch (e4) { return { success: false, message: String((e4 && e4.message) || e4) }; }
     }
     async function load() {
-        var r = await call("subagent:subagent_list", {});
+        var r = await call("subagent:subagent_list", { all: true });
         if (r.success) setList(JSON.stringify((r.data && r.data.items) ? r.data.items : []));
         var c = await call("subagent:subagent_config", { action: "status" });
         if (c.success) {

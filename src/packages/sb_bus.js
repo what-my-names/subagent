@@ -53,13 +53,28 @@ function add(rec) {
             text: body,
             finished_at: String(rec.finished_at || rec.created_at || Date.now()),
             created_at: String(rec.created_at || rec.finished_at || Date.now()),
+            /* 【第八十二轮】邮件归属：这条结论属于哪个对话派的任务。
+               空串 = 无归属（老数据）。父级对话只读自己的，面板读全部。 */
+            chat_id: String(rec.chat_id || ""),
             unread: true
         });
         if (out.length > 40) out = out.slice(out.length - 40);
         save(out);
     } catch (e) {}
 }
-function list() { return load(); }
+/* 【第八十二轮】chatId 非空时只返回该对话的邮件。不传 = 全部（面板用）。
+   无归属的老邮件不返回——它们不知道属于哪个对话，给了会串到别的对话里。 */
+function list(chatId) {
+    var arr = load();
+    var fid = String(chatId || "");
+    if (!fid) return arr;
+    var out = [];
+    for (var i = 0; i < arr.length; i++) {
+        if (String((arr[i] && arr[i].chat_id) || "") === fid) out.push(arr[i]);
+    }
+    return out;
+}
+function listAll() { return load(); }
 function remove(id) {
     var arr = load();
     var out = [];
@@ -73,4 +88,4 @@ function clear() { var n = load().length; save([]); return n; }
 function stat() {
     return { count: load().length };
 }
-module.exports = { add: add, list: list, remove: remove, clear: clear, stat: stat };
+module.exports = { add: add, list: list, listAll: listAll, remove: remove, clear: clear, stat: stat };

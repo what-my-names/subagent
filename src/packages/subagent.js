@@ -131,7 +131,13 @@ METADATA
         {
           "name": "group",
           "type": "string",
-          "description": "分组，fan-out 用",
+          "description": "已有群组码：把本任务挂到这个群组下（需要 CREATE 权限）。不传则无群组",
+          "required": false
+        },
+        {
+          "name": "group_create",
+          "type": "string",
+          "description": "非必要。填群组名则新建群组并把本任务挂进去，返回时会给出群组码；不填照常建任务",
           "required": false
         },
         {
@@ -216,6 +222,18 @@ METADATA
           "name": "max_chars",
           "type": "number",
           "description": "结论截断长度",
+          "required": false
+        },
+        {
+          "name": "all",
+          "type": "boolean",
+          "description": "true=不过滤，列全部任务（面板用）",
+          "required": false
+        },
+        {
+          "name": "group",
+          "type": "string",
+          "description": "群组码=只看该群组任务；\"list\"=列出我有权访问的群组",
           "required": false
         }
       ]
@@ -305,6 +323,39 @@ METADATA
           "description": "默认 true 只列不改",
           "required": false
         }
+      ]
+    },
+    {
+      "name": "subagent_group",
+      "description": "群组与权限管理：list=列我有权访问的群组 / info=看群组详情与成员权限 / kick=剔除成员（进黑名单，再输码也进不来）/ unkick=解禁 / perm=改某人权限位 / admit=邀请成员 / migrate=迁移老任务目录结构。权限位 READ=1 WRITE=2 CREATE=4 DELETE=8 KICK=16，创始人 31、受邀 3、路人 1。管理动作需要 KICK 位。",
+      "parameters": [
+        {
+          "name": "action",
+          "type": "string",
+          "description": "list/info/kick/unkick/perm/admit/migrate",
+          "required": true
+        },
+        {
+          "name": "code",
+          "type": "string",
+          "description": "群组码（6 位数字）；list 时可省",
+          "required": false
+        },
+        {
+          "name": "chat_id",
+          "type": "string",
+          "description": "目标对话 id（kick/unkick/perm/admit 必填）",
+          "required": false
+        },
+        {
+          "name": "mask",
+          "type": "number",
+          "description": "权限位数字：READ=1 WRITE=2 CREATE=4 DELETE=8 KICK=16，可相加",
+          "required": false
+        }
+      ],
+      "required": [
+        "action"
       ]
     },
     {
@@ -697,6 +748,7 @@ var BUS = require("./sb_bus.js");
 var LLM = require("./sb_llm.js");
 var TOOLS = require("./sb_tools.js");
 var TASK = require("./sb_task.js");
+var GRP = require("./sb_group.js");
 var SKILL = require("./sb_skill.js");
 
 var VERSION = "v1.0.0";
@@ -763,7 +815,7 @@ async function notifyDone(task) {
            由 sb_bus 的 20000 上限统一兜底 */
         var text = task.result ? String(task.result) : String(task.error || "已结束");
         if (mode !== "off" && !skipInbox) {
-            try { BUS.add({ id: task.id, title: title, task_id: task.id, task_title: task.title || title, text: text, finished_at: Date.now(), created_at: Date.now() }); } catch (e0) {}
+            try { BUS.add({ id: task.id, title: title, task_id: task.id, task_title: task.title || title, text: text, finished_at: Date.now(), created_at: Date.now(), chat_id: String(task.parent_chat_id || "") }); } catch (e0) {}
         }
         if (mode === "system" && Tools && Tools.System && Tools.System.sendNotification) {
             Tools.System.sendNotification(text.slice(0, 120), "子代理：" + title);
@@ -771,8 +823,145 @@ async function notifyDone(task) {
     } catch (e) {}
 }
 
-function inboxSuffix() {
-    try { var n = BUS.list().length; return n > 0 ? ("｜收件箱 " + n + " 条未读结论（subagent_inbox 查看）") : ""; } catch (e) { return ""; }
+/* 【第八十二轮】取发起本次工具调用的对话 id。
+   拿不到就返回空串——空串意味着“不过滤”（老宿主 / 面板无对话上下文），
+   宁可多给也不能误藏。 */
+function callerChatId() {
+    try {
+        if (typeof getToolExecutionContext === "function") {
+            var ec = getToolExecutionContext();
+            return String((ec && ec.chatId) || "");
+        }
+    } catch (e) {}
+    return "";
+}
+/* 【第八十二轮】决定本次列表要不要按对话过滤。
+   all=true → 不过滤（用户/面板要看全部）；否则用调用方 chatId。
+   返回空串 = 不过滤。 */
+function filterChatOf(params) {
+    if (params && params.all === true) return "";
+    return callerChatId();
+}
+
+/* 【第八十三轮】取血缘根 chatId：沿宿主 chats 表的 parentChatId 一路往上爬。
+ * 为什么要它：分支对话换 uuid，但「谁派的活」这件事应该跟根走。
+ * 用户在父对话派的任务，分支对话也要能看见（B 策略：分支看得到父的全部，父看不到分支的）。
+ *
+ * 拿不到血缘信息时返回自己，退化成「只看自己」——不会因为查不到就更宽。 */
+async function rootChatIdOf(chatId) {
+    var cid = String(chatId || "");
+    if (!cid) return "";
+    try {
+        var r = null;
+        try {
+            if (Tools.Chat && typeof Tools.Chat.listAll === "function") r = await Tools.Chat.listAll();
+        } catch (e0) { r = null; }
+        if (!r) {
+            r = await Tools.Chat.listChats({ query: "", match: "contains", sort_by: "updatedAt", sort_order: "desc", limit: 200 });
+        }
+        var arr = (r && (r.chats || r.items || r.data)) || [];
+        /* 建 id -> parent 映射 */
+        var parentOf = {};
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i] || {};
+            var id = String(c.id || c.chatId || "");
+            if (!id) continue;
+            parentOf[id] = String(c.parentChatId || c.parent_chat_id || "");
+        }
+        /* 爬到顶，防环 */
+        var cur = cid;
+        var guard = 0;
+        while (parentOf[cur] && guard < 50) {
+            cur = parentOf[cur];
+            guard++;
+        }
+        return cur || cid;
+    } catch (e) { return cid; }
+}
+
+/* 【第八十三轮】收集「我这条血缘链上所有祖先的 chatId」。
+ * B 策略：我能看到祖先派的任务，看不到后代（分支）派的。 */
+async function ancestorChatIdsOf(chatId) {
+    var cid = String(chatId || "");
+    if (!cid) return [];
+    var out = [cid];
+    try {
+        var r = null;
+        try {
+            if (Tools.Chat && typeof Tools.Chat.listAll === "function") r = await Tools.Chat.listAll();
+        } catch (e0) { r = null; }
+        if (!r) {
+            r = await Tools.Chat.listChats({ query: "", match: "contains", sort_by: "updatedAt", sort_order: "desc", limit: 200 });
+        }
+        var arr = (r && (r.chats || r.items || r.data)) || [];
+        var parentOf = {};
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i] || {};
+            var id = String(c.id || c.chatId || "");
+            if (!id) continue;
+            parentOf[id] = String(c.parentChatId || c.parent_chat_id || "");
+        }
+        var cur = parentOf[cid] || "";
+        var guard = 0;
+        while (cur && guard < 50) {
+            if (out.indexOf(cur) < 0) out.push(cur);
+            cur = parentOf[cur] || "";
+            guard++;
+        }
+    } catch (e) {}
+    return out;
+}
+
+/* 【第八十三轮】统一的任务可见性判定。
+ * 返回过滤后的任务数组。
+ *
+ * 规则（用户定稿）：
+ *   1) 显式传群组码 → 该群组全部任务（凭码即成员，只读）
+ *   2) 否则按血缘链：自己 + 所有祖先派的任务（B 策略）
+ *   3) 再并上「我有权访问的群组」里的任务
+ */
+async function visibleTasks(params, force) {
+    var cid = callerChatId();
+    var wantGroup = String((params && params.group) || "");
+    /* 1) 显式凭码看某群组 */
+    if (wantGroup && wantGroup !== "list") {
+        var g = await GRP.loadGroup(wantGroup);
+        if (!g) return { items: [], err: "群组不存在：" + wantGroup };
+        var mem = GRP.resolveMember(g, cid);
+        if (!mem.ok) return { items: [], err: mem.reason };
+        /* 路人首次访问登记为成员（只读）。被踢的人上面已经拦掉了。 */
+        if (mem.guest && cid) { try { await GRP.admit(g, cid, GRP.PERM.GUEST); } catch (eA) {} }
+        var gTasks = await TASK.listTasks(force, "", wantGroup);
+        return { items: gTasks, group: g, mask: mem.mask };
+    }
+    /* 2) 血缘链 + 3) 有权群组 */
+    var chain = await ancestorChatIdsOf(cid);
+    var myGroups = await GRP.listGroupsFor(cid, chain.length ? chain[chain.length - 1] : cid);
+    var allowedCodes = {};
+    for (var gi = 0; gi < myGroups.length; gi++) allowedCodes[String(myGroups[gi].code || "")] = 1;
+    var all = await TASK.listTasks(force);
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+        var t = all[i] || {};
+        var pcid = String(t.parent_chat_id || "");
+        /* 无归属的老任务：只在自己没有血缘信息时给出，避免全串 */
+        if (!pcid) {
+            if (!cid) out.push(t);
+            continue;
+        }
+        /* 血缘链命中（自己或任一代祖先） */
+        if (chain.indexOf(pcid) >= 0) { out.push(t); continue; }
+        /* 群组命中 */
+        var tg = String(t.group || "");
+        if (tg && allowedCodes[tg]) { out.push(t); continue; }
+    }
+    return { items: out, groups: myGroups };
+}
+function inboxSuffix(chatId) {
+    try {
+        var n = BUS.list(chatId).length;
+        return n > 0 ? ("｜收件箱 " + n + " 条未读结论（subagent_inbox 查看）") : "";
+    } catch (e) { return ""; }
 }
 
 function tsOf(ms) {
@@ -804,7 +993,19 @@ function briefOf(task, unreadCache) {
         result_preview: task.result ? String(task.result).slice(0, 80) : "",
         created_at: tsOf(task.created_at),
         last_at: tsOf(task.updated_at || task.last_at),
+        /* 【第八十三轮补丁C】原始毫秒时间戳必须透给面板。
+           面板只拿到格式化字符串没法算「多久没动静」，只能干等一个永久的「运行中」。
+           陈旧 running 自愈靠这个字段判断（>3 分钟无更新 = 已中断，仅改展示）。 */
+        updated_at_ms: Number(task.updated_at || task.last_at || task.created_at || 0),
         origin: task.origin || "",
+        /* 【第八十二轮】归属可见：面板能看出这个任务是哪个对话派的 */
+        parent_chat_id: String(task.parent_chat_id || ""),
+        /* 【第八十三轮】群组归属必须透给面板：不然 UI 没法按群组分类。
+           group=明文群组码（面展示用），group_dir=哈希目录名（不展示），
+           group_created_at 用于重算目录名。 */
+        group: task.group ? String(task.group) : "",
+        group_dir: String(task.group_dir || ""),
+        group_created_at: Number(task.group_created_at || 0),
         max_depth: task.max_depth || 0,
         tokens: ((task.usage || {}).in || 0) + ((task.usage || {}).out || 0),
         error: task.error || null
@@ -961,8 +1162,62 @@ exports.subagent_spawn = async function (params) {
     }
 
     var kp = parseJson(params.key_points, template && template.key_points ? template.key_points : {});
+    /* 【第八十二轮】任务归属：显式传的 parent_chat_id 优先，否则取当前调用对话。
+       不能直接复用上面的 pcid —— 它只在 context_mode 命中时才赋值，
+       分支外拿不到，直接用会把归属丢成空串。 */
+    var ownerChat = String(params.parent_chat_id || "") || callerChatId();
+
+    /* 【第八十三轮】群组处理。
+     * group_create 是「非必要」参数：不写照常建任务，写了才建群组。
+     * group 传群组码则是「加入已有群组」。
+     *
+     * 建群组要三样东西：
+     *   code       6 位数字，由 hash(创始人 + 任务内容 + 时间) 得来
+     *   group_dir  哈希目录名，路径用
+     *   root_chat  血缘根，分支对话靠它认出同一个项目
+     */
+    var grpCode = "", grpDir = "", grpCreatedAt = 0, grpObj = null, grpCreated = false;
+    var wantCreate = params.group_create != null ? String(params.group_create) : "";
+    var wantJoin = params.group != null ? String(params.group) : "";
+    if (wantCreate !== "" && wantCreate !== "false") {
+        /* 建新群组。名字可以空（空就用任务标题前 20 字） */
+        var founder = ownerChat;
+        var rootCid = founder ? await rootChatIdOf(founder) : "";
+        grpCreatedAt = Date.now();
+        grpCode = await GRP.genCode(founder, String(taskText || ""), grpCreatedAt, GRP.codeExists);
+        grpDir = GRP.hash6("g" + grpCode + String(grpCreatedAt));
+        grpObj = await GRP.createGroup({
+            code: grpCode,
+            name: wantCreate === "true" ? String(taskText || "").slice(0, 20) : wantCreate,
+            root_chat_id: rootCid || founder,
+            founder_chat_id: founder,
+            created_at: grpCreatedAt
+        });
+        grpCreated = true;
+    } else if (wantJoin) {
+        /* 加入已有群组：先校验权限，没 CREATE 位的人不能往里塞任务 */
+        grpObj = await GRP.loadGroup(wantJoin);
+        if (!grpObj) {
+            complete({ success: false, message: "群组不存在：" + wantJoin, data: {} });
+            return;
+        }
+        var memJ = GRP.resolveMember(grpObj, ownerChat);
+        if (!memJ.ok) { complete({ success: false, message: memJ.reason, data: {} }); return; }
+        if (!GRP.hasPerm(memJ.mask, GRP.PERM.CREATE)) {
+            complete({ success: false, message: "你在该群组没有建子代理的权限（需要 CREATE 位）", data: { mask: memJ.mask } });
+            return;
+        }
+        grpCode = String(grpObj.code || "");
+        grpCreatedAt = Number(grpObj.created_at || 0);
+        grpDir = GRP.hash6("g" + grpCode + String(grpCreatedAt));
+    }
+
     var task = await TASK.createTask(cfg, {
         origin: String(params.origin || "agent"),
+        parent_chat_id: ownerChat,
+        group: grpCode || null,
+        group_dir: grpDir || "",
+        group_created_at: grpCreatedAt || 0,
         max_depth: Number(params.max_depth || 0),
         task: taskText, title: params.title || template && template.name || "",
         key_points: kp,
@@ -975,8 +1230,7 @@ exports.subagent_spawn = async function (params) {
         skills: skillsList,
         max_steps: params.max_steps, timeout_ms: params.timeout_ms,
         model: params.model, base_url: params.base_url,
-        summary_level: params.summary_level, result_level: params.result_level,
-        group: params.group
+        summary_level: params.summary_level, result_level: params.result_level
     });
 
     /* 【第七十九轮】新名 wait / budget 与旧名 sync / wait_ms 都认。
@@ -1035,7 +1289,7 @@ exports.subagent_spawn = async function (params) {
         } else msgOut = (cur.error || lastMsg || "任务未完成");
         complete({
             success: stCur === "done",
-            message: msgOut + inboxSuffix(),
+            message: msgOut + inboxSuffix(callerChatId()),
             data: {
                 task: briefOf(cur),
                 task_id: cur.id,
@@ -1056,7 +1310,14 @@ exports.subagent_spawn = async function (params) {
         emptyTip = "（注意：tools 为空，这个子代理没有任何工具可用，只能凭上下文空想。"
             + "要让它读文件请传 tools=\"read_file\"，要全放开传 tools=\"*\"）";
     }
-    complete({ success: true, message: "已建任务 " + task.id + emptyTip + inboxSuffix(), data: { task: briefOf(task), next: "run", allowed_count: allowed.length } });
+    /* 【第八十三轮】建了群组要把码告诉用户 —— 这是他们复制给别的 agent 的唯一凭证 */
+    var grpTip = "";
+    if (grpCreated && grpCode) {
+        grpTip = "｜已建群组，群组码 " + grpCode + "（复制给别的 agent 即可让它看到本组全部子代理）";
+    } else if (grpCode) {
+        grpTip = "｜已加入群组 " + grpCode;
+    }
+    complete({ success: true, message: "已建任务 " + task.id + grpTip + emptyTip + inboxSuffix(callerChatId()), data: { task: briefOf(task), next: "run", allowed_count: allowed.length, group: grpCode || "", group_dir: grpDir || "", group_created: grpCreated } });
 };
 
 exports.subagent_advance = async function (params) {
@@ -1074,7 +1335,7 @@ exports.subagent_advance = async function (params) {
     notifyDone(task);
     complete({
         success: !!last && !!last.ok,
-        message: (last ? (last.message || "已推进") : "无变化") + inboxSuffix(),
+        message: (last ? (last.message || "已推进") : "无变化") + inboxSuffix(callerChatId()),
         data: {
             task: briefOf(task),
             summary: TASK.buildSummary(task, params.summary_level || task.summary_level, task.last),
@@ -1113,10 +1374,11 @@ exports.subagent_status = async function (params) {
     params = params || {};
     var id = String(params.id || "");
     if (!id) {
-        var all = await TASK.listTasks();
+        /* 【第八十三轮】可见范围走 visibleTasks */
+        var visS = await visibleTasks(params, false);
         var items = [];
-        for (var i = 0; i < all.length; i++) items.push(briefOf(all[i]));
-        complete({ success: true, message: "共 " + items.length + " 个任务", data: { items: items, total: items.length } });
+        for (var i = 0; i < visS.items.length; i++) items.push(briefOf(visS.items[i]));
+        complete({ success: true, message: "共 " + items.length + " 个任务", data: { items: items, total: items.length, groups: visS.groups || [] } });
         return;
     }
     var t = await TASK.loadTask(id);
@@ -1234,7 +1496,9 @@ exports.subagent_inbox = async function (params) {
        或者早期版本删除时没清理收件箱。 */
     var pruned = 0;
     try {
-        var allMails = BUS.list();
+        /* 【第八十二轮】清理必须看全量：别的对话的邮件对应任务删了也要出箱，
+           否则那些对话的未读数永远不降。 */
+        var allMails = BUS.listAll();
         for (var pi = 0; pi < allMails.length; pi++) {
             var mid = String((allMails[pi] || {}).id || "");
             if (!mid) continue;
@@ -1284,18 +1548,23 @@ success: true,
             hook_disabled_skips: skips,
             hook_last_at: lastAt,
             hook_enabled: enabled,
-            items: BUS.list()
+            items: BUS.list(filterChatOf(params))
         }
     });
 };
 exports.subagent_list = async function (params) {
-    var all = await TASK.listTasks();
+    params = params || {};
+    /* 【第八十三轮】面板传 all=true 时拿全集（不过滤）；
+       否则走 visibleTasks（血缘链 + 有权群组）。 */
+    var vis = (params.all === true)
+        ? { items: await TASK.listTasks(false) }
+        : await visibleTasks(params, false);
     var unread = 0;
-    try { unread = BUS.list().length; } catch (eU) { unread = 0; }
+    try { unread = BUS.list(callerChatId()).length; } catch (eU) { unread = 0; }
     var items = [];
-    for (var i = 0; i < all.length; i++) items.push(briefOf(all[i], unread));
+    for (var i = 0; i < vis.items.length; i++) items.push(briefOf(vis.items[i], unread));
     var u = await TASK.loadUsage();
-    complete({ success: true, message: "共 " + items.length + " 个任务", data: { items: items, total: items.length, usage: u } });
+    complete({ success: true, message: "共 " + items.length + " 个任务", data: { items: items, total: items.length, usage: u, groups: vis.groups || [], group: vis.group ? String(vis.group.code || "") : "" } });
 };
 
 exports.subagent_close = async function (params) {
@@ -1357,10 +1626,9 @@ exports.subagent_delete = async function (params) {
         });
         return;
     }
-    /* 1. 任务定义文件 */
-    try { await Tools.Files.deleteFile(CFG.baseDir() + "/tasks/" + id + ".json", false, "android"); } catch (e) {}
-    /* 2. 产物目录 + undo 快照 */
-    try { await Tools.Files.deleteFile(t.product_dir || TASK.productDirOf(id), true, "android"); } catch (e) {}
+    /* 【第八十三轮】新结构：任务是一棵自足目录树，一次删干净。
+       TASK.deleteTask 内部会处理新旧两种格式 + 清 index.json。 */
+    try { await TASK.deleteTask(t || id); } catch (eDel) {}
     /* 3. 收件箱里这条结论一并出箱。
        为什么：未读的本质是「子代理产出了结论、用户还没取走」。
        对话（任务）都删了，那条结论也就无从取起，留着只会让未读数永远不降。
@@ -2348,7 +2616,8 @@ exports.subagent_version = async function () {
     for (var k in exports) {
         if (Object.prototype.hasOwnProperty.call(exports, k) && /^subagent_/.test(k)) n++;
     }
-    complete({ success: true, message: VERSION, data: { version: VERSION, base_dir: CFG.baseDir(), temp_root: TASK.tempRoot(), tools: n } });
+    /* 【第八十三轮】不再报 temp_root（.products 已弃用，任务是自足目录树） */
+    complete({ success: true, message: VERSION, data: { version: VERSION, base_dir: CFG.baseDir(), tasks_dir: CFG.tasksDir(), groups_dir: CFG.baseDir() + "/groups", tools: n } });
 };
 
 /* ── 自更新（第三十轮，仿 on_air）──
@@ -2472,7 +2741,7 @@ exports.subagent_run = async function (params) {
         notifyDone(task);
         complete({
             success: !!last && !!last.ok,
-            message: (last ? (last.message || "已推进") : "无变化") + inboxSuffix(),
+            message: (last ? (last.message || "已推进") : "无变化") + inboxSuffix(callerChatId()),
             data: {
                 task: briefOf(task),
                 summary: TASK.buildSummary(task, detail === "brief" ? "t0" : (detail === "full" ? "t2" : "t1"), task.last),
@@ -2515,7 +2784,7 @@ exports.subagent_run = async function (params) {
     } else msgOut = (cur.error || lastMsg || "任务未完成");
     complete({
         success: stCur === "done",
-        message: msgOut + inboxSuffix(),
+        message: msgOut + inboxSuffix(callerChatId()),
         data: {
             task: briefOf(cur),
             task_id: cur.id,
@@ -2538,34 +2807,61 @@ exports.subagent_get = async function (params) {
     var detail = String(params.detail || "standard");
     /* 分支一：列全部 */
     if (!ids.length) {
-        var wl0 = _wlCheck(params, [], "get(列表)");
+        var wl0 = _wlCheck(params, ["all", "group"], "get(列表)");
         if (wl0) { complete({ success: false, message: wl0, data: {} }); return; }
-        var all = await TASK.listTasks();
+        /* 【第八十三轮】可见范围走 visibleTasks：血缘链 + 有权群组。
+           group="list" 时改列「我有权访问的群组」而不是任务。 */
+        if (String(params.group || "") === "list") {
+            var cidL = callerChatId();
+            var chainL = await ancestorChatIdsOf(cidL);
+            var gs = await GRP.listGroupsFor(cidL, chainL.length ? chainL[chainL.length - 1] : cidL);
+            complete({
+                success: true,
+                message: "共 " + gs.length + " 个群组",
+                data: { groups: gs, total: gs.length }
+            });
+            return;
+        }
+        /* 【第八十三轮】all=true 不过滤，直接列全量（面板用） */
+        var vis;
+        if (params.all === true) {
+            /* 面板要按群组分组显示，必须知道「群组码 → 群组名」。
+               单给任务列表只能显示一串 6 位数字，用户看不出这是哪个项目。
+               all=true 是面板专用通道，顺手把群组清单一起带回去，省一次往返。 */
+            var cidA = callerChatId();
+            var chainA = await ancestorChatIdsOf(cidA);
+            var gsA = await GRP.listGroupsFor(cidA, chainA.length ? chainA[chainA.length - 1] : cidA);
+            vis = { items: await TASK.listTasks(false), groups: gsA };
+        } else {
+            vis = await visibleTasks(params, false);
+        }
+        if (vis.err) { complete({ success: false, message: vis.err, data: {} }); return; }
         var unreadN = 0;
-        try { unreadN = BUS.list().length; } catch (eU) { unreadN = 0; }
+        try { unreadN = BUS.list(callerChatId()).length; } catch (eU) { unreadN = 0; }
         var items = [];
-        for (var i = 0; i < all.length; i++) items.push(briefOf(all[i], unreadN));
-        complete({ success: true, message: "共 " + items.length + " 个任务", data: { items: items, total: items.length } });
+        for (var i = 0; i < vis.items.length; i++) items.push(briefOf(vis.items[i], unreadN));
+        var msg0 = "共 " + items.length + " 个任务";
+        if (vis.group) msg0 += "（群组 " + String(vis.group.code || "") + (vis.group.readonly ? "，只读" : "") + "）";
+        if (vis.groups && vis.groups.length) msg0 += "｜可见群组 " + vis.groups.length + " 个";
+        complete({
+            success: true, message: msg0,
+            data: {
+                items: items, total: items.length,
+                group: vis.group ? { code: String(vis.group.code || ""), name: String(vis.group.name || ""), readonly: !!vis.group.readonly } : null,
+                mask: vis.mask != null ? vis.mask : null,
+                groups: vis.groups || []
+            }
+        });
         return;
     }
-    /* 分支二：trace */
+    /* 分支二：trace
+       【第八十三轮】面板统一走 get(detail=trace)。为保证面板渲染不返工，
+       这里直接把请求转给 subagent_trace —— 返回结构与旧 trace 完全一致
+       （含 turns / phase / pending / last 等全套字段）。 */
     if (detail === "trace") {
-        var wlT = _wlCheck(params, ["detail", "limit", "max_chars"], "get(detail=trace)");
+        var wlT = _wlCheck(params, ["detail", "limit", "max_chars", "compact"], "get(detail=trace)");
         if (wlT) { complete({ success: false, message: wlT, data: {} }); return; }
-        var t = await TASK.loadTask(ids[0]);
-        if (!t) { complete({ success: false, message: "找不到任务", data: {} }); return; }
-        var lim = Math.max(1, Math.min(50, Number(params.limit || 10)));
-        /* 【第七十九轮】clipText：旧 subagent_trace 有、合并后丢了。简单截断带省略号。 */
-        function clipText(s, n) { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; }
-        var turns = (t.turns || []).slice(-lim * 3);
-        var steps = [];
-        for (var k = 0; k < turns.length; k++) {
-            var m = turns[k] || {};
-            if (m.role === "assistant") steps.push({ kind: "text", head: clipText(String(m.content || ""), 200) });
-            else if (m.role === "tool") steps.push({ kind: "tool", tool: m.name, ok: !!m.ok, head: clipText(String(m.content || ""), 150) });
-        }
-        complete({ success: true, message: "最近 " + steps.length + " 条明细", data: { task: briefOf(t), steps: steps } });
-        return;
+        return await exports.subagent_trace({ id: ids[0], limit: params.limit, compact: params.compact });
     }
     /* 分支三：结论（单个或多个） */
     var wlR = _wlCheck(params, ["max_chars"], "get(结论)");
@@ -2653,6 +2949,100 @@ exports.subagent_ctrl = async function (params) {
 };
 
 /* ── box：收件箱（原 inbox） ── */
+/* ── 【第八十三轮】群组管理 ──────────────────────────
+ * 权限位：READ=1 WRITE=2 CREATE=4 DELETE=8 KICK=16
+ * 创始人 31 / 受邀 3 / 路人 1
+ * 只有 KICK 位的人能剔除成员、改他人权限、解禁。
+ */
+exports.subagent_group = async function (params) {
+    params = params || {};
+    var action = String(params.action || "info");
+    var code = String(params.code || "");
+    var cid = callerChatId();
+    var wl = _wlCheck(params, ["action", "code", "chat_id", "mask", "name"], "group(" + action + ")");
+    if (wl) { complete({ success: false, message: wl, data: {} }); return; }
+
+    /* list：列我有权访问的群组 */
+    if (action === "list") {
+        var chain = await ancestorChatIdsOf(cid);
+        var gs = await GRP.listGroupsFor(cid, chain.length ? chain[chain.length - 1] : cid);
+        complete({ success: true, message: "共 " + gs.length + " 个群组", data: { groups: gs, total: gs.length } });
+        return;
+    }
+
+    /* migrate 是全局动作，不需要群组码 */
+    if (action === "migrate") {
+        var res = await TASK.migrateLegacy();
+        complete({ success: true, message: "迁移完成：成功 " + res.migrated + "，失败 " + res.failed + "，跳过 " + res.skipped, data: res });
+        return;
+    }
+
+    if (!code) { complete({ success: false, message: "缺 code（群组码）", data: {} }); return; }
+    var g = await GRP.loadGroup(code);
+    if (!g) { complete({ success: false, message: "群组不存在：" + code, data: {} }); return; }
+    var mem = GRP.resolveMember(g, cid);
+    if (!mem.ok) { complete({ success: false, message: mem.reason, data: {} }); return; }
+
+    /* info：看群组详情（READ 位即可） */
+    if (action === "info") {
+        if (!GRP.hasPerm(mem.mask, GRP.PERM.READ)) {
+            complete({ success: false, message: "无权查看该群组", data: {} }); return;
+        }
+        complete({
+            success: true,
+            message: "群组 " + code + (g.readonly ? "（只读：无人具备 CREATE）" : ""),
+            data: {
+                code: String(g.code || ""), name: String(g.name || ""),
+                founder: String(g.founder || ""), root_chat_id: String(g.root_chat_id || ""),
+                readonly: !!g.readonly, created_at: Number(g.created_at || 0),
+                members: g.members || [], kicked: g.kicked || [],
+                my_mask: mem.mask
+            }
+        });
+        return;
+    }
+
+    /* 以下都要求 KICK 位（管理动作） */
+    if (!GRP.hasPerm(mem.mask, GRP.PERM.KICK)) {
+        complete({ success: false, message: "无权管理该群组（需要 KICK 位）", data: { my_mask: mem.mask } });
+        return;
+    }
+    var target = String(params.chat_id || "");
+
+    if (action === "kick") {
+        if (!target) { complete({ success: false, message: "缺 chat_id", data: {} }); return; }
+        if (target === String(g.founder || "")) {
+            complete({ success: false, message: "创始人不可被剔除", data: {} }); return;
+        }
+        await GRP.kick(g, target);
+        complete({ success: true, message: "已剔除 " + target + "（再次输入群组码也无法访问）", data: { kicked: g.kicked || [] } });
+        return;
+    }
+    if (action === "unkick") {
+        if (!target) { complete({ success: false, message: "缺 chat_id", data: {} }); return; }
+        await GRP.unkick(g, target);
+        complete({ success: true, message: "已解禁 " + target + "（需重新授权权限位）", data: { kicked: g.kicked || [] } });
+        return;
+    }
+    if (action === "perm") {
+        if (!target) { complete({ success: false, message: "缺 chat_id", data: {} }); return; }
+        var m = Number(params.mask);
+        if (isNaN(m) || m < 0) { complete({ success: false, message: "mask 必须是非负整数（READ=1 WRITE=2 CREATE=4 DELETE=8 KICK=16）", data: {} }); return; }
+        await GRP.setPerm(g, target, m);
+        complete({ success: true, message: "已设置 " + target + " 权限位为 " + m, data: { members: g.members || [] } });
+        return;
+    }
+    if (action === "admit") {
+        if (!target) { complete({ success: false, message: "缺 chat_id", data: {} }); return; }
+        var am = Number(params.mask);
+        if (isNaN(am)) am = GRP.PERM.MEMBER;
+        await GRP.admit(g, target, am);
+        complete({ success: true, message: "已邀请 " + target + "（权限位 " + am + "）", data: { members: g.members || [] } });
+        return;
+    }
+    complete({ success: false, message: "未知 action：" + action + "（支持 list/info/kick/unkick/perm/admit/migrate）", data: {} });
+};
+
 exports.subagent_box = async function (params) {
     params = params || {};
     var wl = _wlCheck(params, ["action"], "box");

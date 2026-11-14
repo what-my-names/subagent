@@ -81,13 +81,21 @@ A.match('save_turn 累加 usage', SUB, /task\.usage\.in = Number\(task\.usage\.i
 A.match('save_turn 调 bumpUsage', SUB, /await TASK\.bumpUsage\(cfgU/);
 A.match('save_turn 调 notifyDone', SUB, /if \(params\.done === true \|\| task\.status === "failed"\) \{\s*\n\s*try \{ await notifyDone\(task\); \}/);
 A.match('bumpUsage 已导出', A.src('packages/sb_task.js'), /bumpUsage: bumpUsage/);
+/* 【第八十二轮】父子对话从属：任务带归属，列表按对话过滤 */
+A.match('任务写入 parent_chat_id 字段', A.src('packages/sb_task.js'), /parent_chat_id: String\(opts\.parent_chat_id/);
+A.match('listTasks 支持按对话与群组过滤', A.src('packages/sb_task.js'), /async function listTasks\(force, filterChatId, groupFilter\)/);
+A.match('缓存仍存全量避免串味', A.src('packages/sb_task.js'), /async function _listTasksAll\(force\)/);
+A.match('分流用调用方 chatId', A.src('packages/subagent.js'), /function callerChatId\(\)/);
+A.match('all=true 不过滤', A.src('packages/subagent.js'), /if \(params && params.all === true\) return "";/);
+A.match('briefOf 输出归属', A.src('packages/subagent.js'), /parent_chat_id: String\(task\.parent_chat_id/);
+A.match('面板显式传 all=true 拿全集', A.src('ui/web/panel.js'), /all: true/);
 /* 面板侧要把 usage 传下去 */
 A.match('面板回传 usage', P, /if \(out\.usage\) _sv\.usage = out\.usage;/);
 A.match('面板回传 finish_reason', P, /if \(out\.finishReason\) _sv\.finish_reason/);
 
 /* ── 7. index.json 不能被当任务（幽灵条目） ── */
 var T2 = A.src('packages/sb_task.js');
-A.match('listTasks 跳过 index', T2, /if \(tid === "index"\) continue;/);
+A.match('listTasks 跳过 index.json', T2, /if \(n === "index.json"\) continue;/);
 A.nomatch('refreshIndex 死代码已删', T2, /async function refreshIndex/);
 A.nomatch('indexPath 死代码已删', T2, /function indexPath/);
 
@@ -296,9 +304,35 @@ A.chk('三处流式区创建都带 data-state', thinkCreate === 3);
 /* ── 第三十轮：工具执行上下文 + 自更新 ── */
 var TASK2 = A.src('packages/sb_task.js');
 /* getToolSessionId 是 ToolPkg API 1.2.0 新增，老宿主没有，必须 typeof 判存在 */
-A.match('任务 id 优先用 getToolSessionId', TASK2, /if \(typeof getToolSessionId === "function"\)/);
-A.match('getToolSessionId 包在 try 里', TASK2, /try \{[\s\S]{0,120}?getToolSessionId\(\)/);
-A.match('拿不到 session 时回退时间戳', TASK2, /return sid \? \("sa_" \+ sid \+ "_" \+ tail\) : \("sa_" \+ tail\)/);
+/* 【第八十三轮】id 改为哈希规则，不再依赖 getToolSessionId */
+A.match('任务 id 由 newTaskId 生成', TASK2, /function newTaskId\(nowMsVal, groupCode, groupCreatedAt\)/);
+A.match('无群组 id 为 sa_<hash6>', TASK2, /if \(!gc\) return "sa_" \+ subSeg;/);
+A.match('有群组 id 为 sa_<hash6>_<hash6>', TASK2, /return "sa_" \+ gSeg \+ "_" \+ subSeg;/);
+/* ── 第八十三轮：群组 + 任务目录树 + 权限 ── */
+var G = A.src('packages/sb_group.js');
+A.match('群组模块有 fnv1a 哈希', G, /function fnv1a\(str\)/);
+A.match('群组模块有 hash6', G, /function hash6\(str\)/);
+A.match('群组码是 6 位十进制', G, /function code6\(str\)/);
+A.match('子代理码是 6 位随机数', G, /function rand6\(\)/);
+A.match('群组目录名用哈希不用明文码', G, /GRP\.hash6|hash6\("g" \+ String\(code\)/);
+A.match('权限位含 KICK', G, /KICK: 16/);
+A.match('创始人 31 全权限', G, /FOUNDER: 31/);
+A.match('剔除走黑名单', G, /kicked/);
+A.match('无人具备 CREATE 则群组只读', G, /g\.readonly = !canCreate/);
+A.match('任务目录解析 taskDirOf', TASK2, /function taskDirOf\(task\)/);
+A.match('双树查找 _findTaskDir', TASK2, /async function _findTaskDir\(id\)/);
+A.match('index.json 同步', TASK2, /async function _syncIndex\(task\)/);
+A.match('删任务走 deleteTask', TASK2, /async function deleteTask\(taskOrId\)/);
+A.match('老数据迁移 migrateLegacy', TASK2, /async function migrateLegacy\(\)/);
+A.match('undo 落在任务目录', TASK2, /async function _undoPathById\(id\)/);
+var SJ = A.src('packages/subagent.js');
+A.match('血缘根 rootChatIdOf', SJ, /async function rootChatIdOf\(chatId\)/);
+A.match('祖先链 ancestorChatIdsOf', SJ, /async function ancestorChatIdsOf\(chatId\)/);
+A.match('可见性判定 visibleTasks', SJ, /async function visibleTasks\(params, force\)/);
+A.match('spawn 支持 group_create', SJ, /var wantCreate = params\.group_create/);
+A.match('群组管理工具 subagent_group', SJ, /exports\.subagent_group = async function/);
+A.match('spawn 返回群组码', SJ, /已建群组，群组码/);
+A.nomatch('不再依赖 getToolSessionId 生成 id', TASK2, /getToolSessionId\(\)/);
 /* parent_chat_id 缺省时用 getToolExecutionContext().chatId */
 A.match('parent_chat_id 自动取上下文 chatId', A.src('packages/subagent.js'), /if \(typeof getToolExecutionContext === "function"\)[\s\S]{0,160}?ec0 && ec0\.chatId/);
 /* 自更新模块 */
@@ -326,9 +360,9 @@ A.match('终态停轮询', P, /st === 'done' \|\| st === 'failed' \|\| st === 'm
 /* 工具注册 */
 var SA2 = A.src('packages/subagent.js');
 A.match('update 大类已声明', SA2, /"name": "subagent_update"/);
-A.match('实现侧保留 check_update', SA2, /exports\.subagent_check_update/);
-A.match('实现侧保留 download_update', SA2, /exports\.subagent_download_update/);
-A.match('实现侧保留 download_status', SA2, /exports\.subagent_download_status/);
+A.match('self-update check 走 update step=check', SA2, /step === "check"|step == 'check'/);
+A.match('self-update download 走 step=download', SA2, /step === "download"/);
+A.match('self-update status 走 step=status', SA2, /step === "status"/);
 /* ── 第三十一轮：下载到 Download + 自动安装 ── */
 A.match('下载目录改到 Download/Operit', UPDM, /var dir = "\/sdcard\/Download\/Operit"/);
 A.nomatch('不再写 baseDir/updates', UPDM, /var dir = CFG\.baseDir\(\) \+ "\/updates"/);
@@ -350,7 +384,7 @@ A.nomatch('返回不再带 need_restart', UPDM, /need_restart: true/);
 A.match('下载后默认自动安装', UPDM, /if \(params\.auto_install !== false\)/);
 A.match('自动安装调 installUpdate', UPDM, /inst = await installUpdate\(\{ path: path \}\)/);
 /* 工具与面板 */
-A.match('实现侧保留 install_update', SA2, /exports\.subagent_install_update/);
+A.match('self-update install 走 step=install', SA2, /step === "install"/);
 A.match('面板有立即安装按钮', A.src('ui/web/panel.html'), /data-act="updInstall"/);
 A.match('安装后提示已生效', P, /已写入 ' \+ d\.path/);
 A.match('未装上时显示手动安装', P, /ok && !installed/);
@@ -430,7 +464,7 @@ A.match('官网地址取后端 url 字段', P, /UPD\.release && UPD\.release\.ur
 A.match('官网有兜底地址', P, /github\.com\/what-my-names\/subagent\/releases/);
 /* 下载主链路必须保留：进度条 + 轮询 + 自动安装 */
 A.match('有进度条', H2, /id="updBarIn"/);
-A.match('轮询下载状态', P, /call\('subagent:subagent_download_status', \{\}, 'updStatus'\)/);
+A.match('轮询下载状态', P, /call\('subagent:subagent_update', \{ step: 'status' \}, 'updStatus'\)/);
 A.match('下载后自动安装', A.src('packages/sb_update.js'), /params\.auto_install !== false/);
 
 /* ── 第三十九轮：修 panel 未定义 + 通知条改右上 ── */
@@ -1023,6 +1057,18 @@ A.nomatch('提示词不再提旧名 advance', HK_BODY, /subagent_advance/);
 A.nomatch('提示词不再提旧名 wait', HK_BODY, /subagent_wait/);
 A.nomatch('提示词不再提旧名 result', HK_BODY, /subagent_result\(id/);
 A.nomatch('提示词不再提旧名 trace', HK_BODY, /subagent_trace/);
+/* 【第八十三轮回归】面板调用的每个工具名必须在 METADATA 里声明，
+   否则宿主报 Tool not found（曾经漏了 20 个细粒度名，面板全挂）。 */
+var _panelSrc = A.src('ui/web/panel.js');
+var _metaSrc = A.src('packages/subagent.js');
+var _metaSlice = _metaSrc.slice(_metaSrc.indexOf('{'), _metaSrc.indexOf('*/', _metaSrc.indexOf('{')));
+var _metaNames = {};
+try { var _mo = JSON.parse(_metaSlice); for (var _mi = 0; _mi < _mo.tools.length; _mi++) _metaNames[_mo.tools[_mi].name] = 1; } catch (_me) {}
+var _called = {}, _cm, _re = /subagent:(subagent_[a-z_]+)/g;
+while ((_cm = _re.exec(_panelSrc)) !== null) _called[_cm[1]] = 1;
+var _undecl = [];
+for (var _cn in _called) { if (!_metaNames[_cn]) _undecl.push(_cn); }
+A.chk('面板调用的工具都在 METADATA 声明中（未声明：' + (_undecl.join(',') || '无') + '）', _undecl.length === 0);
 A.nomatch('提示词不再写 allowed_tools=', HK_BODY, /allowed_tools=/);
 A.nomatch('提示词不再说没 create_file', HK_BODY, /没有 create_file/);
 A.eq('提示词写 tools=', HK_BODY.indexOf('tools=') >= 0 && HK_BODY.indexOf('read_file,edit_file,create_file') >= 0, true);

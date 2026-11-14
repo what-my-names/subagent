@@ -77,6 +77,30 @@ def("list_files", "列一个目录下的直接子项（不递归）。",
     { path: { type: "string", description: "目录绝对路径" } },
     ["path"]);
 
+/* 【第八十三轮补丁C】grep_code / grep_context 之前不在表里，
+   子代理任务里调用它们会被 sb_llm 包成 run_tool({tool,args})，
+   面板上显示成「执行 run_tool」而不是「执行 grep_code」，看不出在干什么。
+   补进表里让它们变成独立 function。 */
+def("grep_code", "按正则搜代码内容，返回带上下文的匹配。找函数定义、找字符串出现在哪用这个。",
+    {
+        path: { type: "string", description: "搜索的目录或文件路径" },
+        pattern: { type: "string", description: "正则表达式" },
+        file_pattern: { type: "string", description: "文件名过滤，如 *.js，默认 *" },
+        context_lines: { type: "integer", description: "匹配行前后上下文行数，默认 3" },
+        max_results: { type: "integer", description: "最多返回多少条匹配，默认 100" },
+        case_insensitive: { type: "boolean", description: "是否忽略大小写" }
+    },
+    ["path", "pattern"]);
+
+def("grep_context", "按语义相关性搜内容（不是正则）。目录模式找出最相关文件，文件模式找出最相关代码段。",
+    {
+        path: { type: "string", description: "目录或文件路径" },
+        intent: { type: "string", description: "想找什么，用自然语言描述" },
+        max_results: { type: "integer", description: "返回条数，默认 10" },
+        file_pattern: { type: "string", description: "目录模式下的文件名过滤" }
+    },
+    ["path", "intent"]);
+
 /* ── 写文件 ── */
 /* 【第四十八轮】create_file 用 new、write_file 用 content，同一语义两个键名，
    模型很容易把 content 传给 create_file。这里两个键都声明（new 仍必填，与宿主一致），

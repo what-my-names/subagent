@@ -49,7 +49,7 @@ if (missing.length) console.log('    缺失：' + missing.join(', '));
 
 /* METADATA 只声明 10 个大类 + 10 个面板保留名 = 20 */
 var declared = (SUB.match(/"name"\s*:\s*"subagent_/g) || []).length;
-A.eq('METADATA 声明数量 = 20', declared, 20);
+A.eq('METADATA 声明数量 = 21', declared, 21);
 
 /* ── spawn 参数契约（合并后：tools/wait/budget/detail 替代旧三件） ── */
 A.match('spawn 有 task 必填', SUB, /"name"\s*:\s*"task"/);
@@ -81,6 +81,11 @@ A.match('收件箱 add 写入 finished_at', BUS, /finished_at/);
 A.match('收件箱 add 写入 unread', BUS, /unread/);
 A.match('收件箱正文有 20000 字符上限', BUS, /20000/);
 A.match('收件箱数组有 40 条上限', BUS, /40/);
+/* 【第八十二轮】父子对话从属：邮件带 chat_id，list 按对话过滤 */
+A.match('收件箱 add 写入 chat_id', BUS, /chat_id/);
+A.match('收件箱 list 支持按对话过滤', BUS, /function list\(chatId\)/);
+A.match('收件箱提供 listAll 全集入口', BUS, /function listAll\(\)/);
+A.match('listAll 已导出', BUS, /listAll: listAll/);
 /* 【2026-11-07 改】bump 已删：钩子与工具不在同一 JS 引擎，钩子侧自增的计数
    工具侧天然读不到，SP 里的计数又因为 bump 零调用恒为 0，是假指标。
    断言方向反转：必须没有 bump，stat 只报真实可观测的条数。 */

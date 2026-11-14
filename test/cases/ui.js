@@ -10,7 +10,7 @@ var H = A.src('ui/web/panel.html');
 
 /* ── 1. openTask 必须重启轮询（否则运行中任务打开后进度冻结） ── */
 A.match('openTask 打开后重启轮询',
-    P, /call\('subagent:subagent_trace'[\s\S]{0,300}?if \(stNow === 'running' \|\| stNow === 'queued'\) startPoll\(\)/);
+    P, /call\('subagent:subagent_get', \{ id: id, detail: 'trace'[\s\S]{0,400}?if \(stNow === 'running' \|\| stNow === 'queued'\) startPoll\(\)/);
 A.match('openTask 走 show(detail)', P, /S\.cur = id; show\('detail'\)/);
 A.match('pollOnce 有 page 守卫', P, /if \(!S\.cur \|\| S\.page !== 'detail'\) return;/);
 
@@ -31,7 +31,7 @@ A.match('cfgset 失败分支 return',
 
 /* ── 5. saveCfg 不能在发请求前清 formDirty ── */
 A.nomatch('saveCfg 发请求前不清 formDirty',
-    P, /function saveCfg\(\)[\s\S]{0,700}?S\.formDirty = false;[\s\S]{0,90}?call\('subagent:subagent_config', \{ action: 'set'/);
+    P, /function saveCfg\(\)[\s\S]{0,700}?S\.formDirty = false;[\s\S]{0,90}?call\('subagent:subagent_cfg', \{ action: 'set'/);
 
 /* ── 6. 连通性判断不能靠文案匹配 ── */
 A.nomatch('不再用 /连通正常/ 文案判断', P, /\/连通正常\/\.test\(/);
@@ -157,7 +157,7 @@ A.match('runCur 终态时自愈', P, /var terminal = \(st === 'done' \|\| st ===
 /* openTask 进任务前自愈 */
 A.match('openTask 进任务前自愈', P, /var termPre = \(stPre === 'done'[\s\S]{0,200}?abortStream\(\)/);
 /* 停止后主动拉 trace，否则界面停在「模型生成中」 */
-A.match('停止后主动拉 trace', P, /call\('subagent:subagent_cancel', \{ id: S\.cur \}, 'cancel', function \(\) \{[\s\S]{0,120}?subagent_trace/);
+A.match('停止后主动拉 trace', P, /call\('subagent:subagent_ctrl', \{ id: S\.cur, action: 'cancel' \}, 'cancel', function \(\) \{[\s\S]{0,160}?subagent_get/);
 A.finish();
 
 /* ── 【第六十九轮】动画按需挂载：降常驻合成图层 ──
@@ -187,7 +187,7 @@ A.match('出视口移除动画类',
 A.match('无 IntersectionObserver 时全量兜底',
     P, /typeof IntersectionObserver === 'undefined'[\s\S]{0,200}?classList\.add\('anim-on'\)/);
 A.match('renderList 渲染后接入观察器',
-    P, /target\.innerHTML = h;[\s\S]{0,120}?watchRowAnim\(target\)/);
+    P, /target\.innerHTML = groupHtml\(src, !!kw\);[\s\S]{0,120}?watchRowAnim\(target\)/);
 A.match('切后台加 page-hidden',
     P, /document\.body\.classList\.add\('page-hidden'\)/);
 A.match('回前台移除 page-hidden',
@@ -195,4 +195,39 @@ A.match('回前台移除 page-hidden',
 A.match('shutdown 解绑观察器',
     P, /function shutdown\(\)[\s\S]{0,300}?_animObs\.disconnect\(\)/);
 
+/* ── 【第八十三轮补丁C】群组分类 + 陈旧 running 自愈 ── */
+A.match('列表页走群组分类渲染',
+    P, /target\.innerHTML = groupHtml\(src, !!kw\)/);
+A.match('有群组按群组码归桶',
+    P, /bucket\('g:' \+ gc, gname, gsub\)/);
+A.match('无群组按父对话归桶',
+    P, /bucket\('c:' \+ \(pc \|\| '_'\)/);
+A.match('分组头可折叠',
+    P, /S\.grpClosed\[gk\] = !S\.grpClosed\[gk\]/);
+A.match('群组清单随列表回传并保存',
+    P, /S\.groupList = d\.groups \|\| r\.groups \|\| \[\]/);
+A.match('陈旧 running 改判已中断',
+    P, /if \(\(Date\.now\(\) - t0\) > STALE_MS\) return 'interrupted'/);
+A.match('陈旧判定不动后端状态',
+    P, /function effStatus\(it\)[\s\S]{0,400}?return st;/);
+A.match('列表行走 effStatus 取展示状态',
+    P, /var st = effStatus\(it\);/);
+
+/* ── 群组详情（抽屉） ── */
+A.match('分组头有群组详情入口',
+    P, /data-act="grpInfo"/);
+A.match('只有真群组桶显示详情按钮',
+    P, /function gc0\(bucketKey\)[\s\S]{0,180}?k\.slice\(0, 2\) === 'g:'/);
+A.match('详情取 onOk 第二参而非外层',
+    P, /openGrpInfo[\s\S]{0,400}?function \(r0, d\)/);
+A.match('权限位转中文短语',
+    P, /function permCn\(mask\)/);
+A.match('角色判定 创始人/受邀/只读',
+    P, /if \(m === 31\) return '创始人'/);
+A.match('群组码可长按选中复制',
+    C, /\.gi-code-v\{[^}]*user-select:text/);
+A.match('剔除按钮只在有 KICK 位时出现',
+    P, /canManage && mid !== String\(g\.founder \|\| ''\)/);
+A.match('剔除点击不冒泡成折叠',
+    P, /act === 'grpInfo'\) \{ e\.stopPropagation\(\); return openGrpInfo\(val\)/);
 A.finish();

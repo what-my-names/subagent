@@ -309,7 +309,8 @@ async function _listTasksAll(force) {
         if (String(ht.status || "") !== "running") continue;
         var hat = Number(ht.phase_at || 0);
         if (!hat) continue;
-        if ((nowMs() - hat) < PHASE_STUCK_MS) continue;
+        var limH = (String(ht.phase || "") === "llm") ? PHASE_STUCK_LLM_MS : PHASE_STUCK_MS;
+        if ((nowMs() - hat) < limH) continue;
         if (_advancing[String(ht.id || "")]) continue;
         ht.status = "failed";
         ht.error = "上一次推进超过 3 分钟没有响应（阶段 " + String(ht.phase || "?") + "），已自动标记失败。可直接点继续推进重试。";
@@ -705,14 +706,22 @@ async function releaseDiskLock(id) {
    这里在每次推进前先看：running 且 phase_at 超 3 分钟 → 认定上一次挂了，
    落盘成 failed 并写清原因，让用户能重试。
    只看 running：done/failed/cancelled/closed 不碰。 */
-var PHASE_STUCK_MS = 3 * 60 * 1000;
+/* 【第一百零六轮】自愈阈值必须大于 LLM 超时，否则会把正常慢任务误杀。
+   踩过：LLM 单次 read_timeout 默认 90 秒，但这里阈值是 3 分钟（180 秒），
+   而且「last_at 只在一步结束后才更新」，一次 LLM 调用+工具执行就可能超过 180 秒。
+   实测 hy4 免费模型跑排查类任务，三个 Worker 全部卡在 llm 阶段被自愈误判为 failed。
+   现在：阈值按「LLM 超时 + 工具余量」算，下限 6 分钟；
+   并且 llm 阶段额外放宽（模型思考+长上下文本来就慢）。 */
+var PHASE_STUCK_MS = 6 * 60 * 1000;
+var PHASE_STUCK_LLM_MS = 10 * 60 * 1000;
 async function healStuckPhase(task) {
     if (!task) return task;
     var st = String(task.status || "");
     if (st !== "running") return task;
     var at = Number(task.phase_at || 0);
     if (!at) return task;
-    if ((nowMs() - at) < PHASE_STUCK_MS) return task;
+    var limA = (String(task.phase || "") === "llm") ? PHASE_STUCK_LLM_MS : PHASE_STUCK_MS;
+    if ((nowMs() - at) < limA) return task;
     /* 有活锁在跑就不算卡死，交给锁判 */
     if (_advancing[String(task.id || "")]) return task;
     task.status = "failed";

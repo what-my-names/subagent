@@ -7,7 +7,9 @@
  *   - 「先闪回去才消失」→ animation both + 飞出前 reset
  */
 var A = require('../lib/assert.js').group('通知条');
-var P = A.src('ui/web/panel.js');
+/* 【第八十八轮】通知实现已拆到 panel_toast.js，断言改读该分片。
+   其余（位置/手势/时长）仍看 panel.js 与 panel.css。 */
+var P = A.src('ui/web/panel.js') + '\n' + A.src('ui/web/panel_toast.js');
 var C = A.src('ui/web/panel.css');
 
 /* ── 级别函数语义（成功不能用 err） ── */

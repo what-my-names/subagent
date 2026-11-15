@@ -41,12 +41,21 @@ var TOOL_NAMES = [
     'subagent_run', 'subagent_get', 'subagent_ctrl', 'subagent_box',
     'subagent_del', 'subagent_update', 'subagent_cfg', 'subagent_env'
 ];
+/* 【第八十八轮】工具实现已按功能拆分到 sb_tool_*.js 模块，
+   用 install(E, opts) 把工具挂回 exports，所以这里不能再只看 subagent.js 单文件。
+   检查口径：源码里出现 `exports.subagent_x =` 或 `E.subagent_x =` 任一种都算已实现。 */
+var SPLIT_SRC = '';
+['packages/sb_tool_update.js', 'packages/sb_tool_env.js', 'packages/sb_tool_stream.js',
+    'packages/sb_tool_task.js', 'packages/sb_tool_cfg.js', 'packages/sb_tool_main.js'].forEach(function (f) {
+    SPLIT_SRC += A.src(f);
+});
+var ALL_IMPL = SUB + '\n' + SPLIT_SRC;
 var missing = [];
 for (var i = 0; i < TOOL_NAMES.length; i++) {
     var n = TOOL_NAMES[i];
-    if (SUB.indexOf('exports.' + n) < 0) missing.push(n);
+    if (ALL_IMPL.indexOf('exports.' + n) < 0 && ALL_IMPL.indexOf('E.' + n) < 0) missing.push(n);
 }
-A.eq('37 个实现函数全部导出', missing.length, 0);
+A.eq('实现函数全部导出（含拆出模块）', missing.length, 0);
 if (missing.length) console.log('    缺失：' + missing.join(', '));
 
 /* METADATA 只声明 10 个大类 + 10 个面板保留名 = 20 */
@@ -114,7 +123,7 @@ A.match('joinUrl 剥掉已有后缀', LLM, /chat\/completions|replace.*completio
 A.chk('CFG 有 setKey', /function setKey|exports\.setKey/.test(CFG));
 A.chk('CFG 有 getEnvValue', /getEnvValue: function|function getEnvValue/.test(CFG));
 A.chk('配置里不存明文密钥字段', !/"api_key"\s*:\s*"[^"]{20,}"/.test(CFG));
-A.match('set 拒绝模型名像密钥', SUB, /看起来像密钥/);
+A.match('set 拒绝模型名像密钥', A.src('packages/sb_tool_cfg.js'), /看起来像密钥/);
 
 /* ── 私有工作区 ── */
 A.chk('有 workspaceDir', /function workspaceDir/.test(CFG));
@@ -182,10 +191,10 @@ var posSw = HOOK.indexOf('if (!hookEnabled())');
 A.chk('埋点在开关判断之前（顺序正确）', posBump > 0 && posSw > 0 && posBump < posSw);
 /* 观测字段：subagent_inbox 要把三个新指标都报出来 */
 var SA = A.src('packages/subagent.js');
-A.match('inbox 报 hook_disabled_skips', SA, /hook_disabled_skips: skips/);
-A.match('inbox 报 hook_last_at', SA, /hook_last_at: lastAt/);
-A.match('inbox 读 hook_last_at 用 getLong', SA, /p\.getLong\("hook_last_at", 0\)/);
-A.match('inbox message 含上次调用时间', SA, /上次 " \+ agoTxt/);
+A.match('inbox 报 hook_disabled_skips', A.src('packages/sb_tool_task.js'), /hook_disabled_skips: skips/);
+A.match('inbox 报 hook_last_at', A.src('packages/sb_tool_task.js'), /hook_last_at: lastAt/);
+A.match('inbox 读 hook_last_at 用 getLong', A.src('packages/sb_tool_task.js'), /p\.getLong\("hook_last_at", 0\)/);
+A.match('inbox message 含上次调用时间', A.src('packages/sb_tool_task.js'), /上次 " \+ agoTxt/);
 
 
 /* ── 第十五轮：可靠性修复 ── */
@@ -216,15 +225,51 @@ A.match('锁在 finally 释放', TASK2, /finally \{[\s\S]{0,80}?delete _advancin
 A.match('重复推进返回 busy', TASK2, /busy: true/);
 
 /* ── 第十六轮：流式与渲染修复 ── */
-var P2 = A.src('ui/web/panel.js');
+/* 【第八十八轮】panel.js 已按功能拆片（tex / toast），构建时按 JS_PARTS 顺序拼成一个 script。
+   断言测「页面里真正跑的脚本」，所以这里按同样顺序拼接。 */
+var P2 = A.src('ui/web/panel.js') + '\n' + A.src('ui/web/panel_tex.js') + '\n' + A.src('ui/web/panel_toast.js');
 /* 改配置后必须清流式环境缓存，否则一直用旧端点（旧端点没 CORS 就永远走中继） */
 A.match('cfgset 后清 STREAM 缓存', P2, /if \(r && r\.success === false\) return;[\s\S]{0,400}?STREAM\.ctx = null/);
 /* 流式 ctx 缓存要按任务 id 校验，换任务不能复用旧白名单 */
 A.match('loadStreamEnv 按任务 id 校验', P2, /STREAM\.ctxFor === _tid/);
 A.match('loadStreamEnv 记录 ctxFor', P2, /STREAM\.ctxFor = _tid/);
 /* 工具调用轮次结束后必须定格 holder，否则下一轮流式覆盖造成「内容消失又出现」 */
-A.match('工具轮结束后定格流式 holder', P2, /工具调用这一轮结束后，必须把当前流式 holder/);
+/* 注释已压缩，改为断言代码行为：定格即清空 holder 并重建 sb-think 容器 */
+A.match('工具轮结束后定格流式 holder', P2, /holder\.innerHTML = '<div class="sb-think"/);
 A.match('定格时把已流出内容落进同一张卡', P2, /_blk.appendChild\(_txt\)/);
 A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="sb-think"/);
+
+/* ── 【第八十八轮】拆分模块的解构完整性 ──
+   背景：工具实现按功能拆到 sb_tool_*.js 后，子模块拿不到主文件的顶层函数，
+   必须显式 require + 解构。漏一个解构，node --check 不报错、静态断言也不报错，
+   只有真机跑到那条分支才抛 "xxx is not defined"。
+   （真例：sb_tool_main.js 漏解构 ancestorChatIdsOf，subagent_get 一调就挂。）
+   这里把所有拆分模块扫一遍：凡是用到 sb_ctx 导出函数却没解构的，直接判失败。 */
+(function () {
+    var ctxSrc = A.src('packages/sb_ctx.js');
+    var ctxFns = [];
+    var re = /^    ([A-Za-z_][A-Za-z0-9_]*): [A-Za-z_]+,?$/gm;
+    var m;
+    while ((m = re.exec(ctxSrc)) !== null) ctxFns.push(m[1]);
+    A.chk('sb_ctx 导出函数可解析', ctxFns.length >= 10);
+
+    var mods = [
+        'packages/sb_tool_task.js', 'packages/sb_tool_stream.js',
+        'packages/sb_tool_cfg.js', 'packages/sb_tool_env.js',
+        'packages/sb_tool_update.js', 'packages/sb_tool_main.js'
+    ];
+    var missing = [];
+    for (var i = 0; i < mods.length; i++) {
+        var src = A.src(mods[i]);
+        for (var j = 0; j < ctxFns.length; j++) {
+            var fn = ctxFns[j];
+            var used = new RegExp('\\b' + fn + '\\(').test(src);
+            var declared = src.indexOf('var ' + fn + ' = CTX.' + fn + ';') >= 0;
+            if (used && !declared) missing.push(mods[i] + ' → ' + fn);
+        }
+    }
+    A.eq('拆分模块用到 CTX 函数必须解构', missing.length, 0);
+    if (missing.length) console.log('    漏解构：' + missing.join(', '));
+})();
 
 A.finish();

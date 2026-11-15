@@ -31,11 +31,8 @@
     /* 先置 false：后面的桥调用如果因为引擎已死而抛异常，
        也不会有其它定时器趁这个窗口再发请求。 */
     ALIVE = false;
-    /* 【关键】页面销毁前必须把流式内容落盘，否则退出面板 = 内容全丢。
-       这里用同步桥调用（SBNative.call 本身是同步的），保证在 JsEngine 回收前发出。
-       不用 call() 是因为它走 setTimeout，页面一死定时器就不跑了。
-       注意：如果引擎已经被宿主回收，这次调用会抛异常，catch 掉即可
-       （那种情况下内容早就随引擎一起没了，救不回来）。 */
+    /* 页面销毁前同步落盘流式内容，否则退出面板内容全丢。用 SBNative.call 直接发（不走 call()，
+       它经 setTimeout，页面一死定时器就不跑了）。引擎已回收时这里会抛异常，catch 即可。 */
     try {
       /* STREAM 声明在文件后面，这里是函数体执行期，已经初始化过了；
          但为防极端时序，用 typeof 兜一层。 */
@@ -99,262 +96,8 @@ on('pagehide', shutdown);
     return String(s == null ? '' : s)
       .split(LT).join('<').split(GT).join('>').split(QT).join('\x22').split(AMP).join('&');
   }
-  /* ── 数学公式渲染 ──
-   两套引擎：
-   1) KaTeX（可选）：页面里若存在 window.katex 就用它，效果最好
-   2) 内置轻量渲染器（默认）：不依赖网络，覆盖数学证明常用子集，
-      绝不会因为 CDN 挂掉而把公式显示成一堆反斜杠。
-   识别三种写法：$$ 包裹 / $ 包裹 / 裸 LaTeX（比如 \frac{a}{b}，模型常这么写）*/
-
-/* 单字符/命令 → HTML 片段 */
-var TEX_SYM = {
-  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', varepsilon: 'ε',
-  zeta: 'ζ', eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ',
-  nu: 'ν', xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ',
-  phi: 'φ', varphi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
-  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π',
-  Sigma: 'Σ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
-  times: '×', div: '÷', cdot: '·', pm: '±', mp: '∓', ast: '∗',
-  le: '≤', leq: '≤', ge: '≥', geq: '≥', ne: '≠', neq: '≠',
-  approx: '≈', equiv: '≡', sim: '∼', simeq: '≃', cong: '≅', propto: '∝',
-  ll: '≪', gg: '≫', lt: '<', gt: '>',
-  infty: '∞', partial: '∂', nabla: '∇', ell: 'ℓ', hbar: 'ℏ',
-  to: '→', rightarrow: '→', leftarrow: '←', Rightarrow: '⇒', Leftarrow: '⇐',
-  leftrightarrow: '↔', Leftrightarrow: '⇔', mapsto: '↦', implies: '⟹', iff: '⟺',
-  uparrow: '↑', downarrow: '↓', longrightarrow: '⟶',
-  in: '∈', notin: '∉', ni: '∋', subset: '⊂', subseteq: '⊆', supset: '⊃',
-  supseteq: '⊇', cup: '∪', cap: '∩', setminus: '∖', emptyset: '∅', varnothing: '∅',
-  forall: '∀', exists: '∃', neg: '¬', land: '∧', lor: '∨',
-  sum: '∑', prod: '∏', int: '∫', oint: '∮',
-  cdots: '⋯', ldots: '…', dots: '…', vdots: '⋮', ddots: '⋱',
-  therefore: '∴', because: '∵', angle: '∠', perp: '⊥', parallel: '∥',
-  circ: '∘', prime: '′', degree: '°',
-  lfloor: '⌊', rfloor: '⌋', lceil: '⌈', rceil: '⌉', langle: '⟨', rangle: '⟩',
-  quad: '\u2003', qquad: '\u2003\u2003', ' ': '\u00a0', ',': '\u2009', ';': '\u2005',
-  '{': '{', '}': '}', '%': '%', '#': '#', '&': '&', '_': '_',
-  '|': '|', backslash: '∖', star: '⋆', bullet: '•', oplus: '⊕', otimes: '⊗'
-};
-/* 需要特殊排版的命令（上下标、分数、根号等），在解析器里单独处理 */
-var TEX_FONT = {
-  mathbb: 'font-family:"Times New Roman",serif;font-weight:600;',
-  mathbf: 'font-weight:700;', mathit: 'font-style:italic;',
-  mathrm: 'font-style:normal;', text: '', operatorname: '', mathscr: 'font-style:italic;'
-};
-var TEX_BIGOP = { sum: 1, prod: 1, int: 1, oint: 1, lim: 1, max: 1, min: 1, sup: 1, inf: 1 };
-
-function texEsc(s) { return esc(s); }
-
-/* 递归下降：把一段 TeX 转成 HTML。ctx 里带 i 指针与源串 */
-function texParse(src) {
-  var i = 0, n = src.length;
-  /* 读一个「原子」：命令、{组}、单字符 */
-  function readAtom() {
-    skipSpace();
-    if (i >= n) return { html: '', big: false };
-    var c = src.charAt(i);
-    if (c === '{') {
-      i++;
-      var inner = readGroup();
-      return { html: inner, big: false };
-    }
-    if (c === '\\') {
-      i++;
-      var name = '';
-      while (i < n && /[a-zA-Z]/.test(src.charAt(i))) { name += src.charAt(i); i++; }
-      if (!name) { /* \{ \} \% 这类单符号命令 */
-        var sym0 = src.charAt(i); i++;
-        return { html: texEsc(TEX_SYM[sym0] || sym0), big: false };
-      }
-      return readCommand(name);
-    }
-    i++;
-    if (c === '^' || c === '_') { i--; return { html: '', big: false }; }
-    if (c === ' ') return { html: '\u00a0', big: false };
-    return { html: texEsc(c), big: false };
-  }
-  function readGroup() {
-    var depth = 1, start = i;
-    while (i < n && depth > 0) {
-      var c = src.charAt(i);
-      if (c === '\\') { i += 2; continue; }
-      if (c === '{') depth++;
-      else if (c === '}') { depth--; if (!depth) break; }
-      i++;
-    }
-    var raw = src.slice(start, i);
-    i++;   /* 吃掉 } */
-    return texParse(raw);
-  }
-  function skipSpace() { while (i < n && src.charAt(i) === ' ') i++; }
-  /* 上下标：^ 与 _ 后面统一跟一个原子 */
-  function readScript() {
-    var sup = '', sub = '';
-    for (var guard = 0; guard < 2; guard++) {
-      skipSpace();
-      var c = src.charAt(i);
-      if (c === '^') { i++; sup = readAtom().html; }
-      else if (c === '_') { i++; sub = readAtom().html; }
-      else break;
-    }
-    if (!sup && !sub) return '';
-    if (sup && sub) return '<span class="t-ss"><span class="t-su">' + sub + '</span><span class="t-sd">' + sup + '</span></span>';
-    if (sup) return '<sup class="t-sup">' + sup + '</sup>';
-    return '<sub class="t-sub">' + sub + '</sub>';
-  }
-  function readCommand(name) {
-    /* 字体命令：后面跟一个组，整组套字体 */
-    if (TEX_FONT.hasOwnProperty(name)) {
-      var g = readAtom().html;
-      var st = TEX_FONT[name];
-      return { html: st ? '<span style="' + st + '">' + g + '</span>' : g, big: false };
-    }
-    if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
-      var a = readAtom().html, b = readAtom().html;
-      return { html: '<span class="t-frac"><span class="t-num">' + a + '</span><span class="t-den">' + b + '</span></span>', big: false };
-    }
-    if (name === 'binom') {
-      var a2 = readAtom().html, b2 = readAtom().html;
-      return { html: '<span class="t-bin"><span>' + a2 + '</span><span>' + b2 + '</span></span>', big: false };
-    }
-    if (name === 'sqrt') {
-      var idx = '';
-      skipSpace();
-      if (src.charAt(i) === '[') {
-        var close = src.indexOf(']', i);
-        if (close > 0) { idx = texParse(src.slice(i + 1, close)); i = close + 1; }
-      }
-      var body = readAtom().html;
-      return { html: '<span class="t-sqrt">' + (idx ? '<span class="t-rad">' + idx + '</span>' : '') + '<span class="t-radsym">√</span><span class="t-radbody">' + body + '</span></span>', big: false };
-    }
-    if (name === 'left' || name === 'right' || name === 'big' || name === 'Big' || name === 'bigl' || name === 'bigr') {
-      skipSpace();
-      var d = src.charAt(i);
-      if (d) { i++; }
-      var map0 = { '.': '', '(': '(', ')': ')', '[': '[', ']': ']', '|': '|' };
-      var ch = map0.hasOwnProperty(d) ? map0[d] : (TEX_SYM[d] || d);
-      return { html: texEsc(ch), big: false };
-    }
-    if (name === 'begin') {
-      /* 环境：align/aligned/gather → 多行对齐；cases → 左花括号；matrix 系 → 矩阵；
-         array → 通用表格。共同点：按 \\\\ 分行、按 & 分列。
-         以前这里直接 readAtom() 吞掉环境名，整段内容被丢弃 —— 这是 LaTeX「显示不全」的根因。 */
-      var envName = '';
-      skipSpace();
-      if (src.charAt(i) === '{') {
-        var closeE = src.indexOf('}', i);
-        if (closeE > 0) { envName = src.slice(i + 1, closeE).trim(); i = closeE + 1; }
-      }
-      /* 收集到匹配的 \\end{同名} */
-      var depth = 1, startE = i, endE = -1;
-      while (i < n) {
-        var nx = src.indexOf('\\begin', i);
-        var ex = src.indexOf('\\end', i);
-        if (ex < 0) break;
-        if (nx >= 0 && nx < ex) { depth++; i = nx + 6; continue; }
-        /* 检查 \\end{envName} 是否同名 */
-        var braceA = src.indexOf('{', ex);
-        var braceB = braceA > 0 ? src.indexOf('}', braceA) : -1;
-        var nm = braceB > 0 ? src.slice(braceA + 1, braceB).trim() : '';
-        if (nm === envName) {
-          depth--;
-          if (depth === 0) { endE = ex; i = braceB + 1; break; }
-        }
-        i = ex + 4;
-      }
-      if (endE < 0) { endE = n; i = n; }
-      var innerSrc = src.slice(startE, endE);
-      /* 按 \\ 切行，按 & 切列 */
-      var rows = innerSrc.split(/\\\\/);
-      var outRows = [];
-      for (var ri = 0; ri < rows.length; ri++) {
-        var rowTxt = rows[ri];
-        if (!rowTxt || !rowTxt.trim()) continue;
-        var cols = rowTxt.split('&');
-        var cells = [];
-        for (var ci = 0; ci < cols.length; ci++) {
-          cells.push('<span class="t-tcell">' + texParse(cols[ci]) + '</span>');
-        }
-        outRows.push(cells.join(''));
-      }
-      var bodyHtml = outRows.join('<span class="t-tnl"></span>');
-      var isMatrix = /^(matrix|pmatrix|bmatrix|vmatrix|Vmatrix|smallmatrix|array)$/.test(envName);
-      var isCases = /^(cases|dcases)$/.test(envName);
-      if (isCases) {
-        return { html: '<span class="t-cases"><span class="t-cbrace">{</span><span class="t-cbody">' + bodyHtml + '</span></span>', big: false };
-      }
-      if (isMatrix) {
-        var l = envName === 'pmatrix' ? '(' : (envName === 'bmatrix' ? '[' : (envName === 'vmatrix' ? '|' : ''));
-        var r = envName === 'pmatrix' ? ')' : (envName === 'bmatrix' ? ']' : (envName === 'vmatrix' ? '|' : ''));
-        return { html: '<span class="t-mat">' + (l ? '<span class="t-mbr">' + l + '</span>' : '')
-          + '<span class="t-mbody">' + bodyHtml + '</span>' + (r ? '<span class="t-mbr">' + r + '</span>' : '') + '</span>', big: false };
-      }
-      /* align / aligned / gather / split / eqnarray：多行块。
-         big:false —— 环境是整块，不能再套 t-bigop 放大字号。 */
-      return { html: '<span class="t-align">' + bodyHtml + '</span>', big: false };
-    }
-    if (name === 'end') {
-      /* 单独的 \\end（已由 begin 消费掉成对的情况）：吞掉环境名即可 */
-      readAtom();
-      return { html: '', big: false };
-    }
-    if (name === 'color') { readAtom(); return { html: '', big: false }; }
-    if (name === 'tag' || name === 'label') {
-      var t = readAtom().html;
-      return { html: '<span class="t-tag">(' + t + ')</span>', big: false };
-    }
-    if (name === 'overline' || name === 'bar') {
-      return { html: '<span class="t-ovl">' + readAtom().html + '</span>', big: false };
-    }
-    if (name === 'underline') {
-      return { html: '<span class="t-udl">' + readAtom().html + '</span>', big: false };
-    }
-    if (name === 'hat' || name === 'vec' || name === 'tilde' || name === 'dot') {
-      var mark = (name === 'vec') ? '→' : (name === 'hat') ? '^' : (name === 'tilde') ? '~' : '·';
-      return { html: '<span class="t-acc"><span>' + readAtom().html + '</span><span class="t-accm">' + mark + '</span></span>', big: false };
-    }
-    if (TEX_SYM.hasOwnProperty(name)) {
-      return { html: texEsc(TEX_SYM[name]), big: !!TEX_BIGOP[name] };
-    }
-    /* 不认识的命令：原样显示命令名，不吞内容 */
-    return { html: '<span class="t-unk">\\' + texEsc(name) + '</span>', big: false };
-  }
-  var out = '', pendingBig = null;
-  while (i < n) {
-    skipSpace();
-    if (i >= n) break;
-    var c0 = src.charAt(i);
-    /* 上下标直接跟在原子后，这里单独收 */
-    if (c0 === '^' || c0 === '_') { out += readScript(); continue; }
-    var atom = readAtom();
-    if (!atom.html) continue;
-    if (atom.big) { pendingBig = atom.html; out += '<span class="t-bigop">' + atom.html + '</span>'; }
-    else out += atom.html;
-    if (i < n) {
-      var c1 = src.charAt(i);
-      if (c1 === '^' || c1 === '_') {
-        var sc = readScript();
-        /* 大运算符的上下限做成上下叠放 */
-        if (pendingBig) { out = out.replace(/<span class="t-bigop">[\s\S]*?<\/span>$/, '<span class="t-bigop">' + pendingBig + '<span class="t-limits">' + sc + '</span></span>'); }
-        else out += sc;
-      }
-    }
-    pendingBig = null;
-  }
-  return out;
-  }
-/* 公式入口：tex 是已 esc 的串。优先 KaTeX，没有就用内置渲染器 */
-function mathHtml(texEsc, display) {
-  var raw = unesc(texEsc);
-  var k = (typeof window !== 'undefined') ? window.katex : null;
-  if (k && typeof k.renderToString === 'function') {
-    try {
-      return k.renderToString(raw, { displayMode: !!display, throwOnError: false, strict: 'ignore' });
-    } catch (e) { /* 落到内置渲染器 */ }
-  }
-  var inner;
-  try { inner = texParse(raw); } catch (e2) { inner = texEsc(raw); }
-  return '<span class="t-math' + (display ? ' t-blk' : '') + '">' + inner + '</span>';
-}
+  /* 数学公式渲染已拆到 panel_tex.js（构建时拼在本文件之后，同一 IIFE 内可见）。 */
+  /* 堆叠式通知已拆到 panel_toast.js（构建时拼在最后，同一 IIFE 内可见）。 */
   /* 轻量 markdown 渲染：先转义再做结构，防 XSS。
      支持：围栏代码块、行内代码、粗体、斜体、标题、无序/有序列表、
            引用、分割线、链接、表格（简单两列以上）。 */
@@ -388,12 +131,8 @@ function mathHtml(texEsc, display) {
       maths.push({ tex: tex.trim(), display: false });
       return pre + '\u0000M' + i + '\u0000';
     });
-    /* 2.6 裸 LaTeX：模型经常直接写 \frac{a}{b}、a^{2}+b^{2} 而不加 $ 包裹。
-       识别策略必须保守，只吃「确定是公式」的片段，避免把正文里的反斜杠当公式：
-       - \( ... \) 与 \[ ... \] 明确定界符
-       - 含 \命令 的一段（到括号/逗号/中文/行尾为止）
-       - 纯上下标表达式 a^{2}、x_{1}
-       普通英文和中文正文不受影响。 */
+    /* 裸 LaTeX 识别必须保守，只吃确定是公式的片段：\(...\) 与 \[...\] 定界符、含 \命令 的一段、
+       纯上下标表达式 a^{2} / x_{1}。普通中英文正文不受影响。 */
     s = s.replace(/\\\(([\s\S]+?)\\\)/g, function (_, tex) {
       var i = maths.length; maths.push({ tex: tex.trim(), display: false });
       return '\u0000M' + i + '\u0000';
@@ -500,7 +239,7 @@ function mathHtml(texEsc, display) {
     return html;
   }
   var LIST_TTL = 8000;
-  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, page: 'welcome', probed: false, groupList: [], grpClosed: {}, thk: {}, thkFor: '', thkRaw: {}, grpCur: '' };
+  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, bridgeWarned: false, page: 'welcome', probed: false, groupList: [], grpClosed: {}, thk: {}, thkFor: '', thkRaw: {}, grpCur: '' };
   var WRITE_RE = /(create_file|edit_file|delete_file|move_file|copy_file|write)/;
   var HIGH = /(delete_file|move_file|terminal|shell)/;
   var FALLBACK = [
@@ -515,13 +254,9 @@ function mathHtml(texEsc, display) {
   /* 思考等级的英文标签：面板上显示英文，和后端档位名一致，也更好看 */
   var THINK_EN = { off: 'Off', low: 'Low', medium: 'Medium', high: 'High' };
   function stCn(s) { return ST_CN[s] || (s || '-'); }
-  /* 【第八十三轮补丁C】陈旧 running 自愈判定。
-     问题：_advanceTaskInner 只在被推时改状态。进程重启/被系统杀掉后，
-     running 标记留在 task.json 里没人清，面板就永久显示「运行中」，
-     用户既等不到结果也点不了「继续推进」。
-     做法：running/queued 且 updated_at_ms 距今超过 STALE_MS → 展示成「已中断」。
-     只改前端展示，不动后端状态 —— 真在跑的长任务最多显示延迟，不会被写坏。
-     一点「继续推进」或刷新拉回新状态，eff 自然恢复。 */
+  /* 陈旧 running 展示层自愈：_advanceTaskInner 只在被推时改状态，进程重启后 running 标记没人清，
+     面板会永久显示运行中且点不了继续推进。running/queued 且 updated_at_ms 超 STALE_MS → 显示已中断。
+     只改展示不动后端，真在跑的任务最多延迟显示，点继续推进或刷新即恢复。 */
   var STALE_MS = 3 * 60 * 1000;
   function effStatus(it) {
     var st = String((it && it.status) || '');
@@ -551,343 +286,6 @@ function mathHtml(texEsc, display) {
     return base;
   }
 
-/* ── 堆叠式通知 ──
-   对齐宿主右侧聊天栏：多条同时存在，新的压在最上面，旧的被挤下去。
-   上一版是单节点 #toast，textContent 直接覆盖 —— 连报两条时前一条被吃掉，
-   用户只能看到「闪一下」，这就是「报错太快截不到」的真正原因。
-   现在每条独立节点、独立计时，互不干扰。 */
-var TST_MAX = 4;
-/* 存在时长：用户反馈「有点不太长」，整体加长。
-   info/ok 3.0/2.6 → 3.5/3.5，warn 4.0 → 5.0，err 6.5 → 8.0（错误要看清再关）。 */
-var TST_LIFE = { info: 3500, ok: 3500, warn: 5000, err: 8000 };
-var TST_SVG = {
-  info: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.6v.6"/></svg>',
-  ok: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/></svg>',
-  warn: '<svg class="tst-ico" viewBox="0 0 24 24"><path d="M12 3.4L21 19.4H3z"/><path d="M12 9.6v4.6M12 17.2v.5"/></svg>',
-  err: '<svg class="tst-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8"/></svg>'
-};
-/* 同级别、同文案的重复消息不叠加，只把已有那条刷新计时（避免连点时刷屏） */
-var TST_NODES = [];
-
-function toast(msg, level) {
-  var txt = String(msg == null ? '' : msg);
-  if (!txt) return;
-  var lv = (level === 'ok' || level === 'warn' || level === 'err') ? level : 'info';
-  var box = $('toastStack');
-  if (!box) return;
-
-  /* 去重：完全相同的文案仍在屏上时，不新增，只重置它的寿命 */
-  for (var i = 0; i < TST_NODES.length; i++) {
-    var nd = TST_NODES[i];
-    if (nd && nd.el && nd.txt === txt && !nd.dead) {
-      try { clearTimeout(nd.timer); } catch (eT) {}
-      nd.timer = setTimeout(function () { killToast(nd); }, TST_LIFE[lv]);
-      return;
-    }
-  }
-
-  var el = document.createElement('div');
-  el.className = 'tst' + (lv === 'info' ? '' : ' ' + lv);
-  el.setAttribute('data-lv', lv);
-  el.innerHTML = (TST_SVG[lv] || TST_SVG.info) + '<div class="tst-tx">' + esc(txt) + '</div>';
-
-  var rec = { el: el, txt: txt, lv: lv, timer: null, dead: false };
-
-  /* 报错条目的点击语义（用户定，两档）：
-       单击 → 展开到上限（约 8 行），仍留在原位，再点收回。
-       双击 → 解除限高看全部，并在屏幕中心悬浮；悬浮态可拖动，
-              松手飞出最近边缘并消失。
-       单击要延迟 250ms 才能确认不是双击，期间二次点击则取消单击。 */
-  var onTapFn = null;
-  var onDoubleFn = null;
-  var tapTimer = 0;
-  if (lv === 'err') {
-    onTapFn = function () {
-      /* 已经在悬浮态：单击直接关掉（不用再展开/收回） */
-      if (el.classList.contains('float')) { killToast(rec); return; }
-      try { clearTimeout(tapTimer); } catch (eT) {}
-      tapTimer = setTimeout(function () {
-        el.classList.toggle('open');
-        try { clearTimeout(rec.timer); } catch (eT2) {}
-        if (el.classList.contains('open')) {
-          rec.timer = setTimeout(function () { killToast(rec); }, 12000);
-        } else {
-          rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE.err);
-        }
-      }, 250);
-    };
-    onDoubleFn = function () {
-      /* 双击：取消挂起的单击，直接进悬浮态 */
-      try { clearTimeout(tapTimer); } catch (eT) {}
-      floatToast(el, rec);
-    };
-  }
-
-  /* 手势区分：位移小于这个值算「点击」，大于算「滑动」 */
-  var TST_TAP_SLOP = 8;
-  /* 横向滑过这个距离就判定关闭（不要求特定方向，左右都行） */
-  var TST_SWIPE_MIN = 46;
-
-  /* 给一条通知挂上「划一下关闭」。
-     用户原话：划一下就能关，划哪里都行。
-     所以不做方向限制、也不要求从边缘起手 —— 整条任意位置都能拖，
-     只按位移距离判定，左右滑都可以。 */
-/* 通知条交互（2026-11-06 重写，用户定）：
-     自由拖动 —— 不锁轴，x/y 都跟手；松手时三种结局：
-     a) 位移很小 → 判点击（err 条目点开全文）
-     b) 位移中等 → 弹回原位
-     c) 位移超限 → 顺着拖动方向飞出屏幕并消失
-     全程只动 transform/opacity，不触发布局。
-     手感的两个关键点：
-     1) pointermove 里先判方向再 preventDefault —— 竖直方向放行给页面滚动，
-        否则通知条会抢走所有竖向滑动，整页感觉「阻塞」；
-     2) 飞出时不能先 reset 再 killToast —— 那会让元素先弹回原位再飞，
-        必须把当前位移原样交给 killToast 接力。 */
-  function bindSwipeClose(el, rec, onTap, onDouble) {
-    /* 所有级别都可拖（用户定：即使一下就走的也要能划掉）。
-       单击/双击语义只给 err，其余级别拖动即关闭。
-       float 态（双击后悬浮）拖动逻辑不同：不判点击，松手一律飞出。 */
-    var startX = 0, startY = 0, curX = 0, curY = 0;
-    var tracking = false, decided = false, horiz = false;
-    var pid = null;
-
-    function reset(spring) {
-      tracking = false; decided = false; pid = null;
-      if (spring) {
-        /* 回弹：放开直接截断，用 transition 弹回去 */
-        el.classList.remove('drag');
-        el.style.transition = 'transform .24s cubic-bezier(.2,.9,.3,1), opacity .2s';
-        el.style.transform = rec.floatBase || 'translate3d(0,0,0)';
-        el.style.opacity = '';
-        setTimeout(function () {
-          if (!rec.dead) { el.style.transition = ''; el.style.transform = rec.floatBase || ''; }
-        }, 260);
-      } else {
-        el.classList.remove('drag');
-        el.style.transition = '';
-        el.style.transform = rec.floatBase || '';
-        el.style.opacity = '';
-      }
-      curX = 0; curY = 0;
-    }
-
-    el.addEventListener('pointerdown', function (e) {
-      if (rec.dead) return;
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      tracking = true; decided = false; horiz = false;
-      pid = e.pointerId;
-      startX = e.clientX; startY = e.clientY; curX = 0; curY = 0;
-      /* 按下即清掉 transition 与动画，拖动全程跟手 */
-      el.style.transition = '';
-      el.style.animation = 'none';
-      el.classList.add('drag');
-      try { el.setPointerCapture(pid); } catch (eC) {}
-    });
-
-    el.addEventListener('pointermove', function (e) {
-      if (!tracking || rec.dead) return;
-      curX = e.clientX - startX;
-      curY = e.clientY - startY;
-      var ax = Math.abs(curX), ay = Math.abs(curY);
-      /* 第一次超过 6px 时定方向：横向接管，纵向还给页面滚动 */
-      if (!decided && (ax > 6 || ay > 6)) {
-        decided = true;
-        horiz = ax >= ay;
-      }
-      /* 【第六十二轮】用户要求：两个位置随便滑都能飞。
-         以前竖向会还给页面滚动，导致往上/往下滑没反应。
-         现在只在「没展开的长内容需要滚动」时才放行竖向，其余全接管。 */
-      if (decided && !horiz) {
-        var needScroll = !el.classList.contains('float') &&
-                         el.scrollHeight > el.clientHeight + 2 &&
-                         el.classList.contains('open');
-        if (needScroll) {
-          tracking = false;
-          reset(true);
-          return;
-        }
-      }
-      /* 全方向跟手。悬浮态要保留居中基准 -50%，只叠加手指位移 */
-      if (rec.floatBase) {
-        el.style.transform = rec.floatBase + ' translate3d(' + curX + 'px,' + curY + 'px,0)';
-      } else {
-        el.style.transform = 'translate3d(' + curX + 'px,' + curY + 'px,0)';
-      }
-      var dist = Math.sqrt(curX * curX + curY * curY);
-      el.style.opacity = String(Math.max(0.25, 1 - dist / 260));
-      try { e.preventDefault(); } catch (eP) {}
-    });
-
-    function finish(e) {
-      if (!tracking || rec.dead) return;
-      var movedX = Math.abs(curX), movedY = Math.abs(curY);
-      var dist = Math.sqrt(curX * curX + curY * curY);
-      try { if (pid != null) el.releasePointerCapture(pid); } catch (eR) {}
-      var isFloat = el.classList.contains('float');
-
-      /* 悬浮态：任何位移超限都直接飞出（不判点击、不弹回） */
-      if (isFloat) {
-        if (dist >= TST_SWIPE_MIN) {
-          var fdir;
-          if (movedX >= movedY) fdir = curX < 0 ? 'left' : 'right';
-          else fdir = curY < 0 ? 'up' : 'down';
-          tracking = false; decided = false; pid = null;
-          killToast(rec, fdir, curX, curY);
-          return;
-        }
-        /* 没拖动就是单击：关闭 */
-        reset();
-        if (movedX < TST_TAP_SLOP && movedY < TST_TAP_SLOP) killToast(rec);
-        return;
-      }
-
-      /* 超限：顺着拖动方向飞出。
-         关键：这里不能 reset()，必须把「当前手指位置」原样交给 killToast 接力，
-         由它从该位置继续推到屏外 —— 否则元素会先弹回原位再飞出去（闪一下）。 */
-      if (dist >= TST_SWIPE_MIN) {
-        var dir;
-        if (movedX >= movedY) dir = curX < 0 ? 'left' : 'right';
-        else dir = curY < 0 ? 'up' : 'down';
-        tracking = false; decided = false; pid = null;
-        killToast(rec, dir, curX, curY);
-        return;
-      }
-      /* 没超限：位移极小算点击 */
-      if (movedX < TST_TAP_SLOP && movedY < TST_TAP_SLOP) {
-        reset();
-        /* 双击判定：两次点击间隔小于 300ms 视为双击 */
-        var now = Date.now();
-        if (onDouble && rec.lastTap && (now - rec.lastTap) < 300) {
-          rec.lastTap = 0;
-          onDouble();
-          return;
-        }
-        rec.lastTap = now;
-        if (onTap) onTap();
-        return;
-      }
-      reset(true);
-    }
-    el.addEventListener('pointerup', finish);
-    el.addEventListener('pointercancel', function () { reset(true); });
-  }
-
-  /* 双击：把通知条抬到屏幕中心悬浮，解除限高看全部。
-   悬浮态下：单击关闭；拖动松手飞出最近边缘。
-   用 fixed 定位 + 居中，z-index 压过容器。 */
-function floatToast(el, rec) {
-  if (!el || rec.dead) return;
-  try { clearTimeout(rec.timer); } catch (eT) {}
-
-  /* 两段式：先记下它现在的位置（right-top 的堆叠位），下一帧再过渡到屏幕中心。
-     为什么要两段：同一个事件循环里连续写两次 transform，浏览器会合并成一帧，
-     过渡根本没有起点，看起来就是瞬移。必须先让第一帧被渲染。 */
-  var r0 = el.getBoundingClientRect();
-  var startTf = 'translate3d(' + (r0.left + r0.width / 2 - window.innerWidth / 2) + 'px,' +
-                (r0.top + r0.height / 2 - window.innerHeight / 2) + 'px,0)' +
-                ' translate(-50%,-50%) scale(1)';
-
-  el.classList.remove('open');
-  el.classList.add('float');
-  /* 从容器里摘出来挂到 body，避免被 #toastStack 的 overflow/层叠限制 */
-  if (el.parentNode && el.parentNode !== document.body) {
-    document.body.appendChild(el);
-  }
-  /* 第一帧：定位到原位，无过渡 */
-  el.style.transition = 'none';
-  el.style.position = 'fixed';
-  el.style.left = '50%';
-  el.style.top = '50%';
-  el.style.width = Math.min(r0.width, 420) + 'px';
-  el.style.maxHeight = '70vh';
-  el.style.overflowY = 'auto';
-  el.style.zIndex = '300';
-  el.style.pointerEvents = 'auto';
-  el.style.opacity = '1';
-  el.style.transform = startTf;
-  /* 记录基准位移，拖动时在此基础上叠加，避免覆盖掉居中用的 -50% */
-  rec.floatBase = 'translate(-50%,-50%)';
-
-  /* 第二帧：解禁过渡，过渡到屏幕中心 + 撑宽 */
-  requestAnimationFrame(function () {
-    requestAnimationFrame(function () {
-      if (!el.parentNode || rec.dead) return;
-      el.style.transition = '';
-      el.style.width = 'min(86vw, 420px)';
-      el.style.transform = 'translate(-50%,-50%) scale(1)';
-    });
-  });
-}
-
-  /* 新的插到最前面：容器在右上角，最新一条在最上面，旧的往下推。
-   与 TST_NODES 顺序保持一致（数组也是 unshift），超限时删最后一个（最旧、最靠下）。 */
-  box.insertBefore(el, box.firstChild);
-  TST_NODES.unshift(rec);
-  bindSwipeClose(el, rec, onTapFn, onDoubleFn);
-
-  /* 超出上限：最旧的那条（数组最后一个 = 屏幕最下方）立刻淡出 */
-  while (TST_NODES.length > TST_MAX) {
-    killToast(TST_NODES[TST_NODES.length - 1]);
-  }
-
-  rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE[lv]);
-}
-
-/* 淡出后移除节点；动画只跑 transform/opacity，不触发重绘。
-   dir / fromX / fromY 可选：手动拖飞时传入，从手指松开的位置接着推到屏外，
-   手感连续不跳变；自动消失不传，走默认的从右侧滑出。 */
-function killToast(rec, dir, fromX, fromY) {
-  if (!rec || rec.dead) return;
-  rec.dead = true;
-  try { clearTimeout(rec.timer); } catch (eT) {}
-  var el = rec.el;
-  for (var i = 0; i < TST_NODES.length; i++) {
-    if (TST_NODES[i] === rec) { TST_NODES.splice(i, 1); break; }
-  }
-  if (!el || !el.parentNode) return;
-  if (dir) {
-    /* 先把元素固定在手指松开的位置（无过渡），再解禁过渡推到屏外。
-       注意：此时 el.style.animation 可能还是 'none'（pointerdown 里设的），
-       必须显式清掉，否则 keyframes 与 transition 抢同一个 transform 属性。 */
-    el.classList.remove('drag');
-    var sx = Number(fromX || 0), sy = Number(fromY || 0);
-    el.style.animation = 'none';
-    el.style.transition = 'none';
-    el.style.transform = 'translate3d(' + sx + 'px,' + sy + 'px,0)';
-    /* 四方向：横飞出 130%，竖飞出 160%（上下留出通知条偏移） */
-    var tx = '0%', ty = '0%';
-    if (dir === 'left') tx = '-130%';
-    else if (dir === 'right') tx = '130%';
-    else if (dir === 'up') ty = '-160%';
-    else if (dir === 'down') ty = '160%';
-    /* 双延时代替双 rAF：rAF 在 WebView 被遮挡/悬浮窗时会被暂停，
-       通知条就永远飞不出去、卡在屏幕上不消失。setTimeout 不受可见性影响。
-       【延时不能省】两个 setTimeout 都必须带 ms，否则都是 0ms，
-       会在同一轮事件循环里连续跑完，中间没有渲染帧 ——
-       transform 初始值没被浏览器接受，transition 从终值起算，动画直接跳过去。
-       16ms ≈ 一帧，作用等价于原来的双 rAF。 */
-    setTimeout(function () {
-      /* 再等一帧：确保上面那帧的 transform 已被浏览器接受，
-         否则 transition 会从「初始值」起算，看起来就是闪回 */
-      setTimeout(function () {
-        if (!el.parentNode) return;
-        el.style.transition = 'transform .22s cubic-bezier(.3,0,.8,.4), opacity .22s ease-out';
-        el.style.transform = 'translate3d(' + tx + ',' + ty + ',0)';
-        el.style.opacity = '0';
-      }, 16);
-    }, 16);
-  } else if (el.classList.contains('float')) {
-    /* 悬浮态自动消失：淡出 + 轻微缩小。
-       不能走 .out → tstOut —— 那个 keyframes 用 translate3d(0,-110%)，
-       会和居中用的 translate(-50%,-50%) 抢 transform，先跳左上角再飞。 */
-    el.classList.add('gone');
-  } else {
-    el.classList.add('out');
-  }
-  setTimeout(function () {
-    try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e2) {}
-  }, dir ? 320 : 260);
-}
 
 /* 兼容旧调用点：err() 语义是「出问题了」，走 err 级；setMsg 保持原行为 */
 function err(m) { toast(m, 'err'); }
@@ -899,17 +297,54 @@ function warnMsg(m) { toast(m, 'warn'); }
   function hf() { try { if (navigator && typeof navigator.vibrate === 'function') navigator.vibrate(8); } catch (e) {} }
 
   /* ── 桥调用 ── */
-  /* 桥是同步阻塞接口，直接调用会卡住 WebView 主线程导致界面不重绘。
-     统一延迟到下一帧再发，保证点击后界面立刻有反馈。
-     【注意】这里用 setTimeout 而不是 requestAnimationFrame：
-     rAF 在 WebView 被遮挡/悬浮窗/后台时会被暂停，一旦暂停桥调用就永远发不出去，
-     表现为「点了按钮没任何反应」。setTimeout 只依赖主线程，不受可见性影响。 */
+  /* 桥是同步阻塞的，直接调用会卡住 WebView 主线程不重绘，统一延后 16ms 再发。
+     用 setTimeout 而非 rAF：rAF 在遮挡/悬浮窗/后台会被暂停，桥调用就永远发不出去。 */
   function call(tool, params, kind, onOk) {
     var id = ++S.seq;
     if (kind) S.lastId[kind] = id;
     var fire0 = function () { callRaw(tool, params, kind, id, onOk); };
     setTimeout(fire0, 16);
   }
+  /* 桥缺失处理：只在第一次报，且把「为什么」说清楚。
+     场景：用户用文件管理器直接打开 panel.html 调试，没有宿主注入 SBNative。
+     之前每条 call 都弹一次 err，一屏能叠四条一样的提示，看不出真正原因。 */
+  /* 报错详情：给用户上报 bug 用。
+     为什么要带这些：只看「工具返回失败」没法定位，得知道哪个工具、什么参数、
+     宿主版本、页面状态。参数里的 api_key 一律脱敏。 */
+  function diagText(tool, params, msg) {
+    var lines = [];
+    lines.push('工具：' + String(tool || ''));
+    var p2 = {};
+    try {
+      p2 = JSON.parse(JSON.stringify(params || {}));
+      ['api_key', 'key', 'token', 'password', 'secret'].forEach(function (k) {
+        if (p2 && typeof p2 === 'object' && k in p2) p2[k] = '***';
+      });
+    } catch (e) { p2 = {}; }
+    var ps = '';
+    try { ps = JSON.stringify(p2); } catch (e2) { ps = ''; }
+    if (ps.length > 200) ps = ps.slice(0, 200) + '…';
+    lines.push('参数：' + (ps || '{}'));
+    if (msg) lines.push('错误：' + String(msg));
+    lines.push('页面：' + String(S.page || '') + '｜桥：' + (window.SBNative ? '有' : '无') +
+               '｜丢弃：' + Number(S.bridgeDropped || 0));
+    lines.push('时间：' + new Date().toISOString());
+    return lines.join('\n');
+  }
+
+  function bridgeMissing(tool) {
+    if (S.bridgeWarned) return;
+    S.bridgeWarned = true;
+    toast('未检测到宿主桥（SBNative）。面板需在 Operit 内打开；直接开 html 只能看静态结构，任务列表与配置不会加载。', 'err');
+    /* 欢迎页文案改成明确失败态，不然用户只看到「正在加载最近任务…」永远转下去，
+       误以为在等。主页照常可进，只是列表为空。 */
+    try {
+      var hs = document.querySelector('#page-welcome .hero-sub');
+      if (hs) hs.textContent = '未连接宿主，无法加载任务（当前为静态预览）';
+    } catch (e) {}
+    try { console.error('[subagent] SBNative missing, first failed tool=' + tool); } catch (e) {}
+  }
+
   function callRaw(tool, params, kind, id, onOk) {
     /* 页面已销毁：直接放弃，不发桥调用（否则报 JsEngine already destroyed） */
     if (!ALIVE) return;
@@ -923,7 +358,10 @@ function warnMsg(m) { toast(m, 'warn'); }
           if (!r) { err('返回解析失败'); return; }
           /* silent：页面销毁期的桥调用，不打扰用户 */
           if (r.silent) return;
-          if (r.success === false) { err(r.message || '工具返回失败'); }
+          if (r.success === false) {
+            /* 成功不提示（用户要的），失败一律带诊断信息，方便上报 */
+            err((r.message || '工具返回失败') + '\n' + diagText(tool, params, r.message));
+          }
           if (onOk) onOk(r, r.data || r); else window.__sbResult(v, kind, id);
         };
         if (ret && typeof ret.then === 'function') ret.then(fire, function (eE) {
@@ -932,7 +370,7 @@ function warnMsg(m) { toast(m, 'warn'); }
         });
         else if (typeof ret === 'string' && ret) fire(ret);
         else err('桥无返回 tool=' + tool);
-      } else err('桥未注入');
+      } else bridgeMissing(tool);
     } catch (e) {
       if (!ALIVE) return;
       onBridgeDrop(kind, e);
@@ -1150,14 +588,9 @@ function warnMsg(m) { toast(m, 'warn'); }
     }, 5000);
     call('subagent:subagent_get', { all: true }, 'list');
   }
-  /* ── 【第六十九轮】列表动画按需挂载 ──
-     问题：.chat-row 的流光、头像呼吸、运行中脉冲都是无限循环动画，
-     且写在伪元素上，每个卡片各一份。50 个卡片 = 200 个无限动画
-     + 200 个常驻合成图层，WebView 内存直接爆。
-     
-     做法：动画声明移到 .chat-row.anim-on 下，这里用 IntersectionObserver
-     只给进入视口（含 80px 预加载边）的行加类。出视口立刻移除，
-     浏览器回收图层。视觉完全一样，图层数从「随行数增长」变「固定几个」。 */
+  /* 列表动画按需挂载：.chat-row 的流光/呼吸/脉冲是无限循环动画，50 张卡 = 200 个常驻图层。
+     动画声明移到 .chat-row.anim-on 下，IntersectionObserver 只给进视口（含 80px 预载）的行加类，
+     出视口即移除，图层数从「随行数增长」变固定。 */
   var _animObs = null;
   function _rowsOf(root) {
     var out = [];
@@ -1333,12 +766,8 @@ function warnMsg(m) { toast(m, 'warn'); }
     });
   }
 
-  /* 【第八十三轮补丁C】群组一级分类 + 无群组按父 agent 分组。
-     规则（用户定）：
-       1) 有群组的任务归到该群组，群组标题带群组名 + 码 + 成员权限提示
-       2) 无群组的任务按 parent_chat_id 分组，标题只显示父对话原 ID 后 8 位
-       3) 群组还没建对应任务时也显示（空群组不渲染，避免噪音）
-     搜索时退化成平铺：结果跨组散落，分组反而难找。 */
+  /* 群组一级分类：有群组归到该群组（标题带名称+码+权限）；无群组按 parent_chat_id 分组
+     （标题只显后 8 位）；空群组也显示。搜索时退化成平铺，因为结果跨组散落，分组反而难找。 */
   function groupHtml(src, searching) {
     /* 【第八十五轮】整段包 try/catch。
        分组渲染是整个列表页的最后一环，一旦这里抛异常，
@@ -1465,11 +894,8 @@ function warnMsg(m) { toast(m, 'warn'); }
        pollOnce 早已因 page 不是 detail 而退出，不重启就永远停在拉取那一刻 */
     var stNow = String(S.curStatus || '');
     if (stNow === 'running' || stNow === 'queued') startPoll();
-    /* 【关键】状态是 running 说明上一轮流式还没收尾（面板退出时后端仍是 running）。
-       这时不能提示「待开始 / 请重新启动」—— 用户看到的就是「每次回来都让我重新启动」。
-       正确做法：直接恢复界面，让用户看到已生成的部分，按钮显示「继续推进」即可。
-       注意：不能把 S.advancing 置 true，那会让 syncDtBar 的
-       canRun = !ended && !S.advancing && ... 恒为假，「继续推进」按钮直接消失。 */
+    /* running 说明上一轮流式还没收尾（面板退出时后端仍是 running）。此时不能提示「待开始/请重新启动」，
+       直接恢复界面显示已生成部分，按钮给「继续推进」。也不能置 S.advancing=true，那会让 canRun 恒假、按钮消失。 */
     if (stNow === 'running') {
       setLive('上次的生成被中断，已保存已生成内容，点「继续推进」接着跑', true);
     }
@@ -1648,22 +1074,14 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   }
   function kv(k, v) { return '<div class="kv"><b>' + esc(k) + '</b><span>' + esc(v) + '</span></div>'; }
 
-  /* 三态切换（2026-11-07 用户定稿，第二十八轮）
-   【历史】这个三态 6df560b 做过并能用，4ddd34a 被我删成两态。现在恢复。
-   0 = 收起 / 流式中：限高 120px，容器内滚，自动贴底（跟手）
-   1 = 部分展开：限高 320px，容器内滚，不自动滚
-   2 = 全部展开：不限高，滚动交给整页，不自动滚
-   高度挂在 .thk-body 的 h1/h2 class（沿用原版，与 data-state 解耦），
-   data-state 只管箭头与角标文案。 */
+  /* 思考块三态高度：0=收起 120px（容器内滚、自动贴底）/ 1=部分 320px（不自动滚）/ 2=全展开（整页滚）。
+     高度挂 .thk-body 的 h1/h2 class，data-state 只管箭头与角标文案，两者解耦。 */
   /* 【第五十八轮】单击在 0/1 之间切（收起/展开）；双击直接进 2（全展开） */
   var THINK_TIPS = ['展开', '收起', '收起'];
   function setThinkState(tb, st) {
     if (!tb) return;
     var n = (st === 1 || st === 2) ? st : 0;
-    /* 【第八十四轮】记住用户手动设过的档位。
-       根因：fillTrace 每次轮询重渲染都用 stInit（running=1 展开），
-       用户刚折叠，下一轮 trace 回来又被顶开，观感就是「关上了自己打开」；
-       运行中的任务则表现为「怎么点都折不上」。
+    /* 记住用户手动设过的档位。否则每轮 trace 重渲染都回 stInit，表现为「关上了自己打开」。
        key 用「turn 下标 + 段类型」，turn 下标只在追加时变化，老段稳定。 */
     try {
       var tk = tb.getAttribute('data-thk-key');
@@ -1725,11 +1143,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     var boxes = host.querySelectorAll('.thinkbox:not([data-state="0"])');
     for (var i = 0; i < boxes.length; i++) setThinkState(boxes[i], 0);
   }
-  /* 【第八十四轮】把 data-state 落成真实视觉：补 h1/h2 高度类与角标文案。
-     为什么必须单独一步：渲染时只写了 data-state 属性，高度类在 .thk-body 上，
-     CSS 只会因为 `[data-state="0"]>.thk-body` 收起；1/2 档没有 .h1/.h2 就还是 120px，
-     表现为「点了展开，但只多露出一行」。
-     顺带清理已经从 turns 里消失的段的记忆，避免 S.thk 无限膨胀。 */
+  /* 把 data-state 落成真实视觉：补 .h1/.h2 高度类与角标文案。只写 data-state 时 1/2 档没有高度类，
+     仍是 120px，表现为「点了展开只多露一行」。顺带清理已消失的段的记忆，避免 S.thk 膨胀。 */
   function applyThinkStates() {
     var host = $('dtChat');
     if (!host || !host.querySelectorAll) return;
@@ -1775,11 +1190,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     } catch (e) {}
     try { syncThinkFloat(); } catch (e2) {}
   }
-  /* 【第五十七轮】工具行：两个可点区域，两个不同行为。
-     用户要求：
-       - 点「工具调用文本」→ 看 agent 是怎么调用的（参数）
-       - 点「工具返回预览」→ 屏幕中心弹窗看返回全文（可下滑）
-     失败的工具：名称、参数、返回预览全部红字提示。 */
+  /* 工具行两个可点区域：点工具调用文本看参数，点返回预览弹窗看全文（可下滑）。失败的工具全部红字。 */
   /* 【第六十四轮】工具行唯一序号。
      为什么不用 tc.id / tc.name 当键：同一轮里可以有两条同名工具（比如两次 read_file 都失败），
      用名字做键会互相覆盖，后者把前者顶掉 —— 用户点第一条，弹出来的却是第二条的内容。
@@ -1841,22 +1252,16 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     if (st === 'done' || st === 'failed' || st === 'cancelled' || st === 'closed') {
       stopPoll();
       S.advancing = false;
-      /* 【关键】终态必须无条件收干净，不能只在 STREAM.busy 时收。
-         原来写成 if (STREAM.busy) { abortStream(); S.streaming = false; }，
-         当流式早已退出（busy 已 false）但 S.streaming 还是 true 时，
-         这个 if 不成立 → setLive('') 永远不执行 → live 停在「模型生成中…」，
-         而状态行已经显示「已停止」。用户看到的就是自相矛盾的僵尸界面。 */
+      /* 终态必须无条件收干净，不能只在 STREAM.busy 时收。否则流式早已退出（busy=false）但 S.streaming 仍 true 时，
+         setLive('') 永不执行，live 停在「模型生成中…」而状态行显示已停止，界面自相矛盾。 */
       if (STREAM.busy) abortStream();
       S.streaming = false;
       setLive('');
       /* 终态后清指纹，确保下一次进入能重绘 */
       S.chatSig = null;
     } else if (S.bridgeDropped > 0) {
-      /* 桥已超时（20s 硬限）→ 这轮 advance 请求已不可达，后端还在跑由轮询盯着。
-         必须清 advancing，否则 syncDtBar 的
-         canRun = !ended && !S.advancing && (queued|failed|cancelled)
-         永远为假 → 「继续推进」按钮永久消失，只能刷新页面才恢复。
-         清掉是安全的：真在跑时 status 仍是 running，canRun 也不会亮。 */
+      /* 桥已超时（20s 硬限）：本轮 advance 不可达，后端仍在跑由轮询盯着。必须清 advancing，
+         否则 canRun 恒假、「继续推进」按钮永久消失。真在跑时 status 仍是 running，不会误亮。 */
       S.advancing = false;
     }
   }
@@ -1886,17 +1291,10 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     }
     var usedRes = {};
 
-    /* 【第六十轮】整段连续的 AI 输出合成一个卡片。
-       用户原话（连喊十几个「一个」）：「工具调用，思考内容全没了，一个卡片」
-       之前每条 turn 各自生成一个 .agent-block，一轮 25 步就被切成 25 个卡片。
-       现在：从第一条 assistant 到最后一个 tool，共用一个 .agent-block，
-       内部依次排列「思考过程」段 → 工具调用段 → 正文段，全部同一张卡。 */
-    /* 【第八十五轮】默认一律收起。
-       用户原话：「正常第一次进去，它不该是展开的呀，它应该是收起来的」。
-       旧逻辑按状态分：running 展开、已结束收起。
-       但运行中展开会把一屏全占满，用户进来先看到一大片思考正文，
-       还要手动往回折 —— 想看进展点一下就行，默认收起更省地方。
-       注意：这只是「默认值」，用户手动设过的档位仍由 S.thk 记忆优先。 */
+    /* 整段连续 AI 输出合成一个卡片：从第一条 assistant 到最后一条 tool 共用 .agent-block，
+       内部依次排列思考段 → 工具段 → 正文段。以前每条 turn 各建一块，一轮 25 步切成 25 张卡。 */
+    /* 默认一律收起。运行中展开会把一屏占满，用户进来先看到大片思考正文还要手动折回去；
+       想看进展点一下即可。仅默认值，用户手动设过的档位仍由 S.thk 记忆优先。 */
     var stInit = '0';
     /* 【第八十四轮】每个折叠段带一个稳定 key：turn 下标 + 段类型。
        重渲染时优先用用户手动设过的档位（S.thk），没设过才用默认 stInit。
@@ -1962,11 +1360,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
             + '</div>'
             + '</div>';
         }
-        /* 【第八十四轮补】单个工具调用不折叠，直接平铺在正文流里。
-           规矩来自用户：「只有一个工具调用及这个工具调用，不用收就放在正文里面」。
-           理由：一条工具就是一行信息，再套一层「工具调用 (1)」的折叠头，
-           等于让用户多点一次才看到唯一那行，纯属负担。
-           ≥2 个才值得包壳 —— 那才需要「展开/收起」。 */
+        /* 单个工具调用不折叠，直接平铺正文流里。一条工具就是一行信息，再套「工具调用 (1)」折叠头
+           等于让用户多点一次才看到唯一那行。≥2 个才包壳，那才需要展开/收起。 */
         if (hasTool && t.length >= 2) {
           var kkey = i + ':tool';
           var kst = thinkState(kkey);
@@ -2020,11 +1415,8 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     }
     /* 【第六十轮】循环结束，把未收的卡片收掉 */
     closeBlk();
-    /* 【关键】pending = 流式过程中临时落盘、还没收尾的内容。
-       用户退出面板再进来时，这些内容不在 turns 里（还没落正式 turn），
-       不补的话界面上就什么都没有，用户以为丢了、只能重新点启动 —— 这就是
-       「每次回来都让我重新启动、内容越叠越大」的根源。
-       这里把 pending 渲染成一条「生成中」的临时气泡，只显示不落盘。 */
+    /* pending 是流式中临时落盘、还没收尾的内容，不在 turns 里。不补渲染的话用户退出再进来看到空白，
+       以为丢了只能重新启动，内容越叠越大。这里渲染成一条「生成中」临时气泡，只显示不落盘。 */
     if (d.pending && (d.pending.think || d.pending.body)) {
       if (d.pending.think) {
         h += '<div class="thinkbox" data-think="p1" data-state="0">'
@@ -2039,22 +1431,12 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
       h += '<div class="streambox" data-pending="1"><div class="sb-think" data-state="0" style="display:none"></div>'
         + '<div class="sb-body md-body" style="opacity:.55">（已暂停，点「继续推进」接着生成）</div></div>';
     }
-    /* 【关键】流式进行中绝不能重建 dtChat。
-       原逻辑每次轮询（1.5s）都 innerHTML = h 全量重建整个消息区：
-       1) 流式气泡就在 dtChat 里，被一起清掉 → 用户看不到流式，只有结束才突然出现
-       2) 每次重建导致滚动位置、输入框焦点、思考块展开状态全丢 → 用户看到「一直跳动」
-       所以流式期间只更新状态行，DOM 交给流式自己增量维护。
-
-       另外：内容没变化时也不重建。轮询 1.5s 一次，任务可能好几分钟没新内容，
-       每次都重写 DOM 就是纯浪费，还会把用户手动展开的思考块弹回去。
-       用整串 HTML 做等值比较（几 KB 字符串比较，比 DOM 重建便宜几个量级）。 */
+    /* 流式期间绝不重建 dtChat：会清掉流式气泡、丢滚动/焦点/展开态。只更新状态行。
+       内容无变化也不重建（整串 HTML 等值比较比 DOM 重建便宜几个量级）。 */
     var _h = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
     if (!STREAM.busy && _h !== S.chatSig) {
-      /* 【第八十四轮】折叠态由 data-thk-key + S.thk 记忆，不再需要「按第几个块」的旧还原。
-         旧实现有两个洞：
-           1) 只记非 0 档 → 用户把某个块折起来，重渲染就按 stInit 又展开（「自己打开」）
-           2) 按 DOM 下标对齐 → turns 追加后下标全错位，档位套到别的段上
-         现在渲染时 data-state 已按 key 取好，这里只需要补 h1/h2 高度类 + 贴底。 */
+      /* 折叠态由 data-thk-key + S.thk 记忆。旧实现两个洞：只记非 0 档（折起来重渲染又展开）、
+         按 DOM 下标对齐（turns 追加后错位）。现在渲染时 data-state 已按 key 取好，这里只补高度类与贴底。 */
       S.chatSig = _h;
       $('dtChat').innerHTML = _h;
       applyThinkStates();
@@ -2073,14 +1455,9 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     S.dFailed = (d.status === 'failed');
   }
 
-  /* ══ 非流式推进说明 ══
-    早期版本让页面 fetch 直连模型端点做 SSE 流式。放弃它的原因（实测）：
-    1) 页面 origin 是 https://localhost，端点若是 http 会被混合内容策略直接拦；
-    2) 端点 https 但没回 access-control-allow-origin 时同样被 CORS 拦。
-    这两条一旦命中，请求根本没发出去，任务就永远停在 queued，模型一次都不会被调用
-    —— 这正是「1+1 要思考好久」的真相：它不是慢，是从来没跑。
-    现在统一走后端 subagent_advance：模型调用、工具执行、逐步落盘全在后端完成，
-    页面只用 trace 轮询显示。牺牲逐字效果，换来确定能跑起来。 */
+  /* 非流式推进：页面不再 fetch 直连模型端点。origin 是 https://localhost，http 端点被
+     mixed content 拦、https 端点没回 ACAO 被 CORS 拦，请求发不出去任务就永远停在 queued。
+     现在统一走后端 subagent_advance，页面只 trace 轮询。牺牲逐字，换确定能跑。 */
 
 /* 停止生成：清掉续推定定时器与轮询，并给任务打取消标记。
      注意：这里还有一份完整版在文件后面（含清占位块、清 STREAM.abort），
@@ -2451,10 +1828,8 @@ document.addEventListener('visibilitychange', function () {
       if ($('inSteps') && o.steps) $('inSteps').value = o.steps;
       if ($('inTimeout') && o.timeout) $('inTimeout').value = o.timeout;
       if ($('inDepth') && o.depth !== undefined) $('inDepth').value = o.depth;
-      /* 【第八十七轮·修 P0】原来写的是 THINK_CN[o.think]，但全文没有 THINK_CN 这个变量
-         （真正的常量叫 THINK_ORDER）。因为这行在 try 里，报错被吞掉不崩，
-         但「思考等级」永远不回填 —— 用户上次选的档位下次进新建页就丢了。
-         这里用 THINK_ORDER.indexOf 判断合法性，再调 setThinkSlider。 */
+      /* 原来写 THINK_CN[o.think]，但全文没有这个变量（真名 THINK_ORDER）。在 try 里被吞不崩，
+         后果是思考等级永不回填、上次选的档位丢失。改用 THINK_ORDER.indexOf 判断后调 setThinkSlider。 */
       if (o.think && THINK_ORDER.indexOf(String(o.think)) >= 0) setThinkSlider(o.think);
       if (o.sel && o.sel.length) { S.sel = o.sel.slice(); syncSelLabel(); }
       /* 危险命令开关回填：先写真实值再重绘，两条路径共用 paintDanger */
@@ -2535,22 +1910,11 @@ document.addEventListener('visibilitychange', function () {
         + (d ? ('深度 ' + d) : '深度不限') + ' · ' + (THINK_EN[S.think] || 'Medium');
     }
   }
-  /* ══ 流式双通道 ══
-   问题本质（实测 2026-11-04）：
-     面板页面 origin 固定为 https://localhost（宿主写死，改不了）。
-     · https 端点：官方/三方都回 access-control-allow-origin，fetch 可直连，拿真 SSE。
-     · http  端点（局域网自建）：页面是 https，浏览器按 mixed content 把请求掐死，
-       请求根本不发出去 —— 这条改代码绕不过，只能换通道。
-   但后端 Tools.Net.http 不受 mixed content 约束（已实测能通局域网并拿到 text/event-stream），
-   所以 http 端点走后端中继：后端拿整包 SSE → 解析成 chunks → 前端按块回放。
-   两条路都保留，谁用谁的。任何一条失败都静默降级到 advanceTask，绝不让任务卡住。
-   为什么绕开桥做真流式：桥是同步阻塞 + 20 秒硬超时，拿不到流。 */
-  /* 端点选路策略（实测 2026-11-05）：
-     页面 origin 是 http://localhost，理论上 http/https 端点都能直连。
-     但很多自建端点（new-api/one-api 类）不回 access-control-allow-origin，
-     前端跨域 fetch 照样被 CORS 拦 —— 所以不能只看协议。
-     策略：一律先试直连（direct），fetch 失败自动落中继（relay），
-     中继再失败落 advanceTask。三层保底，用户零配置。 */
+  /* 流式双通道。页面 origin 固定 https://localhost，https 端点 fetch 可直连拿真 SSE；
+     http 端点被 mixed content 掐死，只能走后端中继（Tools.Net.http 不受限，整包 SSE 拆块回放）。
+     两条都失败则静默降级到 advanceTask。不走桥做流式：桥同步阻塞 + 20s 硬超时。 */
+  /* 端点选路三层保底：先直连（direct），失败落中继（relay），再失败落 advanceTask。
+     不能只看协议 —— 很多自建端点不回 ACAO，跨域 fetch 照样被 CORS 拦。用户零配置。 */
   var STREAM = { key: '', ctx: null, busy: false, abort: null, fellBack: false, relay: false,
     curId: '', curThink: '', curBody: '', lastFlush: 0 };
 
@@ -2596,12 +1960,9 @@ document.addEventListener('visibilitychange', function () {
     return body;
   }
 
-  /* 把 fetch 层的失败翻译成用户能听懂、能动手的结论。
-     `Failed to fetch` 有且只有两种成因（HTTP 报错不会走到这里，那条会带状态码）：
-     1) mixed content —— 页面是 https://localhost，端点若是 http:// 会被浏览器直接拦，
-        请求根本没发出去；
-     2) CORS —— 端点 https，但服务端没回 access-control-allow-origin。
-     区分两者的唯一依据是端点协议，所以这里直接看 URL 协议。 */
+  /* 把 fetch 失败翻译成可动手的结论。Failed to fetch 只有两种成因（HTTP 报错带状态码，不走这里）：
+     mixed content（页面 https，端点是 http）与 CORS（端点没回 access-control-allow-origin）。
+     区分依据就是端点协议。 */
   function explainFetchErr(url, e) {
     var msg = String((e && e.message) || e || '');
     if (!/failed to fetch|networkerror|load failed/i.test(msg)) return msg;
@@ -2668,14 +2029,9 @@ document.addEventListener('visibilitychange', function () {
     };
   }
 
-  /* ── 通道 A0：XHR 增量读（WebView 里最可靠的流式路径） ──
-     为什么不用 fetch：实测端点 curl -N 每 20~60ms 一块（3586→11542→18945→28768→37219），
-     响应头 Content-Type: text/event-stream + X-Accel-Buffering: no + 无 Content-Encoding，
-     CORS 头齐全（ACAO: *），前端诊断也能拿到 reader=yes。
-     但页面依然看不到逐字 —— 因为部分 Android WebView 里 response.body.getReader()
-     能拿到对象、read() 却攒到整包结束才 resolve。
-     XHR 的 onprogress 是宿主侧事件，每收到一段就触发，不经过 ReadableStream，绕开这个坑。
-     解析逻辑与 fetch 版一致：按行切 data: → JSON.parse → 累加 content/reasoning/tool_calls。 */
+  /* 通道 A0：XHR 增量读。部分 Android WebView 里 fetch 的 response.body.getReader()
+     能拿到对象但 read() 会攒到整包才 resolve；XHR onprogress 是宿主事件，绕开这个坑。
+     解析与 fetch 版一致：按行切 data: → JSON.parse → 累加 content/reasoning/tool_calls。 */
   function streamOnceXhr(messages, onDelta) {
     var ctx = STREAM.ctx;
     var url = ctx.endpoint;
@@ -2994,11 +2350,8 @@ document.addEventListener('visibilitychange', function () {
     });
   }
 
-  /* 统一入口：XHR 优先（WebView 最可靠），失败再 fetch 直连，再失败落中继，
-     中继失败交给上层降级 advanceTask。
-     为什么 XHR 排第一：部分 Android WebView 的 fetch + response.body.getReader()
-     能拿到 reader（诊断显示 reader=yes），但 read() 攒到整包结束才 resolve，
-     用户就看不到逐字。XHR 的 onprogress 由宿主触发，每段都回调，绕开这个坑。 */
+  /* 统一入口：XHR → fetch 直连 → 后端中继 → advanceTask 降级。XHR 排第一因为部分 Android WebView
+     的 fetch getReader 能拿到 reader 但 read() 攒到整包才 resolve；XHR onprogress 每段都回调。 */
   function streamOnce(messages, onDelta) {
     return streamOnceXhr(messages, onDelta).then(null, function (eXhr) {
       /* XHR 这条路不通（被拦/端点不可达）→ 再试 fetch 直连 */
@@ -3056,29 +2409,17 @@ document.addEventListener('visibilitychange', function () {
 
     /* 逐帧渲染：每块 delta 到达后下一帧就刷，不再攒 60ms 批。
        长文本靠 md() 只在正文变化时重算，滚动用 rAF 合并，避免每块都触发重排。 */
-    /* 渲染节流：用时间戳代替 requestAnimationFrame。
-       【为什么必须换】WebView 在悬浮窗/被遮挡/后台时，requestAnimationFrame 会被
-       暂停或极度降频。原来写成：
-         if (paintPending) return;
-         paintPending = true;
-         rAF(function () { paintPending = false; doPaint(); });
-       rAF 一旦不触发，paintPending 就永远停在 true，后续每一次 paint() 都在
-       第一行 return —— 一个字节都不再画。用户看到的就是「输出一会儿停住，
-       等流结束一下子全部蹦出来」。
-       实测证据：状态行 rs/seen/cd 三个数字一直在涨（数据在收、在解析），
-       但画面完全不动，FPS 59，页面不卡。
-       换成时间戳节流后不依赖 rAF，主线程活着就一定会画。 */
+    /* 渲染节流用时间戳，不用 requestAnimationFrame。
+       rAF 在悬浮窗/遮挡/后台会被暂停或降频，一旦不触发，paintPending 永远停在 true，
+       后续 paint() 全部在第一行 return，表现为「输出停住、结束后一次性蹦出来」。 */
     var lastPaintAt = 0;
     function paint(force) {
       var now = Date.now();
       if (!force && (now - lastPaintAt) < 50) return;
       lastPaintAt = now;
       doPaint();
-      /* 注意：这里绝不能调 flushStream。
-         flushStream → call() → SBNative.call 是同步阻塞的，后端还要写文件 + 读回校验。
-         把它放在每 50ms 的绘制路径上，等于流式过程中反复冻结主线程，
-         画面看起来就是「卡住 / 不动」。
-         落盘改由独立的定时器驱动（见下面的 flushTimer）。 */
+      /* 这里绝不能调 flushStream：它经 call() → SBNative.call 同步阻塞，后端还要写文件读回校验，
+         挂在 50ms 绘制路径上会反复冻结主线程。落盘由独立定时器驱动（见 flushTimer）。 */
     }
     function doPaint() {
       if (thinkBuf) {
@@ -3108,13 +2449,8 @@ document.addEventListener('visibilitychange', function () {
       var c = $('dtChat');
       if (c) c.scrollTop = c.scrollHeight;
     }
-    /* 流式增量落盘：独立定时器驱动，不挂在绘制路径上。
-        【为什么必须有】原来 thinkBuf/bodyBuf 只活在页面内存里，
-        用户退出面板再进来，内容全丢、后端状态还是 queued（显示「待开始」），
-        只能重新点启动 → 重跑的内容又叠一层，越滚越大。
-        【为什么用定时器而不是跟着 paint 走】flushStream 最终是同步桥调用，
-        挂在每 50ms 的绘制路径上会反复冻结主线程，流式看起来就是卡住。
-        间隔 8 秒足够：落盘只为了「退出不丢」，不需要实时。 */
+    /* 流式增量落盘，独立定时器驱动，不挂在绘制路径上。
+       不落盘则退出面板内容全丢、后端仍显示待开始；跟着 paint 走会反复冻结主线程。8 秒足够。 */
     function flushStream(force) {
       if (!id || (!thinkBuf && !bodyBuf)) return;
       STREAM.curId = id;
@@ -3259,21 +2595,14 @@ document.addEventListener('visibilitychange', function () {
           return { id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.args || '{}') } };
         });
         msgs.push(asst);
-        /* 【关键修复 2026-11-07】工具调用这一轮结束后，必须把当前流式 holder「定格」：
-           1) 把本轮已流出的思考/正文转成正式气泡，留在时间线里
-           2) 清空 holder 内容并给下一轮 runRound 用新 holder
-           不这么做的话：runRound 里 thinkBuf/bodyBuf 清零但 holder DOM 还留着旧内容，
-           下一轮流式又往同一个 holder 里画 → 视觉上「先显示一段、突然消失、再重新出现」。
-           用户实测就是这个现象：先冒出 list_files 工具块，然后整块消失变成正文。 */
+        /* 工具调用这一轮结束后必须「定格」当前流式 holder：把本轮已流出的思考/正文转成正式气泡，
+           再清空 holder 给下一轮。否则 runRound 清零了 buf 但 holder DOM 留着旧内容，
+           下一轮往同一个 holder 画，表现为「先显示一段、突然消失、再重新出现」。 */
         try {
           if (thinkBuf || bodyBuf) {
-            /* 【第八十七轮·修 P0】先建/复用 agent-block，再往里塞内容。
-               旧代码的错误：`var _blk` 在函数作用域内被声明两次，第二处
-               `var _blk = _streamBlock` 会把上面 `if (!_blk)` 新建的那个 div 覆盖掉。
-               体感后果：模型在调工具前写的那段说明正文，append 进了那个被覆盖的
-               局部 div，那个 div 从没插入 host，正文随它一起被 GC —— 用户只看到
-               思考段和工具行，正文凭空消失。
-               现在顺序是：先拿到稳定的 _blk，再往里 append，不会再被覆盖。 */
+            /* 先建/复用 agent-block，再往里塞内容。旧代码 `var _blk` 在同一函数作用域声明两次，
+               第二处 var _blk = _streamBlock 覆盖了 if(!_blk) 新建的 div，那段说明正文 append 进
+               从未插入 host 的局部 div 里，随它一起被 GC —— 用户只看到思考和工具行，正文消失。 */
             var _blk = _streamBlock;
             if (!_blk || !_blk.parentNode) {
               _blk = document.createElement('div');
@@ -3538,14 +2867,8 @@ document.addEventListener('visibilitychange', function () {
     'Anthropic 兼容': { ep: '' },
     '自定义中转': { ep: '' }
   };
-  /* ── 端点后缀自动补全 ──
- * 规则（严格按用户要求，绝不做多余推断）：
- *   1. 不写协议 → 补 https://
- *   2. 路径为空或只有 /         → 补 /v1/chat/completions
- *   3. 路径正好是 /v1（或 /v1/）  → 补 /chat/completions
- *   4. 其它任何路径（/v1/models、/openai、/api/v3…）→ 原样不动
- *   5. 已经是 /chat/completions 或 /responses 或 /messages → 原样不动
- * 用户自己填了后缀，绝不会再叠加。 */
+  /* 端点后缀补全，只补缺不叠加：无协议补 https://；空路径或 / 补 /v1/chat/completions；
+     仅 /v1 补 /chat/completions；其它路径与已有后缀（/chat/completions、/responses、/messages）原样不动。 */
   function epNorm(raw) {
     var s = String(raw == null ? '' : raw).trim();
     if (!s) return '';
@@ -3922,11 +3245,8 @@ document.addEventListener('visibilitychange', function () {
       var ep = pr.ep || '';
       S.cfgProv = v;
       if ($('cfgProv')) $('cfgProv').textContent = String(v).replace(/通用$/, '');
-      /* 只记录提供商本身。
-         端点：有预置值且用户框里还是空的才填，否则一律不动。
-         模型：**永远不自动填**。模型名必须由用户自己写，或从「拉取到的模型列表」里选。
-         曾经这里会塞 models[0]，导致「自定义中转」被塞进 deepseek-flash，
-         还只写了 model 没写端点，配置里留下 base_url 空 + model 有值的脏数据。 */
+      /* 只记录提供商本身。端点：有预置值且用户框为空才填。模型：永远不自动填，必须用户自己写或从
+         拉取列表里选（曾自动塞 models[0]，留下 base_url 空 + model 有值的脏数据）。 */
       var payload = { api_provider: v };
       if (ep) {
         var cur = ($('inEp') ? $('inEp').value : '').trim();
@@ -4039,11 +3359,8 @@ document.addEventListener('visibilitychange', function () {
     var v = $('vThink'); if (v) v.textContent = THINK_EN[S.think] || 'Medium';
     var fill = $('thinkFill');
     if (fill) {
-      /* 填充条必须停在「滑块圆心」上，不能按 0-100% 直接算。
-         滑钮直径 20px，圆心行程是从 10px 到 (宽度-10px)。
-         从两端各让出 10px 的可用行程，再用 calc 把圆心位置换算成宽度：
-         宽度 = 半径 + 行程 × 比例。
-         只算百分比会让 high 档填充条顶到边框外，低档又落后于圆心。 */
+      /* 填充条停在滑块圆心，不能按 0-100% 直算：滑钮直径 20px，圆心行程是 10px 到 (宽-10px)，
+         宽度 = 半径 + 行程 × 比例。直算会让 high 档顶出边框、低档落后圆心。 */
       var pct = i / 3;
       fill.style.width = 'calc(10px + (100% - 20px) * ' + pct.toFixed(4) + ')';
     }
@@ -4547,25 +3864,13 @@ document.addEventListener('visibilitychange', function () {
   /* 【第五十六轮】返回详情弹窗：点遮罩或叉关闭 */
   if ($('retMask')) $('retMask').addEventListener('click', closeRetDlg);
 
-  /* 思考块交互（2026-11-07 用户定稿第二十八轮；第七十轮修复累进断链）：
-       单击前进一档 0 → 1 → 2 → 0（累进循环，立即响应不等待）
-       0 = 收起/流式中（限高 120px，自动滚到底）
-       1 = 部分展开（限高 320px）
-       2 = 全部展开（不限高）
-       双击 = 抄近路，从任何档位一步到 2（全展开）。
-       【第七十轮】单击必须能自己走到 2 档，不能只靠双击；
-       否则单击到 1 档后停手再点会变回收起，永远看不到全部内容。
-   【触发范围】历史块只认 .thk-head（标题行），不认正文。
-   正文区域要留给长按选词复制，点一下就换档会让用户没法选文字。
-   流式区 .sb-think 没有标题行，整块可点。 */
+  /* 思考块三档：0=收起(120px) / 1=部分(320px) / 2=全展开。
+     单击 = 半展开↔收起（0↔1）；双击 = 一步到 2；2 档上单击 = 收回 0。
+     历史块只认 .thk-head 标题行，正文留给长按选词；流式区 .sb-think 无标题行，整块可点。 */
   document.addEventListener('click', function (e) {
     if (!e.target || typeof e.target.closest !== 'function') return;
-    /* 【第四十七轮】整卡可点：用户要求「单击双击在整个思考展开里面点，
-       而不是只有在最上面的思考过程」。
-       所以从 .thk-head 扩展到整张 .thinkbox。
-       但要留两个例外：
-         1) 工具行（.tblock）自己有点击动作（打开工具详情），不能抢
-         2) 正文选中文字时不触发（长按选词复制） */
+    /* 整张 .thinkbox 可点（不限 .thk-head）。两个例外：工具行 .tblock 自己有点击动作不抢，
+       正文选中文字时不触发（留给长按复制）。 */
     /* 【第五十三轮】工具行（.trow）自己有点击动作（打开工具详情），不能抢。
        旧类名 .tblock 已废弃，这里一并兼容，避免遗留节点点不开。 */
     /* 【第五十六轮】工具行与返回预览自己有点击（开中心弹窗），不能抢 */
@@ -4579,11 +3884,8 @@ document.addEventListener('visibilitychange', function () {
       var sel = window.getSelection && window.getSelection();
       if (sel && String(sel).length) return;
     } catch (eS) {}
-    /* 【第七十一轮】用户定稿的语义：
-       单击 = 「半展开 ↔ 收起」二元往返（0↔1），不跨到 2 档；
-       双击 = 一步到 2（全展开）；2 档上单击 = 收回 0。
-       第七十轮试过 0→1→2→0 三态累进，用户明确否决：那样点两下就全展开了，
-       失去「双击才全展开」的区分度。 */
+    /* 单击 = 半展开↔收起二元往返（0↔1）；双击 = 一步到 2；2 档上单击 = 收回 0。
+       第七十轮试过 0→1→2→0 三态累进，用户否决：那样点两下就全展开，失去「双击才全展开」的区分度。 */
     var st0 = parseInt(tb.getAttribute('data-state') || '0', 10) || 0;
     var now = Date.now();
     if (S._tapEl === tb && now - (S._tapAt || 0) < 260) {
@@ -4599,19 +3901,9 @@ document.addEventListener('visibilitychange', function () {
   });
   /* 思考块点击已统一到上面的累进循环处理 */
 
-  /* ── 上滑彩蛋（第三十七轮改版：整页上推）──
-     用户要的是：主页滚到底后继续上滑，整个内容往上推走，露出下面一屏彩蛋。
-     顶部搜索栏在 viewport 外，钉住不动。
-
-     结构：#homeViewport（裁切）> #homeTrack（200% 高，两屏）> homescroll + eggPanel
-     打开 = track 上移 50%。
-
-     判据（四条同时满足才接管）：
-       1. 已滚到底 —— scrollTop + clientHeight >= scrollHeight - 1
-       2. ddy < 0  —— 手指往上走（内容往上推）
-       3. |ddy| > |ddx| —— 竖向为主，排除横滑
-       4. 未在打开态（打开态走反向收回逻辑）
-     不接管时页面滚动完全原生，不抢手势。 */
+  /* 上滑彩蛋：主页滚到底后继续上滑，整页上推露出彩蛋面板。
+     结构 #homeViewport(裁切) > #homeTrack(200%高) > homescroll + eggPanel，打开即 track 上移 50%。
+     四条同时满足才接管，否则完全不干预原生滚动：滚到底、ddy<0、竖向为主、未处于打开态。 */
   (function () {
     var track = $('homeTrack'), host = $('homescroll'), home = $('page-home');
     if (!track || !host || !home) return;
@@ -4858,5 +4150,5 @@ show('welcome');
         }
       } catch (e) { /* 注入失败：保持 window.katex 未定义，内置渲染器兜底 */ }
     });
-  })();
-})();
+
+/* IIFE 收尾已移到最后一个分片 panel_toast.js。 */

@@ -9,12 +9,15 @@
  */
 var A = require('../lib/assert.js').group('三工具/白名单');
 var SUB = A.src('packages/subagent.js');
+/* 【第八十八轮】六个流式工具实现已拆到 sb_tool_stream.js；
+   声明（METADATA）仍在 subagent.js，实现断言改用 STR。 */
+var STR = A.src('packages/sb_tool_stream.js');
 var T = A.src('packages/sb_tools.js');
 
 /* ── 三工具存在性 ── */
-A.chk('导出 subagent_stream_ctx', /exports\.subagent_stream_ctx/.test(SUB));
-A.chk('导出 subagent_stream_key', /exports\.subagent_stream_key/.test(SUB));
-A.chk('导出 subagent_stream_relay', /exports\.subagent_stream_relay/.test(SUB));
+A.chk('导出 subagent_stream_ctx', /E\.subagent_stream_ctx/.test(STR));
+A.chk('导出 subagent_stream_key', /E\.subagent_stream_key/.test(STR));
+A.chk('导出 subagent_stream_relay', /E\.subagent_stream_relay/.test(STR));
 
 /* ── 三工具声明（AI 可见的 name / description） ── */
 A.match('ctx 有 name 声明', SUB, /"name"\s*:\s*"subagent_stream_ctx"/);
@@ -25,23 +28,24 @@ A.match('key 描述说明只本机用', SUB, /仅本机|不回显/);
 A.match('relay 描述说明 http 局域网', SUB, /http|局域网/);
 
 /* ── ctx 返回字段契约（页面直连必需） ── */
-A.match('ctx 返回 endpoint', SUB, /endpoint/);
-A.match('ctx 返回 model', SUB, /model/);
-A.match('ctx 返回 headers', SUB, /headers/);
-A.match('ctx 返回工具 schema', SUB, /schema|tools/);
-A.match('ctx 按任务取白名单', SUB, /allowed_tools/);
+A.match('ctx 返回 endpoint', STR, /endpoint/);
+A.match('ctx 返回 model', STR, /model/);
+A.match('ctx 返回 headers', STR, /headers/);
+A.match('ctx 返回工具 schema', STR, /schema|tools/);
+A.match('ctx 按任务取白名单', STR, /allowed_tools/);
 
 /* ── key 只写不读 ── */
-A.match('key 从环境变量取值', SUB, /getEnvValue/);
+A.match('key 从环境变量取值', STR, /getEnvValue/);
+/* 描述文案在 METADATA 里，属声明层，仍看 SUB */
 A.match('key 不回显明文', SUB, /不回显|只写不读/);
 
 /* ── relay 是整包 SSE 拆块（不是真流式） ── */
-A.match('relay 用 Tools.Net.http', SUB, /Tools\.Net\.http/);
-A.match('relay 解析 SSE data: 行', SUB, /data:/);
-A.match('relay 产出 chunks 数组', SUB, /chunks/);
-A.match('relay 同时给累积结果', SUB, /content.*reasoning|reasoning.*content/);
-A.match('relay 处理 tool_calls 分片', SUB, /tool_calls/);
-A.match('relay 按 index 累积参数', SUB, /byIdx|index/);
+A.match('relay 用 Tools.Net.http', STR, /Tools\.Net\.http/);
+A.match('relay 解析 SSE data: 行', STR, /data:/);
+A.match('relay 产出 chunks 数组', STR, /chunks/);
+A.match('relay 同时给累积结果', STR, /content.*reasoning|reasoning.*content/);
+A.match('relay 处理 tool_calls 分片', STR, /tool_calls/);
+A.match('relay 按 index 累积参数', STR, /byIdx|index/);
 
 /* ── 工具名清洗（第九轮真 bug） ── */
 A.match('有 cleanToolName 函数', T, /function cleanToolName/);
@@ -58,8 +62,8 @@ A.match('写类工具识别正则', T, /WRITE_RE|create_file|edit_file|delete_fi
 A.match('高危工具识别', T, /HIGH|terminal|shell/);
 
 /* ── 工具调用串行（不抢跑） ── */
-A.match('tool_once 单个工具执行', SUB, /exports\.subagent_tool_once/);
-A.match('tool_once 取任务白名单', SUB, /loadTask|allowed_tools/);
+A.match('tool_once 单个工具执行', STR, /E\.subagent_tool_once/);
+A.match('tool_once 取任务白名单', STR, /loadTask|allowed_tools/);
 
 /* ── 工具名清洗的行为断言（纯函数，可动态测） ── */
 var TOOLS = null;

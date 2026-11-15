@@ -1,14 +1,18 @@
 /* test/cases/md.js — Markdown 与 LaTeX 渲染断言
  *
- * 面板里的 md() 是手写的轻量渲染器（panel.js:338），
- * 内置公式渲染器是 texRender / texAtom 系列（TEX_SYM 在 panel.js:87）。
+ * 面板里的 md() 是手写的轻量渲染器（在 panel.js 主体里），
+ * 内置公式渲染器是 texRender / texAtom 系列（TEX_SYM 在 panel_tex.js）。
  * 这里只做静态断言：确认各类语法都有对应实现分支，且顺序正确。
  *
  * 为什么静态而不是动态：md() 依赖 DOM（document.createElement），
  * node 环境跑不了。要动态测得上 jsdom，为几条断言引入依赖不值。
  */
 var A = require('../lib/assert.js').group('Markdown/LaTeX');
-var P = A.src('ui/web/panel.js');
+/* 【第八十八轮】panel.js 已按功能拆片，构建时按 JS_PARTS 顺序拼成一个 script。
+   断言要测「页面里真正跑的那段脚本」，所以这里同样拼起来，顺序与 build_panel_html.js 一致。 */
+var P = A.src('ui/web/panel.js') + '\n'
+    + A.src('ui/web/panel_tex.js') + '\n'
+    + A.src('ui/web/panel_toast.js');
 
 /* ── md() 入口 ── */
 A.match('有 md() 渲染入口', P, /function md\(src\)/);

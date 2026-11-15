@@ -145,7 +145,9 @@ A.match('流式开始时指纹失效', P, /S\.streaming = true;[\s\S]{0,200}?S\.
 
 /* ── 第二十一轮：卡死自愈（终态必须收流式 + XHR 兜底超时） ── */
 /* 终态时不仅停轮询，还要 abortStream，否则 STREAM.busy 永真 */
-A.match('终态时收掉流式', P, /stopPoll\(\);[\s\S]{0,200}?S\.advancing = false;[\s\S]{0,300}?if \(STREAM\.busy\) \{[\s\S]{0,80}?abortStream\(\)/);
+/* 原正则依赖「if (STREAM.busy) { abortStream() }」包块写法，实际代码是单行 if；
+   改为断言三个关键动作都发生：停轮询、清 advancing、终态调 abortStream。 */
+A.match('终态时收掉流式', P, /stopPoll\(\);\s*S\.advancing = false;[\s\S]{0,300}?abortStream\(\)/);
 /* XHR 必须有兜底超时，否则端点挂住就永久卡 */
 A.match('XHR 设置兜底超时', P, /xhr\.timeout = _to > 0 \? \(_to \+ 30000\) : 180000/);
 /* abortStream 要清空占位块，否则时间线上留一块空白 */
@@ -245,4 +247,83 @@ A.match('剔除按钮只在有 KICK 位时出现',
     P, /canManage && mid !== String\(g\.founder \|\| ''\)/);
 A.match('剔除点击不冒泡成折叠',
     P, /act === 'grpInfo'\) \{ e\.stopPropagation\(\); return openGrpInfo\(val\)/);
+
+/* ── 【第八十八轮】panel.js 拆片后 IIFE 作用域完整性 ──
+   踩过的坑：panel.js 的 IIFE 在文件末尾就闭合了，panel_tex.js / panel_toast.js
+   被拼到作用域外，运行时 md() 找不到 mathHtml() → fillTrace 抛异常 → 时间线整片空白。
+   单文件 node --check 发现不了，因为每片语法各自合法。这里锁三件事：
+     1) panel.js 自己不能收尾（要留给最后一个分片）
+     2) 最后一片必须恰好收尾一次
+     3) 三片拼起来必须是合法脚本 */
+(function () {
+    var main = A.src('ui/web/panel.js');
+    var tex = A.src('ui/web/panel_tex.js');
+    var toast = A.src('ui/web/panel_toast.js');
+
+    A.chk('panel.js 不自行闭合 IIFE', !/^\}\)\(\);$/m.test(main));
+    A.eq('最后一片恰好闭合一次 IIFE', (toast.match(/^\}\)\(\);$/gm) || []).length, 1);
+
+    var joined = main + '\n' + tex + '\n' + toast;
+    A.eq('拼接后 IIFE 收尾恰好一处', (joined.match(/^\}\)\(\);$/gm) || []).length, 1);
+
+    var ok = true, msg = '';
+    try { new Function(joined); } catch (e) { ok = false; msg = String(e && e.message); }
+    A.chk('三片拼接后语法合法' + (ok ? '' : '：' + msg), ok);
+
+    /* 跨片调用：md() 在 panel.js，mathHtml() 在 panel_tex.js，必须同作用域 */
+    A.chk('md 与 mathHtml 分居两片', main.indexOf('function md(') >= 0 && tex.indexOf('function mathHtml') >= 0);
+    A.chk('tex 片不重复声明 S', tex.indexOf('var S = {') < 0);
+})();
+
+/* ── 【第八十九轮】桥缺失与报错诊断 ──
+   需求：用文件管理器直开 html 时没桥，要给明确提示（而不是永远转「正在加载」）；
+   报错要带现场信息方便上报，成功则静默。 */
+(function () {
+    A.match('桥缺失走 bridgeMissing', P, /else bridgeMissing\(tool\)/);
+    A.match('bridgeMissing 只报一次', P, /if \(S\.bridgeWarned\) return;/);
+    A.match('桥缺失改欢迎页文案', P, /未连接宿主，无法加载任务/);
+    A.match('报错带诊断信息', P, /diagText\(tool, params, r\.message\)/);
+    A.match('诊断脱敏 api_key', P, /api_key', 'key', 'token', 'password', 'secret/);
+    A.nomatch('成功不弹提示', P, /if \(r\.success === true\) \{ err/);
+})();
+
+/* ── 【第八十九轮】构建产物完整性（真机踩过，测试拦不住的那类）──
+   事故链：panel.html 注释里写了 script 标签字样 → 构建正则贪婪匹配把注释吞进 js
+   → 内联脚本 Invalid or unexpected token → 整段 script 不执行
+   → toast 未定义、时间线空白、删除按钮全失效。
+   另一条：三片 <script src> 只替换了 panel.js，tex/toast 残留外链，同样导致未定义。
+   这里直接查构建产物，而不是查源文件。 */
+(function () {
+    /* panel_html.js 是 `module.exports = "..."` 形式的 JSON 字符串，
+       要取到真实 HTML 必须先反序列化，否则读到的是带 \\n 转义的源码文本。 */
+    var raw = A.src('ui/web/panel_html.js');
+    var html = '';
+    try {
+        html = JSON.parse(raw.slice(raw.indexOf('module.exports = ') + 'module.exports = '.length).replace(/;\s*$/, ''));
+    } catch (e) { html = ''; }
+    A.chk('panel_html.js 可反序列化', !!html);
+
+    /* 1) 不能残留任何分片外链 */
+    A.chk('产物无残留分片外链', !/\.\/panel[\w]*\.(css|js)/.test(html));
+
+    /* 2) 内联脚本里不能有 HTML 注释残留 */
+    var m = html.match(/<script>([\s\S]*)<\/script>/);
+    A.chk('产物能找到内联脚本', !!m);
+    var js = m ? m[1] : '';
+    A.chk('内联脚本无 HTML 注释残留', !/<!--|-->/.test(js));
+
+    /* 3) 内联脚本必须语法合法（new Function 只解析不执行） */
+    var ok = true, msg = '';
+    try { new Function(js); } catch (e) { ok = false; msg = String(e && e.message); }
+    A.chk('内联脚本语法合法' + (ok ? '' : '：' + msg), ok);
+
+    /* 4) 关键函数必须都在同一个 script 里 */
+    ['function toast(', 'function md(', 'function mathHtml', 'var S = {'].forEach(function (sig) {
+        A.chk('内联脚本含 ' + sig, js.indexOf(sig) >= 0);
+    });
+
+    /* 5) 整个产物只能有一个 script 标签 */
+    A.eq('产物只有一个 script 标签', (html.match(/<script/g) || []).length, 1);
+})();
+
 A.finish();

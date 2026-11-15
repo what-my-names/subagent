@@ -453,6 +453,11 @@
      新消息插到最上层，已有条目自动下滑；每条独立计时，互不覆盖。
      对齐宿主右侧聊天栏的弹出观感。 -->
 <div id="toastStack" aria-live="polite"></div>
+<!-- 开发态直开用：三片按序引入，与 build_panel_html.js 的 JS_PARTS 顺序一致。
+     构建时会被内联替换，顺序不影响产物。
+     注意：注释里不能出现 script 标签字样，构建正则会把注释当成脚本吞进去。 -->
 <script src="./panel.js"></script>
+<script src="./panel_tex.js"></script>
+<script src="./panel_toast.js"></script>
 </body>
 </html>

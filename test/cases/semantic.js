@@ -17,7 +17,9 @@ var TOOLS = require(SRC + '/packages/sb_tools.js');
 var LLM = require(SRC + '/packages/sb_llm.js');
 
 /* ── 1. openMail 变量名：必须用 el，不能用未声明的 t ── */
-var P = A.src('ui/web/panel.js');
+/* 【第八十八轮】panel.js 已按功能拆片（tex / toast），构建时按 JS_PARTS 顺序拼成一个 script。
+   断言测「页面里真正跑的脚本」，所以这里按同样顺序拼接。 */
+var P = A.src('ui/web/panel.js') + '\n' + A.src('ui/web/panel_tex.js') + '\n' + A.src('ui/web/panel_toast.js');
 A.match('openMail 用 el.dataset.idx', P, /if \(act === 'openMail'\) return openMail\(Number\(el\.dataset\.idx\)\)/);
 A.nomatch('openMail 不再引用裸 t', P, /if \(act === 'openMail'\) return openMail\(Number\(t\.dataset/);
 
@@ -71,23 +73,23 @@ A.eq('递归包工具仍被识别', TOOLS.isRecursive('subagent:subagent_spawn')
 /* ── 5. 后端三处不再 fallback 到 default_allowed_tools ── */
 var SUB = A.src('packages/subagent.js');
 A.nomatch('tool_once 不再 fallback', SUB, /var allowed = \(task && task\.allowed_tools && task\.allowed_tools\.length\)[\s\S]{0,80}?cfg\.default_allowed_tools/);
-A.match('spawn 支持 all 参数', SUB, /if \(params\.all === true\) allowed = \["\*"\]/);
+A.match('spawn 支持 all 参数', A.src('packages/sb_tool_task.js'), /if \(params\.all === true\) allowed = \["\*"\]/);
 A.match('METADATA 声明了 tools 参数', SUB, /"name": "tools",\s*\n\s*"type": "string"/);
-A.match('allowed_tools 描述已改', SUB, /留空 = 一个工具都用不了/);
+A.match('allowed_tools 描述已改', A.src('packages/sb_tool_task.js'), /留空 = 一个工具都用不了/);
 
 /* ── 6. save_turn 必须记账（步数 / 用量 / 通知） ── */
-A.match('save_turn 累加 step', SUB, /if \(addedAssistant\) task\.step = Number\(task\.step \|\| 0\) \+ 1;/);
-A.match('save_turn 累加 usage', SUB, /task\.usage\.in = Number\(task\.usage\.in \|\| 0\) \+ uIn;/);
-A.match('save_turn 调 bumpUsage', SUB, /await TASK\.bumpUsage\(cfgU/);
-A.match('save_turn 调 notifyDone', SUB, /if \(params\.done === true \|\| task\.status === "failed"\) \{\s*\n\s*try \{ await notifyDone\(task\); \}/);
+A.match('save_turn 累加 step', A.src('packages/sb_tool_stream.js'), /if \(addedAssistant\) task\.step = Number\(task\.step \|\| 0\) \+ 1;/);
+A.match('save_turn 累加 usage', A.src('packages/sb_tool_stream.js'), /task\.usage\.in = Number\(task\.usage\.in \|\| 0\) \+ uIn;/);
+A.match('save_turn 调 bumpUsage', A.src('packages/sb_tool_stream.js'), /await TASK\.bumpUsage\(cfgU/);
+A.match('save_turn 调 notifyDone', A.src('packages/sb_tool_stream.js'), /if \(params\.done === true \|\| task\.status === "failed"\) \{\s*\n\s*try \{ await notifyDone\(task\); \}/);
 A.match('bumpUsage 已导出', A.src('packages/sb_task.js'), /bumpUsage: bumpUsage/);
 /* 【第八十二轮】父子对话从属：任务带归属，列表按对话过滤 */
 A.match('任务写入 parent_chat_id 字段', A.src('packages/sb_task.js'), /parent_chat_id: String\(opts\.parent_chat_id/);
 A.match('listTasks 支持按对话与群组过滤', A.src('packages/sb_task.js'), /async function listTasks\(force, filterChatId, groupFilter\)/);
 A.match('缓存仍存全量避免串味', A.src('packages/sb_task.js'), /async function _listTasksAll\(force\)/);
-A.match('分流用调用方 chatId', A.src('packages/subagent.js'), /function callerChatId\(\)/);
-A.match('all=true 不过滤', A.src('packages/subagent.js'), /if \(params && params.all === true\) return "";/);
-A.match('briefOf 输出归属', A.src('packages/subagent.js'), /parent_chat_id: String\(task\.parent_chat_id/);
+A.match('分流用调用方 chatId', A.src('packages/sb_ctx.js'), /function callerChatId\(\)/);
+A.match('all=true 不过滤', A.src('packages/sb_ctx.js'), /if \(params && params.all === true\) return "";/);
+A.match('briefOf 输出归属', A.src('packages/sb_ctx.js'), /parent_chat_id: String\(task\.parent_chat_id/);
 A.match('面板显式传 all=true 拿全集', A.src('ui/web/panel.js'), /all: true/);
 /* 面板侧要把 usage 传下去 */
 A.match('面板回传 usage', P, /if \(out\.usage\) _sv\.usage = out\.usage;/);
@@ -104,12 +106,12 @@ A.match('advanceTask 有 catch', T2, /catch \(e\) \{[\s\S]{0,400}?task\.status =
 A.match('advanceTask 写 error', T2, /task\.error = "推进异常："/);
 
 /* ── 9. stream_relay 必须有超时 ── */
-A.match('relay 有 connect_timeout', SUB, /connect_timeout: 15000/);
-A.match('relay 有 read_timeout', SUB, /read_timeout: Math\.max\(30000/);
+A.match('relay 有 connect_timeout', A.src('packages/sb_tool_stream.js'), /connect_timeout: 15000/);
+A.match('relay 有 read_timeout', A.src('packages/sb_tool_stream.js'), /read_timeout: Math\.max\(30000/);
 
 /* ── 10. METADATA 参数与实现一致 ── */
 A.match('cfg 声明 target 消歧参数', SUB, /"name": "target"/);
-A.match('config action 描述含 set_active', SUB, /set_active/);
+A.match('config action 描述含 set_active', A.src('packages/sb_tool_main.js'), /set_active/);
 
 /* ── 11. BUS.clear 返回条数 ── */
 A.match('clear 返回清空前条数', A.src('packages/sb_bus.js'), /function clear\(\) \{ var n = load\(\)\.length; save\(\[\]\); return n; \}/);
@@ -145,12 +147,12 @@ A.chk('产物不含旧 streamMode', HTML.indexOf('function streamMode(') < 0);
 /* 真因：流式全程只在页面内存里跑，退出面板 = 内容全丢；
    且从不把 status 写成 running，退出再进来后端还是 queued → 提示「待开始」
    → 用户只能重新启动 → 重跑内容叠一层，越滚越大（实测 35KB 重复）。 */
-A.match('后端有流式落盘工具', A.src('packages/subagent.js'), /exports\.subagent_stream_flush/);
-A.match('落盘把状态置 running', A.src('packages/subagent.js'), /task\.status = "running";[\s\S]{0,200}?task\.pending = \{/);
-A.match('落盘写 pending', A.src('packages/subagent.js'), /task\.pending = \{[\s\S]{0,160}?think: String\(params\.think/);
-A.match('终态忽略落盘', A.src('packages/subagent.js'), /if \(st === "done" \|\| st === "failed" \|\| st === "cancelled" \|\| st === "closed"\) \{[\s\S]{0,120}?ignored: true/);
-A.match('trace 返回 pending', A.src('packages/subagent.js'), /pending: t\.pending \? \{/);
-A.match('save_turn 清 pending', A.src('packages/subagent.js'), /delete task\.pending/);
+A.match('后端有流式落盘工具', A.src('packages/sb_tool_stream.js'), /E\.subagent_stream_flush/);
+A.match('落盘把状态置 running', A.src('packages/sb_tool_stream.js'), /task\.status = "running";[\s\S]{0,200}?task\.pending = \{/);
+A.match('落盘写 pending', A.src('packages/sb_tool_stream.js'), /task\.pending = \{[\s\S]{0,160}?think: String\(params\.think/);
+A.match('终态忽略落盘', A.src('packages/sb_tool_stream.js'), /if \(st === "done" \|\| st === "failed" \|\| st === "cancelled" \|\| st === "closed"\) \{[\s\S]{0,120}?ignored: true/);
+A.match('trace 返回 pending', A.src('packages/sb_tool_task.js'), /pending: t\.pending \? \{/);
+A.match('save_turn 清 pending', A.src('packages/sb_tool_stream.js'), /delete task\.pending/);
 /* 前端 */
 A.match('流式期间定时落盘', P, /function flushStream\(force\)/);
 /* 【2026-11-07 改】落盘绝不能挂在 paint 上：flushStream 是同步桥调用，
@@ -211,8 +213,8 @@ A.match('开关关掉时记跳过再 return', HOOK, /if \(!hookEnabled\(\)\) \{ 
 A.match('钩子埋点写 SP', HOOK, /p\.edit\(\)\.putInt\(SP_CALLS, n\)/);
 A.match('埋点在事件名判断之后', HOOK, /!== EVENT_NAME\) return;[\s\S]{0,300}?bumpCalls\(\);/);
 /* 工具侧报真指标 */
-A.match('inbox 报 hook_calls', A.src('packages/subagent.js'), /hook_calls: calls/);
-A.match('inbox 报 hook_enabled', A.src('packages/subagent.js'), /hook_enabled: enabled/);
+A.match('inbox 报 hook_calls', A.src('packages/sb_tool_task.js'), /hook_calls: calls/);
+A.match('inbox 报 hook_enabled', A.src('packages/sb_tool_task.js'), /hook_enabled: enabled/);
 /* ── 第二十七轮：三项 P2 改进的语义断言（真调函数，不是字符串匹配） ── */
 var HK2 = require('../../src/packages/sb_hook.js');
 /* P2-1 语言选择：三种输入都要对 */
@@ -333,16 +335,18 @@ A.match('index.json 同步', TASK2, /async function _syncIndex\(task\)/);
 A.match('删任务走 deleteTask', TASK2, /async function deleteTask\(taskOrId\)/);
 A.match('老数据迁移 migrateLegacy', TASK2, /async function migrateLegacy\(\)/);
 A.match('undo 落在任务目录', TASK2, /async function _undoPathById\(id\)/);
-var SJ = A.src('packages/subagent.js');
+/* 【第八十八轮】血缘/可见性/通知函数已抽到 sb_ctx.js，断言跟着改指向 */
+var SJ = A.src('packages/sb_ctx.js');
+var MAIN = A.src('packages/subagent.js');
 A.match('血缘根 rootChatIdOf', SJ, /async function rootChatIdOf\(chatId\)/);
 A.match('祖先链 ancestorChatIdsOf', SJ, /async function ancestorChatIdsOf\(chatId\)/);
 A.match('可见性判定 visibleTasks', SJ, /async function visibleTasks\(params, force\)/);
-A.match('spawn 支持 group_create', SJ, /var wantCreate = params\.group_create/);
-A.match('群组管理工具 subagent_group', SJ, /exports\.subagent_group = async function/);
-A.match('spawn 返回群组码', SJ, /已建群组，群组码/);
+A.match('spawn 支持 group_create', A.src('packages/sb_tool_task.js'), /var wantCreate = params\.group_create/);
+A.match('群组管理工具 subagent_group', A.src('packages/sb_tool_main.js'), /E\.subagent_group = async function/);
+A.match('spawn 返回群组码', A.src('packages/sb_tool_task.js'), /已建群组，群组码/);
 A.nomatch('不再依赖 getToolSessionId 生成 id', TASK2, /getToolSessionId\(\)/);
 /* parent_chat_id 缺省时用 getToolExecutionContext().chatId */
-A.match('parent_chat_id 自动取上下文 chatId', A.src('packages/subagent.js'), /if \(typeof getToolExecutionContext === "function"\)[\s\S]{0,160}?ec0 && ec0\.chatId/);
+A.match('parent_chat_id 自动取上下文 chatId', A.src('packages/sb_tool_task.js'), /if \(typeof getToolExecutionContext === "function"\)[\s\S]{0,160}?ec0 && ec0\.chatId/);
 /* 自更新模块 */
 var UPDM = A.src('packages/sb_update.js');
 A.match('自更新走 api.github.com', UPDM, /https:\/\/api\.github\.com\/repos\//);
@@ -368,9 +372,9 @@ A.match('终态停轮询', P, /st === 'done' \|\| st === 'failed' \|\| st === 'm
 /* 工具注册 */
 var SA2 = A.src('packages/subagent.js');
 A.match('update 大类已声明', SA2, /"name": "subagent_update"/);
-A.match('self-update check 走 update step=check', SA2, /step === "check"|step == 'check'/);
-A.match('self-update download 走 step=download', SA2, /step === "download"/);
-A.match('self-update status 走 step=status', SA2, /step === "status"/);
+A.match('self-update check 走 update step=check', A.src('packages/sb_tool_main.js'), /step === "check"|step == 'check'/);
+A.match('self-update download 走 step=download', A.src('packages/sb_tool_main.js'), /step === "download"/);
+A.match('self-update status 走 step=status', A.src('packages/sb_tool_main.js'), /step === "status"/);
 /* ── 第三十一轮：下载到 Download + 自动安装 ── */
 A.match('下载目录改到 Download/Operit', UPDM, /var dir = "\/sdcard\/Download\/Operit"/);
 A.nomatch('不再写 baseDir/updates', UPDM, /var dir = CFG\.baseDir\(\) \+ "\/updates"/);
@@ -392,7 +396,7 @@ A.nomatch('返回不再带 need_restart', UPDM, /need_restart: true/);
 A.match('下载后默认自动安装', UPDM, /if \(params\.auto_install !== false\)/);
 A.match('自动安装调 installUpdate', UPDM, /inst = await installUpdate\(\{ path: path \}\)/);
 /* 工具与面板 */
-A.match('self-update install 走 step=install', SA2, /step === "install"/);
+A.match('self-update install 走 step=install', A.src('packages/sb_tool_main.js'), /step === "install"/);
 /* 【第八十六轮】更新提示改成弹窗，DOM 结构跟着换：
    安装按钮仍在（下载完成后用它），但入场按钮改叫「同意更新」。 */
 A.match('更新弹窗有同意更新按钮', A.src('ui/web/panel.html'), /id="updDlBtn">同意更新/);
@@ -496,7 +500,7 @@ A.match('数组同步 unshift', P, /TST_NODES\.unshift\(rec\)/);
 A.match('超限删最旧', P, /killToast\(TST_NODES\[TST_NODES\.length - 1\]\)/);
 /* 时长加长 */
 A.match('info 时长 3.5s', P, /TST_LIFE = \{ info: 3500/);
-A.match('err 时长 8s', P, /err: 8000 \}/);
+A.match('err 时长 5s', P, /err: 5000 \}/);
 /* 可拖动分级：全部级别都能拖（第四十轮用户纠正，撤掉上轮的 data-fixed 锁定） */
 A.nomatch('不再按级别锁拖动', P, /if \(rec\.lv !== 'err' && rec\.lv !== 'warn'\)/);
 A.nomatch('不再打 data-fixed 标记', P, /el\.setAttribute\('data-fixed', '1'\)/);
@@ -556,7 +560,7 @@ A.match('邮箱改走后端工具', P, /call\('subagent:subagent_open_mail'/);
 A.match('后端有 openMail 实现', A.src('packages/sb_update.js'), /async function openMail\(params\)/);
 A.match('发 SENDTO intent', A.src('packages/sb_update.js'), /action: "android\.intent\.action\.SENDTO"/);
 A.match('工具已注册声明', SA2, /"name": "subagent_open_mail"/);
-A.match('工具已导出实现', SA2, /exports\.subagent_open_mail = async function/);
+A.match('工具已导出实现', A.src('packages/sb_tool_update.js'), /E\.subagent_open_mail = async function/);
 /* ── 第四十三轮：反馈模板体系 ── */
 /* 邮件正文必须是结构化模板，不能是空白 */
 /* 正文按标准 issue 模板写：### 一级标题 + 提示 + 留白 */
@@ -928,14 +932,14 @@ A.match('skill 名允许中文', SK, /u4e00-\\u9fa5/);
 A.match('skill 名拦截 .. 逃逸', SK, /indexOf\("\.\."\)/);
 A.match('skill 全文上限 60000', SK, /SKILL_MAX_CHARS = 60000/);
 A.match('spawn 有 skills 参数', SUB, /"name": "skills"/);
-A.match('新增 subagent_skill 工具', SUB, /exports\.subagent_skill = async function/);
+A.match('新增 subagent_skill 工具', A.src('packages/sb_tool_env.js'), /E\.subagent_skill = async function/);
 A.match('skill 清单注入系统提示词', TSK, /可用 skill：/);
 A.match('白名单含 skill', TOOLS2, /vendor_js\|skill/);
 /* 【第六十六轮】B 方案：不传 workspace 不再静默回落 default_workspace */
 var SUB2 = A.src('packages/subagent.js');
 A.nomatch('spawn 不再回落 default_workspace', SUB2, /params\.workspace \|\| template \&\& template\.workspace \|\| cfg\.default_workspace/);
-A.match('spawn 只认显式 workspace', SUB2, /params\.workspace \|\| template \&\& template\.workspace \|\| ""/);
-A.match('workspace 工具固定用 workspaceDir', SUB2, /var defWs = CFG\.workspaceDir\(\)/);
+A.match('spawn 只认显式 workspace', A.src('packages/sb_tool_task.js'), /params\.workspace \|\| template \&\& template\.workspace \|\| ""/);
+A.match('workspace 工具固定用 workspaceDir', A.src('packages/sb_tool_env.js'), /var defWs = CFG\.workspaceDir\(\)/);
 /* 【第六十七轮】上下文转存 + 备份保护 + 磁盘锁 + steer 透明 */
 A.match('tmp 目录已定义', A.src('packages/sb_config.js'), /function tmpDir\(\)/);
 A.match('转存软上限存在', A.src('packages/sb_task.js'), /CTX_SOFT_LIMIT/);
@@ -1004,23 +1008,23 @@ A.eq('放行 workflow:list', TL.isRecursive('workflow:workflow_list'), false);
 A.eq('仍放行 subagent_helper', TL.isRecursive('subagent_helper'), false);
 
 /* 【第八十一轮】路由参数不能把自己拦掉（step="check" 被 update(check) 拒过） */
-A.match('路由参数 step 放行', A.src('packages/subagent.js'), /k === "step"/);
-A.match('路由参数 what 放行', A.src('packages/subagent.js'), /k === "what"/);
-A.match('update 各分支放行 step', A.src('packages/subagent.js'), /_wlCheck\(params, \["step", "force"\], "update\(check\)"\)/);
+A.match('路由参数 step 放行', A.src('packages/sb_tool_main.js'), /k === "step"/);
+A.match('路由参数 what 放行', A.src('packages/sb_tool_main.js'), /k === "what"/);
+A.match('update 各分支放行 step', A.src('packages/sb_tool_main.js'), /_wlCheck\(params, \["step", "force"\], "update\(check\)"\)/);
 /* 【第八十轮】undo 改进：越界留痕 + warn 透出 + 空备份目录清理 */
 A.match('越界路径记 warn 不再静默', A.src('packages/sb_tools.js'), /路径在写入范围外，未备份/);
 A.match('warn 条目透出 error', A.src('packages/sb_tools.js'), /plan\.push\(\{ type: it\.type, path: it\.path, backup: it\.backup, error: it\.error \|\| null \}\)/);
 A.match('undoAll 返回 warns 数', A.src('packages/sb_tools.js'), /return \{ plan: plan, warns: warnN \}/);
 A.match('undo 后清理空备份目录', A.src('packages/sb_tools.js'), /空备份目录/);
-A.match('subagent_undo 报 warns', A.src('packages/subagent.js'), /未备份成功、恢复不了/);
+A.match('subagent_undo 报 warns', A.src('packages/sb_tool_task.js'), /未备份成功、恢复不了/);
 /* 【第七十九轮】新参数名与旧名都要认，否则模型按新 METADATA 传参会拿到空白名单 */
-A.match('spawn 认 tools 新名', A.src('packages/subagent.js'), /parseList\(params\.tools != null \? params\.tools : params\.allowed_tools\)/);
-A.match('spawn 认 wait 新名', A.src('packages/subagent.js'), /wantWait = \(params\.wait === true\) \|\| \(params\.sync === true\)/);
-A.match('spawn 认 budget 新名', A.src('packages/subagent.js'), /\(params\.budget != null\) \? Number\(params\.budget\)/);
-A.match('tools 传 * 等价全放开', A.src('packages/subagent.js'), /=== "\*"\) \{ allowed = \["\*"\]; break; \}/);
-A.match('wait 无 budget 时不设上限', A.src('packages/subagent.js'), /while \(!deadline \|\| Date\.now\(\) < deadline\)/);
+A.match('spawn 认 tools 新名', A.src('packages/sb_tool_task.js'), /parseList\(params\.tools != null \? params\.tools : params\.allowed_tools\)/);
+A.match('spawn 认 wait 新名', A.src('packages/sb_tool_task.js'), /wantWait = \(params\.wait === true\) \|\| \(params\.sync === true\)/);
+A.match('spawn 认 budget 新名', A.src('packages/sb_tool_task.js'), /\(params\.budget != null\) \? Number\(params\.budget\)/);
+A.match('tools 传 * 等价全放开', A.src('packages/sb_tool_task.js'), /=== "\*"\) \{ allowed = \["\*"\]; break; \}/);
+A.match('wait 无 budget 时不设上限', A.src('packages/sb_tool_task.js'), /while \(!deadline \|\| Date\.now\(\) < deadline\)/);
 /* 【第七十三轮】allowed_tools 为空提示 */
-A.match('spawn 空 tools 提示', A.src('packages/subagent.js'), /tools 为空，这个子代理没有任何工具可用/);
+A.match('spawn 空 tools 提示', A.src('packages/sb_tool_task.js'), /tools 为空，这个子代理没有任何工具可用/);
 /* 【第七十四轮】工具超时 + 循环检测 + cancel 逐步 + 转存扩 assistant */
 var TL2 = require(SRC + '/packages/sb_tools.js');
 A.eq('默认工具超时 120s', TL2.toolTimeoutOf({}), 120000);
@@ -1046,28 +1050,28 @@ A.eq('timeout_ms 下划线写法也认', TL2.toolTimeoutOf({}, 'x', { timeout_ms
 A.match('runOne 把 name/args 传给超时函数', A.src('packages/sb_tools.js'), /toolTimeoutOf\(ctx, name, callArgs\)/);
 
 /* 【第七十五轮】wait 语义：unfinished / next / task_id / busy */
-A.match('sync 补 unfinished 标志', A.src('packages/subagent.js'), /unfinished: unfinished/);
-A.match('sync 补 next 引导', A.src('packages/subagent.js'), /next: unfinished \? "run" : null/);
-A.match('sync 补 task_id', A.src('packages/subagent.js'), /task_id: cur\.id/);
-A.match('sync 中途返回给继续命令', A.src('packages/subagent.js'), /继续推进：subagent_run/);
-A.match('busy 单独分支不跳循环', A.src('packages/subagent.js'), /if \(r2 && r2\.busy\) \{/);
-A.match('busy 有上限防空转', A.src('packages/subagent.js'), /busyHits > 60/);
+A.match('sync 补 unfinished 标志', A.src('packages/sb_tool_main.js'), /unfinished: unfinished/);
+A.match('sync 补 next 引导', A.src('packages/sb_tool_main.js'), /next: unfinished \? "run" : null/);
+A.match('sync 补 task_id', A.src('packages/sb_tool_main.js'), /task_id: cur\.id/);
+A.match('sync 中途返回给继续命令', A.src('packages/sb_tool_task.js'), /继续推进：subagent_run/);
+A.match('busy 单独分支不跳循环', A.src('packages/sb_tool_task.js'), /if \(r2 && r2\.busy\) \{/);
+A.match('busy 有上限防空转', A.src('packages/sb_tool_main.js'), /busyHits > 60/);
 A.nomatch('hook 不再劝退 sync', A.src('packages/sb_hook.js'), /不要用 sync=true/);
 A.match('hook 说明 spawn wait 语义', A.src('packages/sb_hook.js'), /不传 budget 会一直等到结束/);
 /* 【第七十六轮】未读跟着任务生死走：删任务就出箱 */
-A.match('delete 成功后出箱', A.src('packages/subagent.js'), /3\. 收件箱里这条结论一并出箱/);
-A.match('delete 找不到任务时也出箱', A.src('packages/subagent.js'), /点删除没反应，未读数也不降/);
-A.match('inbox 自愈清理死信', A.src('packages/subagent.js'), /对应任务已不存在的，自动出箱/);
-A.match('自愈漏掉无 id 项', A.src('packages/subagent.js'), /if \(!mid\) continue;/);
-A.match('清理后才重算 count', A.src('packages/subagent.js'), /if \(pruned > 0\) st = BUS\.stat\(\)/);
-A.match('报出清了见条', A.src('packages/subagent.js'), /已清掉 " \+ pruned \+ " 条对应任务已删除的/);
+A.match('delete 成功后出箱', A.src('packages/sb_tool_task.js'), /3\. 收件箱里这条结论一并出箱/);
+A.match('delete 找不到任务时也出箱', A.src('packages/sb_tool_task.js'), /点删除没反应，未读数也不降/);
+A.match('inbox 自愈清理死信', A.src('packages/sb_tool_task.js'), /对应任务已不存在的，自动出箱/);
+A.match('自愈漏掉无 id 项', A.src('packages/sb_tool_task.js'), /if \(!mid\) continue;/);
+A.match('清理后才重算 count', A.src('packages/sb_tool_task.js'), /if \(pruned > 0\) st = BUS\.stat\(\)/);
+A.match('报出清了见条', A.src('packages/sb_tool_task.js'), /已清掉 " \+ pruned \+ " 条对应任务已删除的/);
 /* 【第七十七轮】入箱判据：用户建的不算、失败的不算 */
-A.match('ui 与 failed 不入箱', A.src('packages/subagent.js'), /skipInbox = \(origin === "ui"\) \|\| \(task\.status === "failed"\)/);
-A.match('入箱受 skipInbox 控制', A.src('packages/subagent.js'), /if \(mode !== "off" && !skipInbox\)/);
+A.match('ui 与 failed 不入箱', A.src('packages/sb_ctx.js'), /skipInbox = \(origin === "ui"\) \|\| \(task\.status === "failed"\)/);
+A.match('入箱受 skipInbox 控制', A.src('packages/sb_ctx.js'), /if \(mode !== "off" && !skipInbox\)/);
 A.nomatch('mode=off 不再提前 return 吞掉通知', A.src('packages/subagent.js'), /if \(mode === "off"\) return;/);
-A.match('系统通知不受 skipInbox 影响', A.src('packages/subagent.js'), /mode === "system" && Tools && Tools\.System && Tools\.System\.sendNotification/);
-A.match('自愈清 ui 旧信', A.src('packages/subagent.js'), /if \(mo === "ui" \|\| String\(mt\.status/);
-A.match('自愈不存在任务后 continue', A.src('packages/subagent.js'), /catch \(eP\) \{\} continue;/);
+A.match('系统通知不受 skipInbox 影响', A.src('packages/sb_ctx.js'), /mode === "system" && Tools && Tools\.System && Tools\.System\.sendNotification/);
+A.match('自愈清 ui 旧信', A.src('packages/sb_tool_task.js'), /if \(mo === "ui" \|\| String\(mt\.status/);
+A.match('自愈不存在任务后 continue', A.src('packages/sb_tool_task.js'), /catch \(eP\) \{\} continue;/);
 /* 【第七十八轮】提示词跟上新工具名口径 */
 var HK = A.src('packages/sb_hook.js');
 /* 只查提示词正文，别扫整份源码 —— 顶部注释里会提到旧名做说明 */

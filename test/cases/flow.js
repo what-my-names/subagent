@@ -46,7 +46,8 @@ var TOOL_NAMES = [
    检查口径：源码里出现 `exports.subagent_x =` 或 `E.subagent_x =` 任一种都算已实现。 */
 var SPLIT_SRC = '';
 ['packages/sb_tool_update.js', 'packages/sb_tool_env.js', 'packages/sb_tool_stream.js',
-    'packages/sb_tool_task.js', 'packages/sb_tool_cfg.js', 'packages/sb_tool_main.js'].forEach(function (f) {
+    'packages/sb_tool_task.js', 'packages/sb_tool_cfg.js', 'packages/sb_tool_main.js',
+    'packages/sb_tool_root.js'].forEach(function (f) {
     SPLIT_SRC += A.src(f);
 });
 var ALL_IMPL = SUB + '\n' + SPLIT_SRC;
@@ -60,7 +61,7 @@ if (missing.length) console.log('    缺失：' + missing.join(', '));
 
 /* METADATA 只声明 10 个大类 + 10 个面板保留名 = 20 */
 var declared = (SUB.match(/"name"\s*:\s*"subagent_/g) || []).length;
-A.eq('METADATA 声明数量 = 21', declared, 21);
+A.eq('METADATA 声明数量 = 22', declared, 22);
 
 /* ── spawn 参数契约（合并后：tools/wait/budget/detail 替代旧三件） ── */
 A.match('spawn 有 task 必填', SUB, /"name"\s*:\s*"task"/);
@@ -142,8 +143,9 @@ if (RD) {
        断言把错误说法锁死了：谁改 README 谁测试红。第二十二轮用户拍板「留空 = 全拒」，
        第二十六轮审计把它列为 P0（给外部用户看的 README 说反了）。
        现在方向反转，锁正确语义。 */
-    A.match('README 说明留空 = 一个工具都用不了', RD, /allowed_tools.*留空.*一个工具都用不了/);
-    A.match('README 说明 all=true 全放开', RD, /all=true/);
+    /* 参数已从 allowed_tools/all 合并为 tools/*，断言跟着新口径走 */
+    A.match('README 说明 tools 留空 = 无工具', RD, /tools` 留空＝无工具/);
+    A.match('README 说明 tools=* 全放开', RD, /传 `\*` 放开全部/);
     A.nomatch('README 不再说留空 = 不限制', RD, /留空 = 不限制/);
     /* 【第四十二轮】原来锁死 34，加工具就要改。改为动态比对代码里的实际数量。 */
     var _tc = (A.src('packages/subagent.js').match(/"name": "subagent_/g) || []).length;
@@ -292,6 +294,56 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     }
     A.eq('拆分模块不得直接使用主文件顶层符号', leak.length, 0);
     if (leak.length) console.log('    未声明：' + leak.join(', '));
+})();
+
+
+/* ── 【第九十轮】ROOT 权限窗口 ── */
+(function () {
+    var ROOT = A.src('packages/sb_root.js');
+    var GRP = A.src('packages/sb_group.js');
+    var TOOL = A.src('packages/sb_tool_root.js');
+
+    A.match('sb_group 有 hash16', GRP, /function hash16\(/);
+    A.match('sb_group 有 rootCodeNow', GRP, /function rootCodeNow\(/);
+    A.match('hash16 已导出', GRP, /hash16:\s*hash16/);
+
+    A.match('PERM 含 ROOT=32', GRP, /ROOT:\s*32/);
+    A.match('PERM 含 ROOT_ALL=63', GRP, /ROOT_ALL:\s*63/);
+
+    A.match('窗口有 expires_at', ROOT, /expires_at/);
+    A.match('窗口时长上限 1440', ROOT, /1440/);
+    A.match('过期自动清理', ROOT, /function prune\(/);
+    A.match('读取做了 object/string 归一化', ROOT, /typeof raw === "string"/);
+
+    ['open', 'close', 'check', 'list'].forEach(function (act) {
+        A.match('subagent_root 支持 ' + act, TOOL, new RegExp('action === "' + act + '"'));
+    });
+
+    A.match('METADATA 声明 subagent_root', A.src('packages/subagent.js'), /"name": "subagent_root"/);
+})();
+
+
+/* ── 【第九十一轮】主人默认 root + 可点性高亮 ── */
+(function () {
+    var MAIN = A.src('packages/sb_tool_main.js');
+    var CTX = A.src('packages/sb_ctx.js');
+    var CSS = A.src('ui/web/panel.css');
+
+    /* 拿不到 chatId = 本机主人亲手操作，给创始人级权限 */
+    A.match('主人无 cid 时按创始人权限', MAIN, /cid \? GRP\.resolveMember\(g, cid\) : \{ ok: true, mask: GRP\.PERM\.FOUNDER/);
+    A.match('删除群组对主人放行', MAIN, /if \(cid && String\(g\.founder/);
+
+    /* callerChatId 两级兜底 */
+    A.match('callerChatId 有内存缓存', CTX, /_LAST_CID/);
+    A.match('callerChatIdAsync 存在', CTX, /async function callerChatIdAsync/);
+    A.match('callerChatIdAsync 已导出', CTX, /callerChatIdAsync: callerChatIdAsync/);
+
+    /* 可点性：hover 高亮 */
+    A.match('群组头 hover 高亮', CSS, /\.grp-head:hover\{background/);
+    A.match('轻量头 hover 高亮', CSS, /\.grp-head\.lite:hover\{background/);
+    A.match('任务行 hover 高亮', CSS, /\.chat-row:hover\{background/);
+    A.match('信息按钮 hover 高亮', CSS, /\.grp-info:hover\{/);
+    A.match('箭头 hover 变主色', CSS, /\.grp-head:hover \.grp-chv\{stroke:var\(--acc\)/);
 })();
 
 A.finish();

@@ -248,14 +248,21 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
 .grp-head{display:flex;align-items:center;gap:8px;padding:9px 14px;background:rgba(74,141,255,.06);
   border-bottom:1px solid var(--ln);border-top:1px solid var(--ln);cursor:pointer;
   font-size:12.5px;color:var(--fg);position:sticky;top:0;z-index:2}
-.grp-head:active{background:rgba(74,141,255,.12)}
+/* 【第九十一轮】可点性强化：用户反馈看不出哪些能点。
+   做法：hover 给底色 + 左侧色条，active 更沉，箭头跟着变主色。
+   WebView 里 :active 触发不稳，所以 hover 和 active 都写。 */
+.grp-head:hover{background:rgba(74,141,255,.11)}
+.grp-head:hover .grp-chv{stroke:var(--acc);transform:rotate(90deg) scale(1.15)}
+.grp-head:hover .grp-name{color:#fff}
+.grp-head:active{background:rgba(74,141,255,.2);transform:scale(.995)}
+.grp-head:active .grp-chv{stroke:var(--acc)}
 /* 【第八十六轮】箭头方向反转：用户要求「收起来往上滑、弹出来往下滑」。
    箭头语义跟着统一：展开时朝下（内容的走向），收起时朝右（收拢的走向）。
    之前是展开 90 度朝下、收起 0 度朝右 —— 这版本把 lite 头也用同一套，
    不再因为「轻量」就把箭头藏掉。 */
 .grp-chv{width:13px;height:13px;flex-shrink:0;fill:none;stroke:var(--mut);stroke-width:2.2;
   stroke-linecap:round;stroke-linejoin:round;transform:rotate(90deg);
-  transition:transform .18s cubic-bezier(.3,.9,.4,1)}
+  transition:transform .18s cubic-bezier(.3,.9,.4,1),stroke .15s ease}
 .grp-chv.closed{transform:rotate(0)}
 .grp-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .grp-code{color:var(--mut);font-size:10.5px;flex-shrink:0;letter-spacing:.4px}
@@ -278,7 +285,10 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
    - 展开/收起用箭头旋转表达，配合内容滑入滑出 */
 .grp-head.lite{background:none;border-top:0;position:static;padding:13px 14px 6px;
   font-size:11.5px;color:rgba(255,255,255,.62);font-weight:600;letter-spacing:.2px}
-.grp-head.lite:active{background:rgba(127,141,179,.08)}
+.grp-head.lite:hover{background:rgba(127,141,179,.1)}
+.grp-head.lite:hover .grp-name{color:rgba(255,255,255,.9)}
+.grp-head.lite:hover .grp-chv{stroke:var(--acc)}
+.grp-head.lite:active{background:rgba(127,141,179,.16)}
 .grp-head.lite .grp-chv{width:12px;height:12px;stroke:rgba(255,255,255,.62);stroke-width:2.4}
 .grp-head.lite .grp-name{font-weight:600}
 /* 轻量头右侧给个「轻提示」，让人知道这里能点 */
@@ -299,7 +309,8 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
 .gi-del-hint{margin-top:7px;font-size:11px;line-height:1.6;color:var(--mut);text-align:center}
 .grp-info svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.9;
   stroke-linecap:round;stroke-linejoin:round}
-.grp-info:active{color:var(--acc)}
+.grp-info:hover{color:var(--acc);background:rgba(57,197,207,.12);border-radius:6px}
+.grp-info:active{color:var(--acc);background:rgba(57,197,207,.22);transform:scale(.9)}
 
 /* ── 群组详情（底部抽屉内） ── */
 .gi-code{background:rgba(74,141,255,.08);border:1px solid var(--ln);border-radius:10px;
@@ -862,7 +873,13 @@ textarea{resize:vertical;min-height:72px}
 /* ===== 科技感动效层 ===== */
 /* 全局按压反馈：所有可点元素按下即缩放+提亮（只动 transform/background，不跑常驻动画） */
 .chat-row,.btn,.icon-btn,.dlg-row,.cr-del{transition:transform .08s ease,background .12s ease;-webkit-tap-highlight-color:transparent}
-.chat-row:active{transform:scale(.985);background:rgba(74,141,255,.08)}
+/* 【第九十一轮】可点性：hover 给底色 + 标题提亮 + 右侧箭头右移，让人一眼看出能点 */
+.chat-row:hover{background:rgba(74,141,255,.08)}
+.chat-row:hover .cr-title{color:#fff}
+.chat-row:hover .cr-go{color:var(--acc);opacity:1;transform:translateX(2px)}
+.cr-go{transition:color .15s ease,transform .15s ease,opacity .15s ease}
+.chat-row:hover::before{opacity:1}
+.chat-row:active{transform:scale(.985);background:rgba(74,141,255,.16)}
 .btn:active,.dlg-row:active{transform:scale(.97)}
 .icon-btn:active{transform:scale(.88)}
 /* 列表行入场：一次性滑入，播放完即结束，不占常驻资源 */

@@ -18,7 +18,8 @@
  *   4 CREATE  在该群组建子代理
  *   8 DELETE  删任务
  *  16 KICK    剔除成员、改他人权限、解禁
- * 预设：创始人 31 / 受邀 3 / 路人（凭码首次访问）1
+ *  32 ROOT    超级权限：越权读写一切、跨群组可见、跳过写边界。仅能通过「开窗口」临时获得
+ * 预设：创始人 31 / 受邀 3 / 路人（凭码首次访问）1 / 获得 ROOT 窗口 63
  *
  * 【剔除】用黑名单而不是删成员
  * 只拿到码的人不进成员表，无从"删除"。所以判定顺序是：
@@ -60,6 +61,29 @@ function code6(str) {
     return s;
 }
 
+/* 16 位十六进制：ROOT 识别码。
+   输入是「年月日时分秒毫秒」拼成的字符串，输出 64 位哈希的低 64 位。
+   为什么 16 位：32 位 FNV 只有 8 位十六进制，防猜强度不够；这里拼两轮不同种子，凑满 16 位。
+   为什么不能用顺序号：识别码会写进日志和对话，必须不可推导才能当凭证。 */
+function hash16(seed) {
+    var s = String(seed == null ? "" : seed);
+    var a = fnv1a("root:A:" + s);
+    var b = fnv1a("root:B:" + s + ":salt");
+    var x = (a >>> 0).toString(16);
+    var y = (b >>> 0).toString(16);
+    while (x.length < 8) x = "0" + x;
+    while (y.length < 8) y = "0" + y;
+    return (x + y).slice(-16);
+}
+/* 用当前时间生成 ROOT 识别码：年月日时分秒毫秒 全量参与 */
+function rootCodeNow(extra) {
+    var d = new Date();
+    var pad = function (n, w) { var s = String(n); while (s.length < (w || 2)) s = "0" + s; return s; };
+    var stamp = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate())
+        + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + pad(d.getMilliseconds(), 3);
+    return hash16(stamp + String(extra == null ? "" : extra));
+}
+
 /* 子代理码：纯随机 6 位数字。只作为哈希输入，不直接当 ID 用。 */
 function rand6() {
     return String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
@@ -72,7 +96,9 @@ var PERM = {
     CREATE: 4,
     DELETE: 8,
     KICK: 16,
+    ROOT: 32,
     FOUNDER: 31,
+    ROOT_ALL: 63,
     MEMBER: 3,
     GUEST: 1
 };
@@ -368,6 +394,8 @@ module.exports = {
     fnv1a: fnv1a,
     hash6: hash6,
     code6: code6,
+    hash16: hash16,
+    rootCodeNow: rootCodeNow,
     rand6: rand6,
     PERM: PERM,
     hasPerm: hasPerm,

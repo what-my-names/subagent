@@ -359,6 +359,45 @@ METADATA
       ]
     },
     {
+      "name": "subagent_root",
+      "description": "ROOT 权限窗口：给某个对话开一个限时的全量权限。action=open 开窗并返回 16 位识别码；close 提前收回；check 查状态；list 列所有窗口。ROOT 拥有全部权限位（63）：越权读写一切、跨群组可见、跳过写边界。有效期最长 1440 分钟，到期自动失效。",
+      "parameters": [
+        {
+          "name": "action",
+          "type": "string",
+          "description": "open/close/check/list",
+          "required": true
+        },
+        {
+          "name": "chat_id",
+          "type": "string",
+          "description": "目标对话 id；不传则用当前对话",
+          "required": false
+        },
+        {
+          "name": "minutes",
+          "type": "number",
+          "description": "有效期分钟数，默认 30，最长 1440",
+          "required": false
+        },
+        {
+          "name": "code",
+          "type": "string",
+          "description": "16 位 ROOT 识别码，check 时可用来验证",
+          "required": false
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "description": "开窗用途说明（可选，写进记录便于事后审计）",
+          "required": false
+        }
+      ],
+      "required": [
+        "action"
+      ]
+    },
+    {
       "name": "subagent_box",
       "description": {
         "zh": "收件箱：未读子代理结论（只有 agent 产出且成功的任务才入箱；删任务自动出箱）。action=read 清空。",
@@ -804,3 +843,5 @@ require("./sb_tool_task.js")(exports, { complete: complete, modelsTtl: MODELS_TT
 require("./sb_tool_cfg.js")(exports, { complete: complete, modelsTtl: MODELS_TTL_BACKEND });
 /* 必须最后：dispatch 层内部调 exports 上的旧名函数 */
 require("./sb_tool_main.js")(exports, { complete: complete });
+/* ROOT 权限窗口：独立工具，不依赖群组。放在最后，确保 callerChatId 已就绪。 */
+require("./sb_tool_root.js")(exports, { complete: complete, callerChatId: callerChatId });

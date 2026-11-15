@@ -60,14 +60,44 @@ async function notifyDone(task) {
 /* 【第八十二轮】取发起本次工具调用的对话 id。
    拿不到就返回空串——空串意味着“不过滤”（老宿主 / 面板无对话上下文），
    宁可多给也不能误藏。 */
+/* 最近一次成功拿到的对话 id。
+   面板（WebView）调用时 getToolExecutionContext() 常常返回空，
+   导致群组判定落到「路人 mask=1」，创始人自己看自己的群组也显示只读。
+   这里做两级兜底：内存缓存 → 宿主最近对话。 */
+var _LAST_CID = "";
+
 function callerChatId() {
     try {
         if (typeof getToolExecutionContext === "function") {
             var ec = getToolExecutionContext();
-            return String((ec && ec.chatId) || "");
+            var v = String((ec && ec.chatId) || "");
+            if (v) { _LAST_CID = v; return v; }
         }
     } catch (e) {}
-    return "";
+    return _LAST_CID;
+}
+
+/* 异步兜底版：同步拿不到时去问宿主「当前是哪个对话」。
+   和上面同步版分开，是因为同步版被几十处调用，不能整体改 async。 */
+async function callerChatIdAsync() {
+    var v = callerChatId();
+    if (v) return v;
+    try {
+        var r = null;
+        try {
+            if (Tools.Chat && typeof Tools.Chat.listAll === "function") r = await Tools.Chat.listAll();
+        } catch (e0) { r = null; }
+        if (!r) {
+            r = await Tools.Chat.listChats({ query: "", match: "contains", sort_by: "updatedAt", sort_order: "desc", limit: 20 });
+        }
+        var cur = String((r && r.currentChatId) || "");
+        if (!cur) {
+            var arr = (r && (r.chats || r.items || r.data)) || [];
+            if (arr.length) cur = String(arr[0].id || arr[0].chatId || "");
+        }
+        if (cur) _LAST_CID = cur;
+        return cur;
+    } catch (e) { return _LAST_CID; }
 }
 /* 【第八十二轮】决定本次列表要不要按对话过滤。
    all=true → 不过滤（用户/面板要看全部）；否则用调用方 chatId。
@@ -250,6 +280,7 @@ module.exports = {
     loadCtx: loadCtx,
     notifyDone: notifyDone,
     callerChatId: callerChatId,
+    callerChatIdAsync: callerChatIdAsync,
     filterChatOf: filterChatOf,
     rootChatIdOf: rootChatIdOf,
     ancestorChatIdsOf: ancestorChatIdsOf,

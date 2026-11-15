@@ -20,63 +20,59 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 > 带了 CORS 头则是真逐字流式。判断方法：
 > `curl -sI -X OPTIONS -H 'Origin: http://localhost/subagent' <你的端点>`，看有没有 `access-control-allow-origin`。
 
-## 工具（21 个：11 大类 + 10 面板专用）
+## 工具（22 个：22 大类）
 
-**任务生命周期**
+所有工具名都是大类，具体动作用参数区分。
 
-| 工具 | 作用 |
-|---|---|
-| `subagent_spawn` | 建任务（只有 `task` 必填；**`allowed_tools` 留空 = 一个工具都用不了**，要放开全部传 `all=true`；含写类工具时必须给 `workspace`） |
-| `subagent_advance` | 推进一步或 N 步（上限 3） |
-| `subagent_wait` | 等完成（默认最多 60s） |
-| `subagent_status` | 查状态；不传 id 列全部 |
-| `subagent_result` | 取结论（支持多个 id 合并） |
-| `subagent_trace` | 逐步明细（思考 / 正文 / 工具调用 / 结果） |
-| `subagent_steer` | 给子代理发消息（运行中下一步生效） |
-| `subagent_cancel` | 请求停止，不等待停止；之后仍可 `resume` |
-| `subagent_resume` | 把已停止 / 失败 / 已完成的任务拉回待开始 |
-| `subagent_list` | 任务列表 |
-| `subagent_close` | 两段式关闭：默认只返回进度，`confirm:true` 才关；可选回滚与丢弃产物 |
-| `subagent_delete` | 彻底删除（任务文件 + 产物 + 快照）；默认只预览，`confirm:true` 才删 |
-
-**数据与工作区**
+**任务主线**
 
 | 工具 | 作用 |
 |---|---|
-| `subagent_inbox` | 收件箱：未读子代理结论（`action:read` 清空） |
-| `subagent_undo` | 列出或恢复写操作（默认只看不改） |
-| `subagent_workspace` | 私有工作区：`init` 建目录 / `info` 列文件树与体积 |
-| `subagent_list_dir` | 列目录（含各自体积），供面板做文件树 |
-| `subagent_check_path` | 校验路径是否存在、是文件还是目录 |
+| `subagent_spawn` | 建任务并派给子代理。只有 `task` 必填；`tools` 留空＝无工具、传 `*` 放开全部；含写类工具必须给 `workspace` |
+| `subagent_run` | 推进已有任务。`wait=false` 推 1-3 步；`wait=true` 在 budget 内推到完成 |
+| `subagent_get` | 取任务产出。不传 id 列全部；传 id 按 `detail` 返回 brief/standard/full/trace |
+| `subagent_ctrl` | 改状态。`action` = cancel / resume / steer / close |
+| `subagent_del` | 删任务（任务文件 + 产物 + 快照 + 收件箱）。`confirm=true` 才真删 |
+| `subagent_undo` | 列出或恢复该任务写过的文件。`dry_run` 默认 true 只看不改 |
 
-**配置与探测**
-
-| 工具 | 作用 |
-|---|---|
-| `subagent_config` | 读 / 写配置；key 只写不读 |
-| `subagent_templates` | 模板 `list` / `add` / `remove` |
-| `subagent_probe` | 分层探测：端点可达 / 密钥有效 / 模型可生成 |
-| `subagent_tools` | 列出可授权的宿主工具与已启用包 |
-| `subagent_chats` | 列出 Operit 对话（供选择附带哪个对话的上下文） |
-| `subagent_version` | 版本与配置路径（`tools` 计数动态统计） |
-
-**面板流式支撑**（内部用途，description 已写明）
+**群组与权限**
 
 | 工具 | 作用 |
 |---|---|
-| `subagent_stream_ctx` | 返回端点、模型、请求头、思考字段与工具 schema（密钥单独取） |
-| `subagent_stream_key` | 仅本机面板直连时取密钥（不回显给对话，只在页面内存里用） |
-| `subagent_stream_relay` | 无 CORS 端点的流式中继：后端取整包 SSE 解析成块供面板回放 |
-| `subagent_save_turn` | 面板流式结束后把这一轮消息落盘，保证刷新后不丢 |
-| `subagent_tool_once` | 面板流式循环用：执行单个工具（白名单与写入范围校验与后端一致） |
-| `subagent_vendor_js` | 外接资源读取：读数据目录 `vendor/` 下的 js/css（如 katex.min.js） |
-| `subagent_skill` | 看可用 skill 清单 / 读某个 SKILL.md 全文。扫 `/sdcard/Download/Operit/subagent/skills`（自身，优先）与 `/sdcard/Download/Operit/skills`（主 agent 共享） |
+| `subagent_group` | 群组管理。`action` = list / info / kick / unkick / perm / admit / delete / migrate |
+| `subagent_root` | ROOT 权限窗口。`action` = open / close / check / list。开窗返回 16 位识别码，拥有全部权限位（63），有效期最长 1440 分钟 |
 
-短任务用 `sync: true` 一次跑完；长任务用步进。
+> 权限位：`READ=1` 读 / `WRITE=2` 推进 / `CREATE=4` 建子代理 / `DELETE=8` 删任务 / `KICK=16` 管成员 / `ROOT=32` 全量。
+> 预设：创始人 31、受邀 3、路人 1、ROOT 窗口 63。
 
-> **工具怎么调**：`allowed_tools` 里的每个工具都会作为**独立的 function** 暴露给模型，
-> 模型直接写 `read_file({path:"..."})`，不需要包一层。只有表外工具（你自己的包工具 `包名:工具名`、
-> 或通配 `pkg:*`）才通过 `run_tool({tool, args})` 兜底调用。
+**配置与环境**
+
+| 工具 | 作用 |
+|---|---|
+| `subagent_cfg` | 配置与模板。`target` = profile / template |
+| `subagent_env` | 环境探测。`what` = probe / version / chats / tools / workspace / dir / path |
+| `subagent_skill` | 看可用 skill 与读全文。`action` = list / read |
+| `subagent_update` | 自更新。`step` = check / download / status / install |
+
+**收件箱与外部**
+
+| 工具 | 作用 |
+|---|---|
+| `subagent_box` | 收件箱：未读子代理结论（`action=read` 清空） |
+| `subagent_open_mail` | 调起系统邮件应用写反馈信（WebView 不支持 mailto） |
+| `subagent_open_url` | 系统浏览器打开本仓库相关链接 |
+| `subagent_vendor_js` | 读 vendor/ 下 js/css（如 katex），供面板注入 |
+
+**面板流式支撑**（内部用途）
+
+| 工具 | 作用 |
+|---|---|
+| `subagent_stream_ctx` | 返回端点、模型、请求头、思考字段与工具 schema |
+| `subagent_stream_key` | 仅本机面板直连时取密钥（不回显给对话） |
+| `subagent_stream_relay` | 无 CORS 端点的流式中继 |
+| `subagent_save_turn` | 面板流式结束后把这一轮消息落盘 |
+| `subagent_stream_flush` | 流式增量落盘，保状态与草稿 |
+| `subagent_tool_once` | 面板内部执行单个工具（白名单与写边界与后端一致） |
 
 ## 安全边界
 
@@ -104,7 +100,7 @@ src/
   manifest.json          ToolPkg 清单
   main.js                入口：注册 UI 路由 + 收件箱钩子
   packages/              后端（配置 / 任务 / LLM / 工具 / 钩子 / 消息总线）
-    subagent.js          21 个声明（11 大类 + 10 面板保留），62 个导出实现
+    subagent.js          22 个声明（22 大类），导出实现分散在 sb_tool_*.js
     sb_config.js         配置读写、密钥环境变量、模型缓存
     sb_task.js           任务状态机与落盘
     sb_llm.js            端点解析、请求构造、模型列表

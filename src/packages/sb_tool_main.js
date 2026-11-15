@@ -31,6 +31,7 @@ var CTX = require("./sb_ctx.js");
 var loadCtx = CTX.loadCtx;
 var notifyDone = CTX.notifyDone;
 var callerChatId = CTX.callerChatId;
+var callerChatIdAsync = CTX.callerChatIdAsync;
 var ancestorChatIdsOf = CTX.ancestorChatIdsOf;
 var visibleTasks = CTX.visibleTasks;
 var inboxSuffix = CTX.inboxSuffix;
@@ -345,7 +346,9 @@ module.exports = function install(E, opts) {
         params = params || {};
         var action = String(params.action || "info");
         var code = String(params.code || "");
-        var cid = callerChatId();
+        /* 面板（WebView）调用时同步拿不到 chatId 会落到「路人 mask=1」，
+           创始人自己看群组也显示只读。这里用异步兜底。 */
+        var cid = await callerChatIdAsync();
         var wl = _wlCheck(params, ["action", "code", "chat_id", "mask", "name"], "group(" + action + ")");
         if (wl) { complete({ success: false, message: wl, data: {} }); return; }
 
@@ -367,7 +370,10 @@ module.exports = function install(E, opts) {
         if (!code) { complete({ success: false, message: "缺 code（群组码）", data: {} }); return; }
         var g = await GRP.loadGroup(code);
         if (!g) { complete({ success: false, message: "群组不存在：" + code, data: {} }); return; }
-        var mem = GRP.resolveMember(g, cid);
+        /* 拿不到 cid = 本机主人在面板上亲手操作（WebView 里 getToolExecutionContext 常为空）。
+           主人的身份不靠群组权限约束，直接按创始人级权限处理。
+           AI 的工具调用一定能拿到 chatId（callerChatIdAsync 已兜底），不会被误放。 */
+        var mem = cid ? GRP.resolveMember(g, cid) : { ok: true, mask: GRP.PERM.FOUNDER, reason: "", isOwner: true };
         if (!mem.ok) { complete({ success: false, message: mem.reason, data: {} }); return; }
 
         /* info：看群组详情（READ 位即可） */
@@ -393,7 +399,7 @@ module.exports = function install(E, opts) {
            理由：群组可能因为无人具备 CREATE 而转只读，权限位会被改；
            但创始人不该因为被改权限就删不掉自己的群组。 */
         if (action === "delete") {
-            if (String(g.founder || "") !== String(cid || "")) {
+            if (cid && String(g.founder || "") !== String(cid || "")) {
                 complete({ success: false, message: "只有群组创始人可以删除群组", data: { founder: String(g.founder || "") } });
                 return;
             }

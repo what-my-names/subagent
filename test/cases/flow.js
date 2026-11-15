@@ -577,4 +577,23 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.match('取结论记已读', MAIN, /BUS\.markRead\(tid\)/);
 })();
 
+/* ── 【第一百零二轮】收件箱硬拦截：未读>=3 时非读类工具一律拒 ── */
+(function () {
+    var TK = A.src('packages/sb_tool_task.js');
+    var MAIN = A.src('packages/sb_tool_main.js');
+    var P = A.src('ui/web/panel.js');
+
+    A.match('task 侧拦截函数', TK, /function inboxGate\(toolName\)/);
+    A.match('main 侧拦截函数', MAIN, /function inboxGate2\(toolName\)/);
+    A.match('spawn 被拦', TK, /inboxGate\("spawn"\)/);
+    A.match('run 被拦', MAIN, /inboxGate2\("run"\)/);
+    A.match('ctrl 被拦', MAIN, /inboxGate2\("ctrl"\)/);
+    A.match('del 被拦', MAIN, /inboxGate2\("del"\)/);
+    A.match('group 被拦', MAIN, /inboxGate2\("group"\)/);
+    A.match('读类工具放行', MAIN, /toolName === "get" \|\| toolName === "box"/);
+
+    /* 面板清空失败要报错 */
+    A.match('面板显示清空失败', P, /err\(r\.message \|\| '不能清空'\)/);
+})();
+
 A.finish();

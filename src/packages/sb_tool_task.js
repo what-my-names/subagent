@@ -45,8 +45,28 @@ module.exports = function install(E, opts) {
     if (typeof complete !== "function") throw new Error("installToolTask: 缺 complete");
     var MODELS_TTL_BACKEND = (opts && opts.modelsTtl) || 0;
 
+    /* 【第一百零二轮】收件箱硬拦截：未读 >=3 时，除 get/box/wait 外一律拒绝。
+       主人要求：「收件箱有三个以上的、没读的，就强制让他读，不然不允许他执行任何工具」。
+       只在 hook 写提示词不够——主代理会当噪音忽略，实测积到 11 条还在派新活。
+       允许放行：get（取结论=读）、box（看清单）、wait（等已有任务）。 */
+    function inboxGate(toolName) {
+        try {
+            var arr = BUS.list(callerChatId()) || [];
+            if (arr.length < 3) return null;
+            if (toolName === "get" || toolName === "box" || toolName === "wait") return null;
+            var head = arr[0] || {};
+            var hid = String(head.id || "");
+            var Q2 = String.fromCharCode(34);
+            return "收件箱积压 " + arr.length + " 条未读结论，先读完再干活（这不是建议，是强制）。"
+                + (hid ? ("先取：subagent_get(id=" + Q2 + hid + Q2 + ")") : "先取：subagent_get(id=...)")
+                + "。读完自动解除。";
+        } catch (e) { return null; }
+    }
+
     E.subagent_spawn = async function (params) {
         params = params || {};
+        var _g0 = inboxGate("spawn");
+        if (_g0) { complete({ success: false, message: _g0, data: { inbox_blocked: true } }); return; }
         var cfg = await CFG.load();
         var taskText = String(params.task == null ? "" : params.task).trim();
         /* 【第七十九轮】新参数名 tools 和旧名 allowed_tools 都认。

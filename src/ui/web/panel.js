@@ -449,7 +449,16 @@ function warnMsg(m) { _say(m, 'warn'); }
     }
     if (kind === 'profiles') { return; }
     if (kind === 'inbox') return renderInbox(d);
-    if (kind === 'inboxClear') { okMsg('已清空'); openInbox(); return; }
+    if (kind === 'inboxClear') {
+      /* 后端可能拒绝（还有没读过的），这时要把原因说出来 */
+      if (r && r.success === false) {
+        err(r.message || '不能清空');
+        return;
+      }
+      okMsg('已清空');
+      openInbox();
+      return;
+    }
     if (kind === 'closeTask') { return; }
     if (kind === 'resume') {
       if (r && r.success === false) { err(r.message || '恢复失败'); return; }
@@ -4028,7 +4037,13 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'openInboxBtn') return openInbox();
     if (act === 'openMail') return openMail(Number(el.dataset.idx));
     if (act === 'backToInbox') return openInbox();
-    if (act === 'inboxClearAll') { call('subagent:subagent_box', { action: 'read' }, 'inboxClear'); return; }
+    if (act === 'inboxClearAll') {
+      /* 【第一百零二轮】面板的「全部已读」也要守同一条规则：
+         没逐条读过就不许清空。后端会拒绝，这里先在前端说清楚，
+         避免用户点了没反应还以为坏了。 */
+      call('subagent:subagent_box', { action: 'read' }, 'inboxClear');
+      return;
+    }
     if (act === 'deleteCur') { if (S.cur) deleteTask(S.cur); return; }
     if (act === 'closeCur') { if (S.cur) closeTask(S.cur); return; }
     /* 确认框 */

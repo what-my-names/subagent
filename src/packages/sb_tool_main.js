@@ -100,8 +100,26 @@ module.exports = function install(E, opts) {
     /* ── run：推进任务（原 advance + wait 合并） ──
        id 必填。wait=false 推 max_steps 步（上限 3）；wait=true 在 budget 内推到终态。
        budget 缺省 30000、最大 60000（wait=true 时生效）。detail 控制进度摘要。 */
+    /* 【第一百零二轮】收件箱硬拦截（与 sb_tool_task.js 同逻辑，本模块自带一份）。
+       未读 >=3 时，除 get/box/wait 外一律拒绝。 */
+    function inboxGate2(toolName) {
+        try {
+            var arr = BUS.list(callerChatId()) || [];
+            if (arr.length < 3) return null;
+            if (toolName === "get" || toolName === "box" || toolName === "wait") return null;
+            var head = arr[0] || {};
+            var hid = String(head.id || "");
+            var Q2 = String.fromCharCode(34);
+            return "收件箱积压 " + arr.length + " 条未读结论，先读完再干活（这不是建议，是强制）。"
+                + (hid ? ("先取：subagent_get(id=" + Q2 + hid + Q2 + ")") : "先取：subagent_get(id=...)")
+                + "。读完自动解除。";
+        } catch (e) { return null; }
+    }
+
     E.subagent_run = async function (params) {
         params = params || {};
+        var _g1 = inboxGate2("run");
+        if (_g1) { complete({ success: false, message: _g1, data: { inbox_blocked: true } }); return; }
         var cfg = await CFG.load();
         var id = String(params.id || "");
         if (!id) { complete({ success: false, message: "缺少 id（先从 spawn 的返回里拿）", data: {} }); return; }
@@ -280,6 +298,8 @@ module.exports = function install(E, opts) {
        action 四值，参数白名单严格校验。 */
     E.subagent_ctrl = async function (params) {
         params = params || {};
+        var _g2 = inboxGate2("ctrl");
+        if (_g2) { complete({ success: false, message: _g2, data: { inbox_blocked: true } }); return; }
         var cfg = await CFG.load();
         var id = String(params.id || "");
         if (!id) { complete({ success: false, message: "缺少 id", data: {} }); return; }
@@ -382,6 +402,8 @@ module.exports = function install(E, opts) {
      */
     E.subagent_group = async function (params) {
         params = params || {};
+        var _g4 = inboxGate2("group");
+        if (_g4) { complete({ success: false, message: _g4, data: { inbox_blocked: true } }); return; }
         var action = String(params.action || "info");
         var code = String(params.code || "");
         /* 面板（WebView）调用时同步拿不到 chatId 会落到「路人 mask=1」，
@@ -625,6 +647,8 @@ module.exports = function install(E, opts) {
     /* ── del：删任务（原 delete） —— dispatch 转发，逻辑在旧函数 ── */
     E.subagent_del = async function (params) {
         params = params || {};
+        var _g3 = inboxGate2("del");
+        if (_g3) { complete({ success: false, message: _g3, data: { inbox_blocked: true } }); return; }
         var wl = _wlCheck(params, ["confirm"], "del");
         if (wl) { complete({ success: false, message: wl, data: {} }); return; }
         return await E.subagent_delete({ id: params.id, confirm: params.confirm });

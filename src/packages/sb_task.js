@@ -304,7 +304,9 @@ async function _listTasksAll(force) {
 
 function nextFor(task) {
     if (task.status === "done") return "result";
-    if (task.status === "failed" || task.status === "cancelled") return "stop";
+    /* 【第九十四轮】closed 也是终态，next 必须是 stop。
+       之前漏了，面板拿到 next=advance 就会继续给「继续推进」。 */
+    if (task.status === "failed" || task.status === "cancelled" || task.status === "closed") return "stop";
     return "advance";
 }
 
@@ -576,6 +578,11 @@ async function steerTask(cfg, task, text) {
     /* 【第六十七轮】自动加步数上限要明说，不能偷偷加。
        原来悄悄改 max_steps，用户以为自己在 20 步内，其实已经 25 了。 */
     var extended = 0;
+    /* 【第九十四轮】closed 是硬终态，steer 不许把它复活。
+       用户已经关掉的任务，再追加指令就让它先 resume。 */
+    if (task.status === "closed") {
+        return { ok: false, task: task, message: "任务已关闭，先 resume 再追加" };
+    }
     if (task.status === "done" || task.status === "failed" || task.status === "cancelled") {
         task.status = "running";
         task.cancel = false;
@@ -663,11 +670,20 @@ async function advanceTask(cfg, task) {
            用户只能手改 json 才能救回来。 */
         var msg = String((e && e.message) || e);
         try {
-            task.status = "failed";
-            task.error = "推进异常：" + msg;
-            task.phase = "idle";
-            task.phase_at = nowMs();
-            await saveTask(task);
+            /* 【第九十四轮】已经关闭/取消的任务，异常不许把它改写成 failed。
+               否则用户关掉的任务会突然变成「失败」，又被当成可推进。 */
+            var stEx = String(task.status || "");
+            if (stEx === "closed" || stEx === "cancelled") {
+                task.phase = "idle";
+                task.phase_at = nowMs();
+                await saveTask(task);
+            } else {
+                task.status = "failed";
+                task.error = "推进异常：" + msg;
+                task.phase = "idle";
+                task.phase_at = nowMs();
+                await saveTask(task);
+            }
         } catch (e2) {}
         return { ok: false, task: task, message: task.error };
     } finally {
@@ -751,8 +767,18 @@ async function prepareTurnsForModel(task, cfg) {
 
 async function _advanceTaskInner(cfg, task) {
     if (task.status === "done") return { ok: true, done: true, task: task, message: "任务已完成" };
+    /* 【第九十四轮】closed 是硬终态，优先级高于 cancelled。
+       踩过：用户点详情页叉号关闭，close 只写了 status=closed，
+       正在跑的那一轮不知道要停，跑完把 running 写回盘，关闭白做。
+       现在 close 会打 cancel 信号，这里先拦 closed，再拦 cancelled。 */
+    if (task.status === "closed") return { ok: false, done: true, task: task, message: "任务已关闭" };
     if (task.status === "cancelled") return { ok: false, task: task, message: "任务已取消" };
-    if (task.cancel) { task.status = "cancelled"; await saveTask(task); return { ok: false, task: task, message: "任务已取消" }; }
+    if (task.cancel) {
+        /* 已关闭的任务不允许降级成 cancelled，否则面板会把它重新当成可推进 */
+        task.status = (task.status === "closed") ? "closed" : "cancelled";
+        await saveTask(task);
+        return { ok: false, task: task, message: task.status === "closed" ? "任务已关闭" : "任务已取消" };
+    }
     if (task.step >= task.max_steps) {
         task.status = "failed"; task.error = "超出步数上限 " + task.max_steps; await saveTask(task);
         return { ok: false, task: task, message: task.error };
@@ -768,6 +794,25 @@ async function _advanceTaskInner(cfg, task) {
     await setPhase(task, "llm", { step_at: nowMs() });
     var res = await LLM.callChat(cfg, profile, await prepareTurnsForModel(task, cfg), task.allowed_tools, task.thinking_level, task.timeout_ms);
     var elapsed = nowMs() - t0;
+    /* 【第九十四轮】模型调用期间，用户可能已经点了关闭/停止。
+       这里是另一个执行上下文改的盘，本函数手里的 task 是旧快照，
+       直接往下走会用内存里的 running 覆盖掉磁盘上的 closed/cancelled。
+       所以每轮模型返回后必须重新读盘确认终态，命中就丢弃本轮结果。 */
+    try {
+        var fresh = await loadTask(task.id);
+        if (fresh) {
+            var freshSt = String(fresh.status || "");
+            if (freshSt === "closed" || freshSt === "cancelled" || fresh.cancel === true) {
+                var keepSt = (freshSt === "closed") ? "closed" : "cancelled";
+                task.status = keepSt;
+                task.cancel = (keepSt === "cancelled");
+                task.phase = "idle";
+                task.phase_at = nowMs();
+                await saveTask(task);
+                return { ok: false, task: task, message: keepSt === "closed" ? "任务已关闭" : "任务已取消" };
+            }
+        }
+    } catch (eFresh) {}
     await logRequest(cfg, { t: nowText(), task: task.id, step: task.step + 1, status: res.ok ? 200 : (res.status || 0), ms: elapsed, in: (res.usage ? res.usage.in : 0), out: (res.usage ? res.usage.out : 0), ok: !!res.ok });
     if (!res.ok) {
         task.status = "failed"; task.error = res.error || "模型调用失败"; await saveTask(task);
@@ -839,10 +884,11 @@ async function _advanceTaskInner(cfg, task) {
                         content: "已取消，未执行"
                     });
                 }
-                task.status = "cancelled";
+                /* 【第九十四轮】已关闭的任务保持 closed，不降级成 cancelled */
+                task.status = (task.status === "closed") ? "closed" : "cancelled";
                 await saveUndo(task.id, undo);
                 await saveTask(task);
-                return { ok: false, task: task, message: "任务已取消（已执行的工具保留结果）" };
+                return { ok: false, task: task, message: task.status === "closed" ? "任务已关闭（已执行的工具保留结果）" : "任务已取消（已执行的工具保留结果）" };
             }
             /* 【第七十四轮】循环检测：同工具同参数连续 3 次 = 原地打转。
                不直接失败，回一条提示让模型换路 —— 直接 fail 会让本来能救的任务白费。 */

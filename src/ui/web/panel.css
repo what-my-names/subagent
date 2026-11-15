@@ -41,17 +41,22 @@
   100%{transform:translate3d(-18%,12%,0) scale(1.1)}
 }
 :root{
-  --bg:#14161a; --bg2:#1b1e24; --bg3:#23272f; --fg:#e8eaed; --mut:#8b929b;
-  /* 【第五十八轮】可点击色：所有可点的 UI 统一用它，给用户引导 */
-  --click:#5d9bff;
-  /* 【第六十二轮】思考正文色：比正文暗一档，与正文和可点击色分开 */
-  --think-fg:#a8b4cc;
-  --pri:#4a8dff; --pri-d:#3574d9;
-  --ok:#4caf7d; --warn:#e0a23c; --bad:#e06c5a;
-  --ln:#2a2e36; --acc:#39c5cf;
-  /* --dim / --tx 之前被引用但从未定义，浏览器会退化成初始值，
-     导致次级文字颜色异常。补上，取值与既有视觉一致。 */
-  --tx:#e8eaed; --dim:#8b929b;
+/* 【第九十二轮】配色定稿：提高层次与对比。
+   原来背景三层几乎同色（14/1b/23 差 7 阶），暗部糊成一片；
+   正文 #e8eaed 对背景只有约 13:1 但次级文字 #8b929b 只有 4.8:1，在手机上偏灰。
+   这一版：背景分层拉开到 5 阶以上，正文提纯，次级文字提到 6.5:1，
+   主色从偏冷的纯蓝换成带青的蓝（更耐看、不那么刺眼），强调色保留青色。 */
+  --bg:#101318; --bg2:#181c23; --bg3:#212731; --bg4:#2a3140;
+  --fg:#f2f4f7; --mut:#98a1b2; --dim:#98a1b2; --tx:#f2f4f7;
+  /* 可点击色：所有可点 UI 统一用它 */
+  --click:#6ba6ff;
+  /* 思考正文：比正文暗一档，与正文和可点击色分开 */
+  --think-fg:#aebbd4;
+  --pri:#4f8ef7; --pri-d:#3a72d1;
+  --ok:#4ecb8d; --warn:#f0b352; --bad:#f07a66;
+  --ln:#2d3441; --acc:#45d6e0;
+  /* 卡片阴影：统一用这一个，不要各处写不同透明度 */
+  --shadow:0 8px 28px rgba(0,0,0,.5);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 /* 页面尺寸跟随可视区域（键盘弹起/收起时自动收缩）。
@@ -719,6 +724,17 @@ textarea{resize:vertical;min-height:72px}
 .pv-detail{font-size:11px;color:var(--mut);padding:1px 0 1px 22px;line-height:1.45;word-break:break-all}
 
 /* 弹窗 */
+/* 【第九十二轮】环形通知轮盘：双击任何一条通知，它飞到屏幕中心排进 3D 圆柱。
+   多条可共存，上下滑动旋转，中间最清晰，两端逐渐模糊缩小，转完全圈自动接回。
+   背景半透明遮罩让人聚焦，点空白处全部关闭。 */
+#ringBox{position:fixed;inset:0;z-index:280;display:none;pointer-events:auto;
+  background:radial-gradient(ellipse at center,rgba(8,10,14,.72) 0%,rgba(6,8,11,.9) 100%);
+  perspective:900px;perspective-origin:50% 50%}
+#ringBox.on{display:block;animation:ringFade .18s ease both}
+@keyframes ringFade{from{opacity:0}to{opacity:1}}
+#ringBox .ring-item{position:absolute;left:50%;top:50%;will-change:transform,opacity,filter;
+  box-shadow:var(--shadow);border-radius:12px;touch-action:none}
+
 #mask{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .18s;z-index:50}
 #mask.on{opacity:1;pointer-events:auto}
 /* 通用弹窗：高度随内容，最多 72vh。之前固定 top/bottom 48px 导致几行内容也撑满整屏 */
@@ -740,14 +756,17 @@ textarea{resize:vertical;min-height:72px}
 .dlg-hint{padding:12px;color:var(--mut);text-align:center;font-size:12.5px}
 #dlgFoot{display:flex;gap:8px;padding:7px 11px 11px;justify-content:flex-end}
 
-/* 确认框：只做「是/否」，不带搜索、不带勾选，尺寸收窄居中 */
-#cfm{position:fixed;left:26px;right:26px;top:50%;max-width:340px;margin:0 auto;background:var(--bg2);border:1px solid var(--ln);border-radius:14px;z-index:52;
-  transform:translateY(-50%) scale(.96);opacity:0;pointer-events:none;transition:.16s;overflow:hidden}
-#cfm.on{transform:translateY(-50%) scale(1);opacity:1;pointer-events:auto}
-.cfm-head{padding:15px 16px 0;font-size:14.5px;font-weight:700}
-.cfm-body{padding:8px 16px 14px;font-size:12.5px;line-height:1.6;color:var(--mut);word-break:break-word}
-.cfm-foot{display:flex;gap:8px;padding:0 16px 16px}
-.cfm-foot .btn{flex:1;text-align:center;justify-content:center}
+/* 【第九十二轮】确认框改成右键式小浮窗：贴着触发点弹出，无遮罩，
+   像 Windows 桌面右键菜单。位置由 openCfm() 计算后写 left/top。 */
+#cfm{position:fixed;left:0;top:0;width:240px;background:var(--bg3);
+  border:1px solid var(--bg4);border-radius:12px;z-index:52;box-shadow:var(--shadow);
+  transform:scale(.94);transform-origin:top right;opacity:0;pointer-events:none;
+  transition:transform .13s cubic-bezier(.2,.9,.3,1),opacity .13s;overflow:hidden}
+#cfm.on{transform:scale(1);opacity:1;pointer-events:auto}
+.cfm-head{padding:13px 14px 0;font-size:13.5px;font-weight:700;color:var(--fg)}
+.cfm-body{padding:7px 14px 13px;font-size:12px;line-height:1.6;color:var(--mut);word-break:break-word}
+.cfm-foot{display:flex;gap:7px;padding:0 12px 12px}
+.cfm-foot .btn{flex:1;height:34px;font-size:12.5px;text-align:center;justify-content:center}
 .btn.danger{background:rgba(224,108,90,.14);border-color:rgba(224,108,90,.4);color:var(--bad);font-weight:600}
 .btn.danger:active{background:rgba(224,108,90,.24)}
 
@@ -1320,3 +1339,41 @@ textarea{resize:vertical;min-height:72px}
     transition-duration:.001ms !important;
     scroll-behavior:auto !important}
 }
+
+/* 【第九十六轮】报错汇总卡：一张卡里逐条列出本次所有失败项 */
+.tst.batch { max-width: min(86vw, 460px); }
+.tst.batch .tst-tx { display: block; }
+.tst-batch-hd {
+  font-weight: 600; margin-bottom: 6px; color: #ff9f9f;
+}
+.tst-batch-row {
+  display: flex; gap: 6px; align-items: flex-start;
+  padding: 3px 0; line-height: 1.45;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+.tst-batch-row:first-of-type { border-top: 0; }
+.tst-batch-n {
+  flex: 0 0 auto; min-width: 16px; opacity: .75;
+  font-variant-numeric: tabular-nums;
+}
+.tst-batch-tx { flex: 1 1 auto; word-break: break-word; }
+
+/* 【第九十六轮】ROOT 权限窗口（设置页） */
+.root-state {
+  margin-top: 8px; font-size: 13px; color: var(--mut);
+  font-variant-numeric: tabular-nums;
+}
+.root-code-row { margin-top: 8px; }
+.root-code-lb { font-size: 12px; color: var(--mut); margin-bottom: 4px; }
+.root-code-v {
+  width: 100%; box-sizing: border-box;
+  padding: 9px 11px; border-radius: 8px;
+  background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--bg4);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 14px; letter-spacing: .06em;
+  -webkit-user-select: all; user-select: all;
+}
+.root-btns { display: flex; gap: 8px; margin-top: 10px; }
+.root-btns .btn.sm { flex: 1 1 0; padding: 8px 10px; font-size: 13px; }
+.btn.sm.danger { color: #ff9f9f; border-color: rgba(255,120,120,.35); }

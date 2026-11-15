@@ -247,6 +247,19 @@ def("extended_http_tools:http_get", "直接发 HTTP GET 请求并返回响应体
     },
     ["url"]);
 
+/* 【第九十六轮】补 deepseek_research 与 time，让子代理能直接调而不是包 run_tool */
+def("deepseek_research:deepseek_research", "一次完成「搜索 + 读前 N 篇正文」。需要多来源材料时用，比先搜再抓少一轮往返。",
+    {
+        query: { type: "string", description: "搜索词" },
+        count: { type: "integer", description: "搜索条数 1-10，默认 5" },
+        top: { type: "integer", description: "抓前几篇正文 0-5，默认 2；0=只搜不抓" }
+    },
+    ["query"]);
+
+def("time:get_current_time", "取当前时间。需要知道今天几号、现在几点时用。",
+    { timezone: { type: "string", description: "时区，如 Asia/Shanghai；不传用系统时区" } },
+    []);
+
 /* ── 查表接口 ── */
 
 /* 按名字取一个工具的元数据；表里没有返回 null。 */

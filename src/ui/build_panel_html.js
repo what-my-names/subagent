@@ -15,7 +15,8 @@ var css = fs.readFileSync(path.join(web, "panel.css"), "utf8");
 var JS_PARTS = [
     "panel.js",          /* 主体：状态、桥、列表、时间线、事件 */
     "panel_tex.js",      /* 数学公式渲染（KaTeX 优先 + 内置降级） */
-    "panel_toast.js"     /* 堆叠式通知 */
+    "panel_ring.js",     /* 环形通知轮盘（双击后多条进中心圆柱） */
+    "panel_toast.js"     /* 堆叠式通知 + IIFE 收尾 */
 ];
 var js = JS_PARTS.map(function (f) {
     var fp = path.join(web, f);

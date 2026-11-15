@@ -239,7 +239,7 @@ on('pagehide', shutdown);
     return html;
   }
   var LIST_TTL = 8000;
-  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, bridgeWarned: false, page: 'welcome', probed: false, groupList: [], grpClosed: {}, thk: {}, thkFor: '', thkRaw: {}, grpCur: '' };
+  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, bridgeWarned: false, stopping: false, turnsLen: -1, page: 'welcome', probed: false, groupList: [], grpClosed: {}, thk: {}, thkFor: '', thkRaw: {}, grpCur: '' };
   var WRITE_RE = /(create_file|edit_file|delete_file|move_file|copy_file|write)/;
   var HIGH = /(delete_file|move_file|terminal|shell)/;
   var FALLBACK = [
@@ -277,22 +277,46 @@ on('pagehide', shutdown);
     var base = PH_CN[ph] || '运行中';
     /* 工具阶段带上工具名，比干说「执行工具」有用 */
     if (ph === 'tool' && it.tool_now) base = '执行 ' + String(it.tool_now).slice(0, 18);
-    /* 思考超过 3 秒才显示秒数，短任务加秒数反而闪 */
+    /* 【第九十三轮】秒数只在「活着」的时候累加。
+       踩过：phase_at 是进入本阶段时写的固定时间戳。任务卡死或取消后
+       这个戳不再更新，Date.now() - phase_at 会无限增长，
+       用户看到「思考中 1300s」这种荒谬数字。
+       现在加三道闸：
+         1) 状态不是 running/queued 直接不显示秒数；
+         2) updated_at_ms 超过 STALE_MS 视为卡死，也不显示；
+         3) 上限 3600s，超过就当卡死处理。 */
+    var upd = Number(it.updated_at_ms || 0);
+    if (upd > 0 && (Date.now() - upd) > STALE_MS) return base;
     var t0 = Number(it.phase_at || 0);
     if (t0 > 0) {
       var sec = Math.floor((Date.now() - t0) / 1000);
-      if (sec >= 3) base += ' ' + sec + 's';
+      if (sec >= 3 && sec < 3600) base += ' ' + sec + 's';
     }
     return base;
   }
 
 
 /* 兼容旧调用点：err() 语义是「出问题了」，走 err 级；setMsg 保持原行为 */
-function err(m) { toast(m, 'err'); }
+/* 【第九十二轮】err/okMsg/warnMsg 必须免疫 toast 尚未定义。
+   踩过：拆片后 toast 定义落在后面，启动阶段桥调用失败 -> err() -> ReferenceError,
+   整段脚本中断，按钮全失效、时间线空白。这里做一层安全转发。 */
+  function _say(msg, lv) {
+    try { if (typeof toast === 'function') { toast(msg, lv); return; } } catch (e) {}
+    try {
+      var el = document.getElementById('toastStack');
+      if (!el) return;
+      var d = document.createElement('div');
+      d.className = 'tst tst-' + lv;
+      d.textContent = String(msg == null ? '' : msg);
+      el.appendChild(d);
+      setTimeout(function () { try { d.remove(); } catch (e2) {} }, lv === 'err' ? 5000 : 3500);
+    } catch (e3) {}
+  }
+  function err(m) { _say(m, 'err'); }
 var setMsg = err;
 /* 成功 / 提醒两条便捷入口 */
-function okMsg(m) { toast(m, 'ok'); }
-function warnMsg(m) { toast(m, 'warn'); }
+function okMsg(m) { _say(m, 'ok'); }
+function warnMsg(m) { _say(m, 'warn'); }
   /* 触感反馈：能震就震，震不了静默 */
   function hf() { try { if (navigator && typeof navigator.vibrate === 'function') navigator.vibrate(8); } catch (e) {} }
 
@@ -587,6 +611,11 @@ function warnMsg(m) { toast(m, 'warn'); }
       if (S.listBusy) { S.listBusy = false; }
     }, 5000);
     call('subagent:subagent_get', { all: true }, 'list');
+    /* 【第九十五轮】列表页底部「版本 —」永远是横杠，因为 #updCur 只在 renderCfg 里写。
+       列表页是默认页，主人一眼就看见那个横杠。这里进列表顺手把版本号取一次。 */
+    if ($('updCur') && (!$('updCur').textContent || $('updCur').textContent === '—')) {
+      call('subagent:subagent_env', { what: 'version' }, 'updStatus');
+    }
   }
   /* 列表动画按需挂载：.chat-row 的流光/呼吸/脉冲是无限循环动画，50 张卡 = 200 个常驻图层。
      动画声明移到 .chat-row.anim-on 下，IntersectionObserver 只给进视口（含 80px 预载）的行加类，
@@ -690,20 +719,24 @@ function warnMsg(m) { toast(m, 'warn'); }
   }
 
   /* 权限位 → 中文短语。后端给的是数字掩码，直接显示数字用户看不懂。 */
+  /* 【第九十二轮】权限文案重写。
+     旧版是「读 写 建 删 管」五个单字，用户看不出自己能干什么。
+     新版用动词短语，一眼知道「能做 / 不能做」。 */
   function permCn(mask) {
     var m = Number(mask || 0), out = [];
-    if (m & 1) out.push('读');
-    if (m & 2) out.push('写');
-    if (m & 4) out.push('建');
-    if (m & 8) out.push('删');
-    if (m & 16) out.push('管');
-    return out.length ? out.join(' ') : '无';
+    if (m & 1) out.push('看任务');
+    if (m & 2) out.push('推进任务');
+    if (m & 4) out.push('派新任务');
+    if (m & 8) out.push('删任务');
+    if (m & 16) out.push('管成员');
+    return out.length ? out.join('、') : '什么都不能做';
   }
   function permRole(mask) {
     var m = Number(mask || 0);
-    if (m === 31) return '创始人';
-    if (m === 3) return '受邀';
-    if (m === 1) return '只读';
+    if (m >= 63) return '超级权限';
+    if (m === 31) return '群主';
+    if (m === 3) return '成员';
+    if (m === 1) return '访客';
     return '自定义';
   }
 
@@ -960,6 +993,9 @@ function warnMsg(m) { toast(m, 'warn'); }
    function runCur() {
      if (!S.cur) { err('没有选中的任务'); return; }
      var st = String(S.curStatus || '');
+     /* 【第九十四轮】已关闭的任务不允许再推进。叉号的语义就是结束这个对话，
+        这里必须硬拦，否则用户点一下又把它 resume 回 running。 */
+     if (st === 'closed') { err('任务已关闭，需要继续请新建任务'); return; }
      /* 【关键】running 不再直接拒绝。面板退出时后端会停在 running（流式没走完），
         用户回来点「继续推进」应该能接着跑，而不是被一句「任务正在运行」挡死。
         真正的流式进行中由下面 STREAM.busy 守卫拦住，不会重复启动。 */
@@ -1019,7 +1055,10 @@ function warnMsg(m) { toast(m, 'warn'); }
       $('dtLive').style.display = 'none';
     }
   }
-  /* 停止：给任务打取消标记，下一轮 advance 会把它置为 cancelled */
+  /* 右下角叉号 = 关闭对话：终止任务，且不允许再推进。
+     【第九十四轮】以前这里发 cancel（只打标记不改状态），后端 status 仍是 running，
+     切出去再进来从列表读到 running，界面就显示「模型生成中」+「继续推进」+ 秒数狂涨。
+     主人明确口径：这个叉就是关掉这个对话，不许再推。所以改发 close，本地直接锁 closed。 */
   function stopCur() {
     if (!S.cur) return;
     /* 一次性清干净：续推定时器、轮询、流式都要停，否则取消后又被推起来 */
@@ -1028,11 +1067,28 @@ function warnMsg(m) { toast(m, 'warn'); }
     stopPoll();
     abortStream();
     S.advancing = false;
-    okMsg('已请求停止');
-    /* 停止后主动拉一次 trace：把后端真实状态（cancelled）取回来。
-       不这么做的话，界面会停在「模型生成中…」，因为轮询已经停了，
-       没有任何东西再去读后端状态。 */
-    call('subagent:subagent_ctrl', { id: S.cur, action: 'cancel' }, 'cancel', function () {
+    /* 【第九十三轮】取消后本地立刻锁定状态。
+       踩过：点停止 -> 弹「已请求停止」-> 紧接着 trace 回包，
+       此时后端还没处理完取消，status 仍是 running，renderTrace 又把界面
+       改回「模型生成中…」，按钮也重新出现。用户看到的是「停了又跑」。
+       这里记下 stopping，让 renderTrace 在这期间不要覆盖界面状态。 */
+    S.stopping = true;
+    S.curStatus = 'closed';
+    S.curPhase = 'idle';
+    if (S.trace && S.trace.id === S.cur) {
+      S.trace.status = 'closed';
+      S.trace.phase = 'idle';
+    }
+    /* 本地列表同步：切出去再进来是从 S.items 读状态的，
+       不改这一项就会又读到 running，前面全白做。 */
+    markClosed(S.cur);
+    S.chatSig = null;
+    setLive('');
+    syncDtBar();
+    syncDtStatusText('closed');
+    okMsg('已关闭');
+    /* 同步告诉后端：关闭并打断正在跑的那一轮。 */
+    call('subagent:subagent_ctrl', { id: S.cur, action: 'close', confirm: true }, 'close', function () {
       if (S.cur) call('subagent:subagent_get', { id: S.cur, detail: 'trace', limit: 40 }, 'trace');
     });
   }
@@ -1229,6 +1285,15 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   function renderTrace(d) {
     S.cur = d.id || S.cur;
     S.trace = d;
+    /* 【第九十三轮】刚点过停止：后端可能还没处理完取消，回包仍是 running。
+       这时候不能把 status 写回 running，否则界面会「停了又跑」。
+       【第九十四轮】叉号已改成关闭语义，这里要保持 closed，不能降级成 cancelled，
+       否则面板会把它当「已停止」又允许继续推进。 */
+    if (S.stopping && d.id === S.cur && (d.status === 'running' || d.status === 'queued')) {
+      d.status = (String(S.curStatus || '') === 'closed') ? 'closed' : 'cancelled';
+      d.phase = 'idle';
+    }
+    if (d.status !== 'running' && d.status !== 'queued') S.stopping = false;
     S.curStatus = String(d.status || '');
     S.curPhase = String(d.phase || 'idle');
     S.curToolNow = String(d.tool_now || '');
@@ -1434,7 +1499,20 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     /* 流式期间绝不重建 dtChat：会清掉流式气泡、丢滚动/焦点/展开态。只更新状态行。
        内容无变化也不重建（整串 HTML 等值比较比 DOM 重建便宜几个量级）。 */
     var _h = h || '<div class="empty">还没有内容。点「继续推进」开始。</div>';
-    if (!STREAM.busy && _h !== S.chatSig) {
+    /* 【第九十五轮】运行中不整页重建。
+       踩过：pollOnce 每 1.5s 拉一次 trace，running 时每轮都重建 dtChat.innerHTML，
+       用户看到「我发的东西一直在闪，像在刷新」。
+       根因：后端每轮都在更新 d.pending（流式草稿），拼进 _h 后整串每次都不同，
+       等值比较永远失败 → 每次都重建。
+       判据改用「turns 条数」：只有真新增了消息（turns 变长）才重建，
+       pending 这种临时草稿不参与判断，它由流式自己渲染。 */
+    var _runningNow = (String(d.status || '') === 'running' || String(d.status || '') === 'queued');
+    var _turnsLen = (d.turns || []).length;
+    var _sameShape = (_runningNow && _turnsLen === S.turnsLen);
+    S.turnsLen = _turnsLen;
+    if (!STREAM.busy && _sameShape) {
+      /* 运行中且没有新消息：跳过重建，只走下面的状态行更新 */
+    } else if (!STREAM.busy && _h !== S.chatSig) {
       /* 折叠态由 data-thk-key + S.thk 记忆。旧实现两个洞：只记非 0 档（折起来重渲染又展开）、
          按 DOM 下标对齐（turns 追加后错位）。现在渲染时 data-state 已按 key 取好，这里只补高度类与贴底。 */
       S.chatSig = _h;
@@ -1576,19 +1654,41 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
 
   /* ── 关闭（把任务标记为已关闭，不消失）/ 删除（彻底删掉） ── */
   var DEL_Q = [], DEL_BUSY = false;
+  /* 【第九十六轮】批量操作失败汇总。
+     主人要求：「不行的要全都在右上角出现，停留至少五秒」。
+     以前批量删 5 个，坏 3 个就弹 3 条独立 toast，刷成一片还漏看。
+     现在收集到一个数组，队列跑完统一出一张卡。 */
+  var DEL_FAILS = [];
+  var DEL_TOTAL = 0;
   function runDelQueue() {
-    if (DEL_BUSY || !DEL_Q.length) return;
+    if (DEL_BUSY || !DEL_Q.length) {
+      /* 队列清空：把本轮所有失败一次性汇总成一张卡 */
+      if (!DEL_BUSY && !DEL_Q.length && DEL_FAILS.length) {
+        var fl = DEL_FAILS.slice();
+        var tot = DEL_TOTAL;
+        DEL_FAILS = []; DEL_TOTAL = 0;
+        errBatch('批量操作：' + fl.length + '/' + tot + ' 项失败', fl);
+      }
+      return;
+    }
     DEL_BUSY = true;
     var job = DEL_Q.shift();
     var done = function () { DEL_BUSY = false; setTimeout(runDelQueue, 0); };
     try {
       callRaw(job.tool, job.params, '', ++S.seq, function (r) {
-        if (r && r.success === false) { err(r.message || '操作失败'); dropRollback(job); }
+        if (r && r.success === false) {
+          var nm = String((job.params && job.params.id) || '');
+          DEL_FAILS.push(nm + '：' + String(r.message || '操作失败'));
+          dropRollback(job);
+        }
         else if (job.tool === 'subagent:subagent_del') dropRow(job.params.id);
         else if (job.tool === 'subagent:subagent_ctrl') markClosed(job.params.id);
         done();
       });
-    } catch (e) { done(); }
+    } catch (e) {
+      DEL_FAILS.push(String((job.params && job.params.id) || '') + '：' + String(e && e.message ? e.message : e));
+      done();
+    }
   }
   /* 关闭：只把状态改成「已关闭」，行留在列表里（这才是叉号该干的事） */
   function markClosed(id) {
@@ -1606,9 +1706,32 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
   function dropRollback() { refreshList(true); }   // 失败时回拉一次真实状态
   /* 叉号 = 关闭任务（不删） */
   function closeTask(id) {
+    /* 【第九十四轮】关闭 = 终止任务，不是只换个标签。
+       踩过：只发 close 不改本地状态，正在跑的流式、轮询、续推定时器全都还活着，
+       切出去再进来又从后端读到 running，界面显示「模型生成中」+「继续推进」+ 秒数狂涨。
+       这里和后端 close 同步：停一切本地动作，锁死终态。 */
+    if (id === S.cur) {
+      try { clearTimeout(S.advT); } catch (e) {}
+      S.advT = null;
+      stopPoll();
+      abortStream();
+      S.streaming = false;
+      S.advancing = false;
+      S.stopping = true;
+      S.curStatus = 'closed';
+      S.curPhase = 'idle';
+      if (S.trace && S.trace.id === id) {
+        S.trace.status = 'closed';
+        S.trace.phase = 'idle';
+      }
+      setLive('');
+      S.chatSig = null;
+    }
     markClosed(id);                       // 界面立刻变「已关闭」
     hf();
+    syncDtBar();
     okMsg('已关闭');
+    DEL_TOTAL += 1;
     DEL_Q.push({ tool: 'subagent:subagent_ctrl', params: { id: id, action: 'close', confirm: true, drop_product: false } });
     runDelQueue();
   }
@@ -1620,6 +1743,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
       dropRow(id);                        // 秒删：DOM 立刻没了
       if (S.cur === id) { S.cur = null; show('list'); }
       okMsg('已删除');
+      DEL_TOTAL += 1;
       DEL_Q.push({ tool: 'subagent:subagent_del', params: { id: id, confirm: true } });
       runDelQueue();
     });
@@ -1660,6 +1784,7 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
     if (S.selIds) for (var k in S.selIds) if (Object.prototype.hasOwnProperty.call(S.selIds, k)) ids.push(k);
     if (!ids.length) { err('还没选任务'); return; }
     openCfm('删除 ' + ids.length + ' 个任务', '连同各自产物目录与快照一起删，不可恢复。', function () {
+      DEL_TOTAL += ids.length;
       for (var i = 0; i < ids.length; i++) {
         dropRow(ids[i]);
         DEL_Q.push({ tool: 'subagent:subagent_del', params: { id: ids[i], confirm: true } });
@@ -1721,17 +1846,45 @@ document.addEventListener('visibilitychange', function () {
     $('mask').classList.add('on'); $('dlg').classList.add('on');
   }
   function closeDlg() { $('mask').classList.remove('on'); $('dlg').classList.remove('on'); S.dlg = null; }
-  /* 是/否确认框：删除这类不可逆操作专用，不带搜索、不带勾选 */
-  function openCfm(title, body, onYes) {
+  /* 【第九十二轮】确认框改成「右键式小浮窗」。
+     用户反馈：从底部弹上来的抽屉难看，希望像 Windows 桌面右键那样贴着触发点弹出。
+     做法：定位到触发元素右下方，空间不够就向左/向上翻；无遮罩，点别处即关。
+     anchor 可以是元素，也可以是 {x,y}。 */
+  function openCfm(title, body, onYes, anchor) {
     S.cfmYes = onYes || null;
+    var box = $('cfm');
+    if (!box) return;
     if ($('cfmTitle')) $('cfmTitle').textContent = String(title || '确认');
     if ($('cfmBody')) $('cfmBody').textContent = String(body || '');
-    if ($('mask')) $('mask').classList.add('on');
-    if ($('cfm')) $('cfm').classList.add('on');
+    box.classList.remove('on');
+    /* 先显示才能量尺寸 */
+    box.style.visibility = 'hidden';
+    box.style.display = 'block';
+    var bw = box.offsetWidth, bh = box.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var ax = 16, ay = 16;
+    if (anchor) {
+      if (typeof anchor.getBoundingClientRect === 'function') {
+        var r = anchor.getBoundingClientRect();
+        ax = r.right; ay = r.bottom;
+        /* 优先贴右下；右边放不下就贴左边 */
+        if (ax + bw + 10 > vw) ax = Math.max(8, r.left - bw);
+        if (ay + bh + 10 > vh) ay = Math.max(8, r.top - bh);
+      } else {
+        ax = Number(anchor.x || 16); ay = Number(anchor.y || 16);
+        if (ax + bw + 10 > vw) ax = Math.max(8, ax - bw);
+        if (ay + bh + 10 > vh) ay = Math.max(8, ay - bh);
+      }
+    } else {
+      ax = vw - bw - 14; ay = 64;
+    }
+    box.style.left = Math.round(ax) + 'px';
+    box.style.top = Math.round(ay) + 'px';
+    box.style.visibility = '';
+    box.classList.add('on');
   }
   function closeCfm() {
     S.cfmYes = null;
-    if ($('mask')) $('mask').classList.remove('on');
     if ($('cfm')) $('cfm').classList.remove('on');
   }
   function renderDlg(q) {
@@ -1759,8 +1912,21 @@ document.addEventListener('visibilitychange', function () {
     else if (!t.loaded) bi.push({ val: '__loading', label: '正在读取工具清单…', desc: '' });
     else { for (var k = 0; k < FALLBACK.length; k++) { var f = FALLBACK[k]; bi.push({ val: f[0], label: f[1], hi: HIGH.test(f[0]), desc: f[0] + (f[2] ? ' · 写类' : ' · 只读') }); } }
     var pa = t.packages || [];
-    for (var j = 0; j < pa.length; j++) { var p = pa[j]; pk.push({ val: p.pattern, label: p.display || p.name, desc: p.pattern + ' · ' + (p.tools || 0) + ' 工具' }); }
-    return [{ title: '宿主内置', items: bi }, { title: '外部包', items: pk }];
+    /* 【第九十五轮】外部包说明写清楚：宿主只给 toolCount，拿不到包内工具名，
+       所以这里只能整包授权。desc 必须写明「整包 N 个工具全开」，
+       否则用户以为点进去还能再挑，实际点了就是全开。 */
+    for (var j = 0; j < pa.length; j++) {
+      var p = pa[j];
+      var n = Number(p.tools || 0);
+      pk.push({
+        val: p.pattern,
+        label: p.display || p.name,
+        desc: p.pattern + ' · 整包 ' + n + ' 个工具全部授权'
+      });
+    }
+    var groups = [{ title: '宿主内置（可单选）', items: bi }];
+    if (pk.length) groups.push({ title: '外部包（整包授权，不能拆单个工具）', items: pk });
+    return groups;
   }
 
   /* ── 新建表单逻辑 ── */
@@ -1781,13 +1947,22 @@ document.addEventListener('visibilitychange', function () {
     if (!taskText) { err('请填写任务描述'); return; }
     /* 记住本次填写，下次进新建页自动回填 */
     saveNewForm();
+    /* 【第九十六轮】参数名对齐 METADATA。
+       踩过：这里一直传 allowed_tools / max_depth / origin，
+       而 METADATA 与后端白名单认的是 tools，max_depth 与 origin 根本不存在。
+       结果是「选了工具等于没选」—— 后端收到 allowed_tools 当作未知键忽略，
+       任务拿到空工具表，子代理什么都调不了。
+       现在统一传 tools（逗号串），并补上 skills。 */
     var p = {
-      task: taskText, allowed_tools: S.sel.join(','),
+      task: taskText,
+      tools: (S.sel || []).join(','),
       workspace: ($('inWs').value || '').trim() || undefined,
       max_steps: parseInt($('inSteps').value || '20', 10),
       timeout_ms: parseInt($('inTimeout').value || '90000', 10),
-      thinking_level: S.think, max_depth: parseInt($('inDepth').value || '0', 10) || 0, origin: 'ui'
+      thinking_level: S.think
     };
+    /* skill 可选：选了才传，不选保持后端默认（无 skill） */
+    if (S.selSkills && S.selSkills.length) p.skills = S.selSkills.join(',');
     /* 【允许危险命令】只在开启时才传，保持默认语义干净（后端默认 false）。 */
     if ($('inDanger') && $('inDanger').value === '1') p.allow_danger = true;
 /* 附带主对话上下文已移除：不再传 context_mode / parent_chat_id，
@@ -2858,6 +3033,41 @@ document.addEventListener('visibilitychange', function () {
     });
   }
 
+  /* ── 【第九十六轮】skill 选择（一直挂账没做的那条） ──
+     不选 = 不给 skill；选了会以逗号串传给 spawn 的 skills 参数。
+     清单从后端 subagent_skill(action=list) 取，与主 agent 看到的是同一份。 */
+  var SK_CACHE = null;
+  function openSkills() {
+    var showDlg = function (items) {
+      var groups = [{ title: '可用技能（可多选）', items: items }];
+      openDlg('选择技能', groups, true, function (picked) {
+        if (picked && picked.length) S.selSkills = picked.slice();
+        else S.selSkills = [];
+        if ($('vSkills')) {
+          $('vSkills').textContent = S.selSkills.length ? (S.selSkills.length + ' 项') : '不启用';
+        }
+      });
+      if ($('dlgSearch')) $('dlgSearch').placeholder = '搜索技能（共 ' + items.length + ' 个）';
+    };
+    if (SK_CACHE && SK_CACHE.length) { showDlg(SK_CACHE); return; }
+    call('subagent:subagent_skill', { action: 'list' }, 'skillList', function (r) {
+      if (r && r.success === false) { err(r.message || '读取技能清单失败'); return; }
+      var d = (r && r.data) || {};
+      var arr = d.items || [];
+      if (!arr.length) { err('没有可用技能'); return; }
+      SK_CACHE = [];
+      for (var i = 0; i < arr.length; i++) {
+        var it = arr[i] || {};
+        var nm = String(it.name || '');
+        if (!nm) continue;
+        var ds = String(it.description || '');
+        if (ds.length > 90) ds = ds.slice(0, 90) + '…';
+        SK_CACHE.push({ val: nm, label: nm, desc: ds });
+      }
+      showDlg(SK_CACHE);
+    });
+  }
+
   /* ── 配置 ── */
   var PROVIDERS = {
     'DeepSeek 官方': { ep: 'https://api.deepseek.com/v1' },
@@ -2972,6 +3182,78 @@ document.addEventListener('visibilitychange', function () {
     }
     /* 进页面时拉一次下载状态：上次没下完的话进度要能续上显示 */
     call('subagent:subagent_update', { step: 'status' }, 'updStatus');
+    /* 【第九十六轮】ROOT 窗口状态：进配置页就刷新一次，主人能一眼看到现在有没有开窗 */
+    rootRefresh();
+  }
+
+  /* ── 【第九十六轮】ROOT 权限窗口（设置页入口） ──
+     主人要求「开个窗口在设置里面调」。
+     这里只做三件事：开窗拿识别码、看倒计时、收回。
+     开窗必须显式点击，绝不自动开。 */
+  var ROOT_T = { at: 0, t: null };
+  function rootFmtLeft(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    var m = Math.floor(s / 60);
+    s = s % 60;
+    return m + ' 分 ' + (s < 10 ? '0' + s : s) + ' 秒';
+  }
+  function rootPaint(d) {
+    var st = $('rootState');
+    var row = $('rootCodeRow');
+    var btns = $('rootBtns');
+    var code = $('rootCode');
+    var exp = d && d.expires_at ? Number(d.expires_at) : 0;
+    if (!exp || exp <= Date.now()) {
+      if (st) st.textContent = '未开窗';
+      if (row) row.style.display = 'none';
+      if (btns) btns.style.display = 'none';
+      try { clearInterval(ROOT_T.t); } catch (eR0) {}
+      ROOT_T.t = null;
+      return;
+    }
+    if (st) st.textContent = '已开窗，剩余 ' + rootFmtLeft(exp - Date.now());
+    if (row) row.style.display = '';
+    if (btns) btns.style.display = '';
+    if (code && d.code) code.value = String(d.code);
+    if (!ROOT_T.t) {
+      ROOT_T.t = setInterval(function () {
+        if (!ALIVE) { try { clearInterval(ROOT_T.t); } catch (eR1) {} ROOT_T.t = null; return; }
+        var s2 = $('rootState');
+        if (!s2) return;
+        var left = exp - Date.now();
+        if (left <= 0) { rootPaint(null); return; }
+        s2.textContent = '已开窗，剩余 ' + rootFmtLeft(left);
+      }, 1000);
+    }
+  }
+  function rootRefresh() {
+    /* 后端 check 的返回形状：
+         - 无窗口：{ active: false }
+         - 有窗口：{ active: true, code, expires_at, minutes, chat_id }
+       open 的返回是同一套字段放在 data 顶层。这里统一归一化。 */
+    call('subagent:subagent_root', { action: 'check' }, 'rootCheck', function (r) {
+      var d = (r && r.data) || {};
+      if (d.window && d.window.expires_at) { rootPaint(d.window); return; }
+      if (d.active === true && d.expires_at) { rootPaint(d); return; }
+      rootPaint(null);
+    });
+  }
+  function rootOpen() {
+    var mv = Number(($('inRootMin') && $('inRootMin').value) || 30);
+    if (!(mv >= 1 && mv <= 1440)) { err('有效分钟数要在 1 到 1440 之间'); return; }
+    call('subagent:subagent_root', { action: 'open', minutes: mv, reason: '面板设置页手动开窗' }, 'rootOpen', function (r) {
+      if (r && r.success === false) { err(r.message || '开窗失败'); return; }
+      var d = (r && r.data) || {};
+      rootPaint(d.window || d);
+      okMsg('已开窗，识别码已显示');
+    });
+  }
+  function rootClose() {
+    call('subagent:subagent_root', { action: 'close' }, 'rootClose', function (r) {
+      if (r && r.success === false) { err(r.message || '收回失败'); return; }
+      rootPaint(null);
+      okMsg('已收回 ROOT 权限');
+    });
   }
 
   /* ── 版本更新（第三十轮，仿 on_air）──
@@ -2993,9 +3275,14 @@ document.addEventListener('visibilitychange', function () {
     var btn = document.querySelector('[data-act="updCheck"]');
     if (btn) btn.classList.add('spin');
     updMsg('正在检查…');
-    call('subagent:subagent_update', { step: 'check', force: !!force }, 'updCheck', function () {
+    /* 【第九十五轮】踩过：这里只清转圈不调 renderUpdCheck，
+       callRaw 有 onOk 时走 onOk(r)，不再走 window.__sbResult，
+       于是 renderUpdCheck 永远不执行，界面永远停在「正在检查…」。
+       主人报的「点了一直卡在正在检查」就是这一行。 */
+    call('subagent:subagent_update', { step: 'check', force: !!force }, 'updCheck', function (r) {
       UPD.checking = false;
       if (btn) btn.classList.remove('spin');
+      renderUpdCheck(r);
     });
   }
 
@@ -3761,6 +4048,9 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'doProbe') return probe();
     /* 版本更新（第三十轮） */
     if (act === 'updCheck') { hf(); return updCheck(true); }
+    if (act === 'rootOpen') { hf(); return rootOpen(); }
+    if (act === 'rootCheck') { hf(); return rootRefresh(); }
+    if (act === 'rootClose') { hf(); return rootClose(); }
     /* 【第八十六轮】更新弹窗三按钮 */
     if (act === 'updDlgCancel') { hf(); return closeUpdDlg(); }
     if (act === 'updDownload') { hf(); closeUpdDlg(); return updDownload(); }
@@ -3770,6 +4060,7 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'saveKey') return saveKey();
     if (act === 'doCreate') return createTask();
     if (act === 'openTools') return openTools();
+    if (act === 'openSkills') return openSkills();
     if (act === 'usePrivateWs') {
       call('subagent:subagent_env', { what: 'workspace', action: 'init' }, 'privateWs');
       return;

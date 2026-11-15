@@ -102,7 +102,9 @@ A.nomatch('refreshIndex 死代码已删', T2, /async function refreshIndex/);
 A.nomatch('indexPath 死代码已删', T2, /function indexPath/);
 
 /* ── 8. advanceTask 异常必须落 failed ── */
-A.match('advanceTask 有 catch', T2, /catch \(e\) \{[\s\S]{0,400}?task\.status = "failed"/);
+/* 【第九十四轮】catch 里先判 closed/cancelled，只有非终态才写 failed */
+A.match('advanceTask 有 catch', T2, /catch \(e\) \{[\s\S]{0,900}?task\.status = "failed"/);
+A.match('异常不改写已关闭任务', T2, /stEx === "closed" \|\| stEx === "cancelled"/);
 A.match('advanceTask 写 error', T2, /task\.error = "推进异常："/);
 
 /* ── 9. stream_relay 必须有超时 ── */
@@ -343,7 +345,9 @@ A.match('祖先链 ancestorChatIdsOf', SJ, /async function ancestorChatIdsOf\(ch
 A.match('可见性判定 visibleTasks', SJ, /async function visibleTasks\(params, force\)/);
 A.match('spawn 支持 group_create', A.src('packages/sb_tool_task.js'), /var wantCreate = params\.group_create/);
 A.match('群组管理工具 subagent_group', A.src('packages/sb_tool_main.js'), /E\.subagent_group = async function/);
-A.match('spawn 返回群组码', A.src('packages/sb_tool_task.js'), /已建群组，群组码/);
+/* 【第九十六轮】群组码文案重写成四段说明（是什么/给谁/能干什么/怎么收回） */
+A.match('spawn 返回群组码', A.src('packages/sb_tool_task.js'), /【群组码 " \+ grpCode \+ "】/);
+A.match('群组码说明用途', A.src('packages/sb_tool_task.js'), /给谁用：复制给别的对话里的 agent/);
 A.nomatch('不再依赖 getToolSessionId 生成 id', TASK2, /getToolSessionId\(\)/);
 /* parent_chat_id 缺省时用 getToolExecutionContext().chatId */
 A.match('parent_chat_id 自动取上下文 chatId', A.src('packages/sb_tool_task.js'), /if \(typeof getToolExecutionContext === "function"\)[\s\S]{0,160}?ec0 && ec0\.chatId/);
@@ -680,7 +684,7 @@ A.match('默认一律收起', P, /var stInit = '0';/);
 /* ── 【第六十二轮】滑动 + 色彩分层 + 弹出动画 ── */
 A.match('聊天区子项禁止收缩', CSS2, /\.dt-chat>\*\{flex-shrink:0/);
 A.match('卡片自己也禁收缩', CSS2, /\.agent-block\{[^}]*flex-shrink:0/);
-A.match('思考正文色独立变量', CSS2, /--think-fg:#a8b4cc/);
+A.match('思考正文色独立变量', CSS2, /--think-fg:#aebbd4/);
 A.match('思考正文用该变量', CSS2, /\.thk-body\{[^}]*color:var\(--think-fg\)/);
 A.match('悬浮窗带回弹曲线', CSS2, /#retDlg\{[^}]*cubic-bezier\(\.22,1\.15,\.36,1\)/);
 A.match('悬浮窗起始缩小', CSS2, /#retDlg\{[^}]*scale\(\.9\)/);
@@ -705,7 +709,7 @@ A.nomatch('孤儿工具行不再套 thinkbox', P, /role === 'tool'\)[\s\S]{0,900
 A.match('容器圆角只在外层', CSS2, /\.agent-block\{background:var\(--bg3\);border-radius:3px 14px 14px 14px/);
 A.match('段在容器内去圆角', CSS2, /\.agent-block>\.thinkbox\{background:transparent;border:0;border-radius:0/);
 A.nomatch('不再有分割线', CSS2, /border-top:1px solid rgba\(127,141,179,\.18\)/);
-A.match('可点击色变量', CSS2, /--click:#5d9bff/);
+A.match('可点击色变量', CSS2, /--click:#6ba6ff/);
 A.match('折叠头用可点击色', CSS2, /\.thk-tx\{[^}]*color:var\(--click\)/);
 A.match('工具名用可点击色', CSS2, /\.trow-name\{[^}]*color:var\(--click\)/);
 A.match('单击在 0/1 间切换（第七十一轮定稿）', P, /setThinkState\(tb, st0 === 0 \? 1 : 0\)/);

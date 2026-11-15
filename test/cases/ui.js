@@ -158,8 +158,10 @@ A.match('abortStream 清 abort 引用', P, /STREAM\.abort = null;[\s\S]{0,400}?S
 A.match('runCur 终态时自愈', P, /var terminal = \(st === 'done' \|\| st === 'failed' \|\| st === 'cancelled' \|\| st === 'closed' \|\| !st\);[\s\S]{0,150}?abortStream\(\)/);
 /* openTask 进任务前自愈 */
 A.match('openTask 进任务前自愈', P, /var termPre = \(stPre === 'done'[\s\S]{0,200}?abortStream\(\)/);
-/* 停止后主动拉 trace，否则界面停在「模型生成中」 */
-A.match('停止后主动拉 trace', P, /call\('subagent:subagent_ctrl', \{ id: S\.cur, action: 'cancel' \}, 'cancel', function \(\) \{[\s\S]{0,160}?subagent_get/);
+/* 【第九十四轮】叉号改发 close：关闭必须打断正在跑的那一轮，
+   只发 cancel 时后端 status 仍是 running，切出去再进来又显示「继续推进」。 */
+A.match('关闭后主动拉 trace', P, /call\('subagent:subagent_ctrl', \{ id: S\.cur, action: 'close', confirm: true \}, 'close', function \(\) \{[\s\S]{0,160}?subagent_get/);
+A.match('已关闭任务禁止继续推进', P, /if \(st === 'closed'\) \{ err\('任务已关闭/);
 A.finish();
 
 /* ── 【第六十九轮】动画按需挂载：降常驻合成图层 ──
@@ -239,8 +241,11 @@ A.match('详情取 onOk 第二参而非外层',
     P, /openGrpInfo[\s\S]{0,400}?function \(r0, d\)/);
 A.match('权限位转中文短语',
     P, /function permCn\(mask\)/);
-A.match('角色判定 创始人/受邀/只读',
-    P, /if \(m === 31\) return '创始人'/);
+/* 【第九十二轮】角色名重写：创始人→群主、受邀→成员、只读→访客，并加超级权限 */
+A.match('角色判定 群主/成员/访客',
+    P, /if \(m === 31\) return '群主'/);
+A.match('角色判定含超级权限',
+    P, /if \(m >= 63\) return '超级权限'/);
 A.match('群组码可长按选中复制',
     C, /\.gi-code-v\{[^}]*user-select:text/);
 A.match('剔除按钮只在有 KICK 位时出现',

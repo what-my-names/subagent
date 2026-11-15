@@ -346,7 +346,19 @@ module.exports = function install(E, opts) {
         /* 【第八十三轮】建了群组要把码告诉用户 —— 这是他们复制给别的 agent 的唯一凭证 */
         var grpTip = "";
         if (grpCreated && grpCode) {
-            grpTip = "｜已建群组，群组码 " + grpCode + "（复制给别的 agent 即可让它看到本组全部子代理）";
+            /* 【第九十六轮】群组码文案写完整。
+               主人要求「应当出现在对话用户可以复制」「要提示用户这个是干什么的」。
+               只写一句「复制给别的 agent」太含糊：不知道复制到哪、复制给谁、给了能干什么。
+               这里按「是什么 / 给谁 / 给了能干什么 / 怎么收回」四件事写清楚。 */
+            grpTip = ""
+                + "\n\n【群组码 " + grpCode + "】"
+                + "\n· 这是什么：本群组的识别码，6 位数字。"
+                + "\n· 给谁用：复制给别的对话里的 agent，或粘贴到它们的提示词里。"
+                + "\n· 给了能干什么：拿到码的 agent 能看见本组全部子代理的调用与从属关系，"
+                + "可以往里派新任务（按权限位决定能不能推进、删除、管成员）。"
+                + "\n· 怎么收回：subagent_group(action=kick, code=" + grpCode + ", chat_id=<对方对话id>)，"
+                + "踢掉后对方再输码也进不来。"
+                + "\n· 想作废整个群组：subagent_group(action=delete, code=" + grpCode + ")。";
         } else if (grpCode) {
             grpTip = "｜已加入群组 " + grpCode;
         }

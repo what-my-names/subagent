@@ -346,4 +346,118 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.match('箭头 hover 变主色', CSS, /\.grp-head:hover \.grp-chv\{stroke:var\(--acc\)/);
 })();
 
+
+/* ── 【第九十二轮】环形轮盘 + 右键浮窗 + 文案 + 配色 ── */
+(function () {
+    var RING = A.src('ui/web/panel_ring.js');
+    var TOAST = A.src('ui/web/panel_toast.js');
+    var P = A.src('ui/web/panel.js');
+    var C = A.src('ui/web/panel.css');
+    var BUILD = A.src('ui/build_panel_html.js');
+
+    /* 1) toast 未定义免疫 */
+    A.match('_say 安全转发存在', P, /function _say\(msg, lv\)/);
+    A.match('_say 检查 toast 类型', P, /typeof toast === 'function'/);
+    A.match('_say 有 DOM 兜底', P, /getElementById\('toastStack'\)/);
+
+    /* 2) 环形轮盘 */
+    A.match('环形按角度算位移', RING, /var y = Math\.sin\(a\)/);
+    A.match('环形按角度算深度', RING, /var z = -RING_RADIUS/);
+    A.match('环形越远越模糊', RING, /blurPx/);
+    A.match('环形位置绕回（无缝循环）', RING, /while \(RING\.pos >= n\) RING\.pos -= n/);
+    A.match('环形移除后补齐', RING, /function ringRemove/);
+    A.match('环形只有中间可交互', RING, /pointerEvents = Math\.abs\(d\) < 1\.1/);
+
+    /* 3) 双击进轮盘 */
+    A.match('双击改为 ringPush', TOAST, /ringPush\(el, rec\)/);
+    A.match('进轮盘后停掉自动消失', TOAST, /rec\.timer = null/);
+    A.match('killToast 通知轮盘移除', TOAST, /ringRemove\(el\)/);
+
+    /* 4) 构建顺序：ring 在 toast 之前（toast 负责收尾） */
+    A.chk('构建含 panel_ring', BUILD.indexOf('panel_ring.js') >= 0);
+    var ri = BUILD.indexOf('"panel_ring.js"'), ti = BUILD.indexOf('"panel_toast.js"');
+    A.chk('ring 拼在 toast 之前', ri > 0 && ti > ri);
+
+    /* 5) 右键浮窗 */
+    A.match('openCfm 接收 anchor', P, /function openCfm\(title, body, onYes, anchor\)/);
+    A.match('openCfm 贴合触发点', P, /getBoundingClientRect/);
+    A.match('浮窗无遮罩', P, /function closeCfm\(\) \{[\s\S]{0,120}\}/);
+    A.match('浮窗锚右上缩放', C, /transform-origin:top right/);
+
+    /* 6) 文案重写 */
+    A.match('权限文案用动词短语', P, /派新任务/);
+    A.match('角色名群主', P, /return '群主'/);
+
+    /* 7) 配色 */
+    A.match('配色新增 bg4', C, /--bg4:#2a3140/);
+    A.match('配色阴影变量', C, /--shadow:/);
+
+    /* 8) 环形容器样式 */
+    A.match('ringBox 存在', C, /#ringBox\{/);
+    A.match('ringBox 透视', C, /perspective:900px/);
+})();
+
+
+/* ── 【第九十三轮】停止后不能说停不停 + 秒数不能无限涨 ── */
+(function () {
+    var P = A.src('ui/web/panel.js');
+
+    /* 停止锁：本地立刻锁 cancelled，trace 回包不许改回 running */
+    A.match('停止时置 stopping 锁', P, /S\.stopping = true/);
+    /* 【第九十四轮】右下角叉号语义改成「关闭」：立刻锁 closed，
+       不许再降级成 cancelled（降级后面板又会把它当可推进）。 */
+    A.match('关闭时立刻置 closed', P, /S\.curStatus = 'closed'/);
+    A.match('关闭后同步列表状态', P, /markClosed\(S\.cur\)/);
+    A.match('trace 回包绕过 running', P, /if \(S\.stopping && d\.id === S\.cur/);
+    A.match('非运行态解除锁', P, /if \(d\.status !== 'running' && d\.status !== 'queued'\) S\.stopping = false/);
+    A.match('stopping 有初值', P, /stopping: false/);
+
+    /* 秒数三道闸 */
+    A.match('秒数受 STALE_MS 约束', P, /if \(upd > 0 && \(Date\.now\(\) - upd\) > STALE_MS\) return base/);
+    A.match('秒数上限 3600', P, /sec >= 3 && sec < 3600/);
+})();
+
+/* ── 【第九十四轮】关闭必须真正打断推进循环（后端 + 前端双向） ── */
+(function () {
+    var MAIN = A.src('packages/sb_tool_main.js');
+    var T2 = A.src('packages/sb_task.js');
+    var P = A.src('ui/web/panel.js');
+
+    /* 后端 ctrl(close) 必须打 cancel 信号，否则跑着的那一轮不知道要停 */
+    A.match('close 打 cancel 信号', MAIN, /t\.cancel = true;\s*\n\s*t\.status = "closed";/);
+    /* resume 不许复活已关闭任务 */
+    A.match('resume 拒绝 closed', MAIN, /任务已关闭，不能恢复/);
+    /* run 循环认 closed */
+    A.match('run 循环认 closed', MAIN, /taskW\.status === "closed"\) break/);
+
+    /* 状态机：closed 短路、next 为 stop、异常不改写终态 */
+    A.match('advance 短路 closed', T2, /if \(task\.status === "closed"\) return \{ ok: false, done: true/);
+    A.match('nextFor 认 closed', T2, /task\.status === "cancelled" \|\| task\.status === "closed"\) return "stop"/);
+    A.match('模型返回后重新读盘', T2, /var fresh = await loadTask\(task\.id\)/);
+    A.match('关闭不降级 cancelled', T2, /task\.status = \(task\.status === "closed"\) \? "closed" : "cancelled"/);
+
+    /* 前端：关闭后禁推进、同步本地列表 */
+    A.match('前端禁推进 closed', P, /if \(st === 'closed'\) \{ err\('任务已关闭/);
+})();
+
+/* ── 【第九十五轮】回包无人接 / 列表页版本号 / 轮询闪烁 / 外部包重复 ── */
+(function () {
+    var P = A.src('ui/web/panel.js');
+    var ENV = A.src('packages/sb_tool_env.js');
+
+    /* ① 检查更新：onOk 里必须调 renderUpdCheck，否则永远停在「正在检查…」 */
+    A.match('检查更新回包有渲染', P, /'updCheck', function \(r\) \{[\s\S]{0,200}?renderUpdCheck\(r\)/);
+
+    /* ② 列表页拉版本号 */
+    A.match('列表页拉版本', P, /'list'\);\s*\/\*[\s\S]{0,300}?subagent_env', \{ what: 'version' \}/);
+
+    /* ③ 运行中不整页重建：用 turns 条数做指纹 */
+    A.match('轮询用 turns 指纹', P, /_turnsLen === S\.turnsLen/);
+    A.match('turnsLen 有初值', P, /turnsLen: -1/);
+
+    /* ④ 外部包过滤 0 工具 + 同 display 去重 */
+    A.match('过滤 0 工具包', ENV, /if \(cnt <= 0\) \{ continue; \}/);
+    A.match('同 display 去重', ENV, /_byDisp\[keyD\]/);
+})();
+
 A.finish();

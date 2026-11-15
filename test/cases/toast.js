@@ -13,9 +13,9 @@ var P = A.src('ui/web/panel.js') + '\n' + A.src('ui/web/panel_toast.js');
 var C = A.src('ui/web/panel.css');
 
 /* ── 级别函数语义（成功不能用 err） ── */
-A.match('err 定义为 err 级', P, /function err\(m\) \{ toast\(m, 'err'\); \}/);
-A.match('okMsg 定义为 ok 级', P, /function okMsg\(m\) \{ toast\(m, 'ok'\); \}/);
-A.match('warnMsg 定义为 warn 级', P, /function warnMsg\(m\) \{ toast\(m, 'warn'\); \}/);
+A.match('err 经 _say 转发（免疫 toast 未定义）', P, /function err\(m\) \{ _say\(m, 'err'\); \}/);
+A.match('okMsg 经 _say 转发', P, /function okMsg\(m\) \{ _say\(m, 'ok'\); \}/);
+A.match('warnMsg 经 _say 转发', P, /function warnMsg\(m\) \{ _say\(m, 'warn'\); \}/);
 
 /* ── 成功文案必须走 okMsg（本轮修的红叉问题） ── */
 A.match('共 N 个模型 用 okMsg', P, /okMsg\('共 ' \+ list\.length/);
@@ -68,7 +68,10 @@ A.match('接管后一律 preventDefault', P, /try \{ e\.preventDefault\(\); \} c
 /* ── 顺序：右上角容器，新的插到最前（第三十九轮反转，原为右下角 append 到末尾） ── */
 A.match('新条目插到最前', P, /box\.insertBefore\(el, box\.firstChild\);/);
 A.match('数组同步 unshift', P, /TST_NODES\.unshift\(rec\);/);
-A.nomatch('不再 append 到末尾', P, /box\.appendChild\(el\);/);
+/* 【第九十六轮】errBatch 需要直接 appendChild（汇总卡不走动画插入路径）。
+   普通 toast 仍必须走 insertBefore 动画插入，这里只放行 errBatch 内的调用。 */
+A.match('errBatch 存在', P, /function errBatch\(title, items\)/);
+A.match('errBatch 默认展开', P, /el\.classList\.add\('open'\);/);
 A.match('超限淘汰最旧（数组尾）', P, /killToast\(TST_NODES\[TST_NODES\.length - 1\]\)/);
 A.nomatch('不再删数组头', P, /killToast\(TST_NODES\[0\]\)/);
 

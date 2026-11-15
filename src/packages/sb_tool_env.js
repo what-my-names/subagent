@@ -98,10 +98,30 @@ module.exports = function install(E, opts) {
                 if (pk.enabled !== true) { disabledCount++; continue; }
                 var nm = String(pk.packageName || "");
                 if (!nm) continue;
-                packs.push({ name: nm, display: String(pk.displayName || nm), tools: Number(pk.toolCount || 0), pattern: nm + ":*" });
+                /* 【第九十五轮】只列真能用的包。
+                   踩过：宿主清单里同一个包会出现两条——长名（com.operit.on_air）
+                   和短名（on_air）。长名那条 toolCount 恒为 0，是宿主自己的登记项，
+                   列出来用户看到「0 工具」点进去什么也没有。
+                   规则：toolCount 为 0 的直接跳过；同 display 只保留 toolCount 最大的那条。 */
+                var cnt = Number(pk.toolCount || 0);
+                if (cnt <= 0) { continue; }
+                packs.push({ name: nm, display: String(pk.displayName || nm), tools: cnt, pattern: nm + ":*" });
             }
         } catch (e) {}
-        complete({ success: true, message: "内置 " + builtin.length + " 项，已启用包 " + packs.length + " 个（另有 " + disabledCount + " 个包未启用）", data: { builtin: builtin, packages: packs, disabled_count: disabledCount } });
+        /* 【第九十五轮】同名包去重：宿主会同时登记长名与短名，只留工具数多的那条。 */
+        var _byDisp = {};
+        var packsOut = [];
+        for (var pi = 0; pi < packs.length; pi++) {
+            var pz = packs[pi];
+            var keyD = String(pz.display || pz.name || "").toLowerCase();
+            if (!keyD) { packsOut.push(pz); continue; }
+            if (_byDisp[keyD] == null) { _byDisp[keyD] = packsOut.length; packsOut.push(pz); }
+            else if (Number(pz.tools || 0) > Number(packsOut[_byDisp[keyD]].tools || 0)) {
+                packsOut[_byDisp[keyD]] = pz;
+            }
+        }
+        packsOut.sort(function (a, b) { return Number(b.tools || 0) - Number(a.tools || 0); });
+        complete({ success: true, message: "内置 " + builtin.length + " 项，已启用包 " + packsOut.length + " 个（另有 " + disabledCount + " 个包未启用）", data: { builtin: builtin, packages: packsOut, disabled_count: disabledCount } });
     };
 
     E.subagent_list_dir = async function (params) {

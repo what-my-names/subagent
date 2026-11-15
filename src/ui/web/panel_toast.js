@@ -72,9 +72,22 @@ function toast(msg, level) {
       }, 250);
     };
     onDoubleFn = function () {
-      /* 双击：取消挂起的单击，直接进悬浮态 */
+      /* 【第九十二轮】双击改为进环形轮盘。
+         用户要的是「双击多个都能飞到中心，中心是一个上下滚动的圈」。
+         所以不再单条悬浮，而是把这条搬进 #ringBox 的圆柱里，
+         后面再双击别的就会一条条加进同一个圈。 */
       try { clearTimeout(tapTimer); } catch (eT) {}
-      floatToast(el, rec);
+      try { clearTimeout(rec.timer); } catch (eT2) {}
+      /* 停掉自动消失：进了轮盘就由用户手动关 */
+      rec.timer = null;
+      if (typeof ringPush === 'function') {
+        /* 先占住它，避免在堆叠里的计时器又把它杀掉 */
+        rec.inRing = true;
+        ringPush(el, rec);
+      } else {
+        /* 轮盘模块不在：退回旧行为 */
+        floatToast(el, rec);
+      }
     };
   }
 
@@ -296,6 +309,12 @@ function killToast(rec, dir, fromX, fromY) {
   rec.dead = true;
   try { clearTimeout(rec.timer); } catch (eT) {}
   var el = rec.el;
+  /* 【第九十二轮】如果这条在环形轮盘里，先让它退圈并触发补齐，
+     否则剩下的卡片会留一个空位、位置也不再居中。 */
+  if (rec.inRing && el && typeof ringRemove === 'function') {
+    try { ringRemove(el); } catch (eR) {}
+    rec.inRing = false;
+  }
   for (var i = 0; i < TST_NODES.length; i++) {
     if (TST_NODES[i] === rec) { TST_NODES.splice(i, 1); break; }
   }
@@ -342,6 +361,62 @@ function killToast(rec, dir, fromX, fromY) {
   setTimeout(function () {
     try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e2) {}
   }, dir ? 320 : 260);
+}
+
+/* ── 【第九十六轮】报错汇总卡 ──
+   主人原话：「有哪些不行的、有哪些行的行的就不说了、不行的要全都在右上角出现，
+             并且停留至少五秒」。
+   之前一条失败弹一条，批量操作时右上角刷成一片，看不清到底哪几项坏了。
+   现在提供 errBatch()：一次操作的所有失败项合成一张卡，卡内逐条列出。
+   单条 err() 仍走原 toast 路径，行为不变。 */
+var BATCH_LIFE = 8000;
+function errBatch(title, items) {
+  var box = $('toastStack');
+  if (!box) return;
+  var list = [];
+  for (var i = 0; i < (items || []).length; i++) {
+    var s = String(items[i] == null ? '' : items[i]).trim();
+    if (s) list.push(s);
+  }
+  if (!list.length) return;
+  /* 只有一条时退回普通 err，不为了凑格式而做卡片 */
+  if (list.length === 1) { err(list[0]); return; }
+
+  var key = String(title || '') + ' ' + list.join('');
+  /* 同一批重复上报时刷新寿命，不叠卡 */
+  for (var j = 0; j < TST_NODES.length; j++) {
+    var nd = TST_NODES[j];
+    if (nd && nd.el && nd.batchKey === key && !nd.dead) {
+      try { clearTimeout(nd.timer); } catch (eT) {}
+      nd.timer = setTimeout(function () { killToast(nd); }, BATCH_LIFE);
+      return;
+    }
+  }
+
+  var el = document.createElement('div');
+  el.className = 'tst err batch';
+  el.setAttribute('data-lv', 'err');
+  var h = TST_SVG.err + '<div class="tst-tx"><div class="tst-batch-hd">'
+    + esc(String(title || '有 ' + list.length + ' 项失败')) + '</div>';
+  for (var k = 0; k < list.length; k++) {
+    h += '<div class="tst-batch-row"><span class="tst-batch-n">' + (k + 1) + '.</span>'
+      + '<span class="tst-batch-tx">' + esc(list[k]) + '</span></div>';
+  }
+  h += '</div>';
+  el.innerHTML = h;
+
+  var rec = { el: el, txt: key, lv: 'err', timer: null, dead: false, batchKey: key };
+  /* 卡片默认展开（失败项要能直接看见，不让人再点一下） */
+  el.classList.add('open');
+  box.appendChild(el);
+  TST_NODES.push(rec);
+  /* 超出上限时从最旧的开始清 */
+  while (TST_NODES.length > TST_MAX) {
+    var old = TST_NODES.shift();
+    if (old && !old.dead) { try { killToast(old); } catch (eO) {} }
+  }
+  bindSwipeClose(el, rec, null, null);
+  rec.timer = setTimeout(function () { killToast(rec); }, BATCH_LIFE);
 }
 
 /* IIFE 收尾：panel.js 开的口子由最后一个分片关，

@@ -165,11 +165,27 @@ function extractPaths(args) {
        顶层标量键按 PATH_KEYS 取；顶层每个对象值再递归调一次 extractPaths。
        仍只递归一层（递归函数自身不再往下），避免深层嵌套把栈打爆。
        上限：最多看 20 个嵌套键，防参数里塞一堆无用对象拖慢校验。 */
+    /* 【第九十六轮】数组也要递归。
+       踩过：`paths: ["/a", "/b"]` 这种批量参数，旧逻辑因为 `!Array.isArray` 直接跳过，
+       数组里的路径一个都没被检查 —— 写边界等于开后门。
+       现在数组逐项处理：元素是对象就递归，是字符串就按路径收下。 */
     var seen = 0;
     for (var key in args) {
         if (!Object.prototype.hasOwnProperty.call(args, key)) continue;
         var v0 = args[key];
-        if (v0 && typeof v0 === "object" && !Array.isArray(v0)) {
+        if (v0 && typeof v0 === "object" && Array.isArray(v0)) {
+            if (seen >= 20) continue;
+            seen++;
+            for (var ai = 0; ai < v0.length && ai < 50; ai++) {
+                var av = v0[ai];
+                if (av && typeof av === "object") {
+                    var subA = extractPaths(av);
+                    for (var sa = 0; sa < subA.length; sa++) out.push(subA[sa]);
+                } else if (typeof av === "string" && av) {
+                    out.push(av);
+                }
+            }
+        } else if (v0 && typeof v0 === "object") {
             if (seen >= 20) continue;
             seen++;
             var sub0 = extractPaths(v0);

@@ -124,7 +124,7 @@ module.exports = function install(E, opts) {
             for (var i = 0; i < n; i++) {
                 last = await TASK.advanceTask(cfg, task);
                 task = last.task || task;
-                if (task.status === "done" || task.status === "failed" || task.status === "cancelled") break;
+                if (task.status === "done" || task.status === "failed" || task.status === "cancelled" || task.status === "closed") break;
             }
             notifyDone(task);
             complete({
@@ -158,12 +158,12 @@ module.exports = function install(E, opts) {
             lastW = r;
             lastMsg = String(r.message || lastMsg || "");
             taskW = r.task || taskW;
-            if (taskW.status === "done" || taskW.status === "failed" || taskW.status === "cancelled") break;
+            if (taskW.status === "done" || taskW.status === "failed" || taskW.status === "cancelled" || taskW.status === "closed") break;
             if (!r.ok) break;
         }
         var cur = (lastW && lastW.task) ? lastW.task : taskW;
         var stCur = String(cur.status || "");
-        var unfinished = (stCur !== "done" && stCur !== "failed" && stCur !== "cancelled");
+        var unfinished = (stCur !== "done" && stCur !== "failed" && stCur !== "cancelled" && stCur !== "closed");
         var msgOut;
         if (stCur === "done") msgOut = "子代理完成（" + cur.step + " 步）";
         else if (unfinished) {
@@ -293,7 +293,15 @@ module.exports = function install(E, opts) {
             var wlRs = _wlCheck(params, [], "ctrl(resume)");
             if (wlRs) { complete({ success: false, message: wlRs, data: {} }); return; }
             if (!t) { complete({ success: false, message: "找不到任务 " + id, data: {} }); return; }
+            /* 【第九十四轮】已关闭的任务默认不许复活。
+               关闭的语义就是「这个对话结束了」，要再跑必须显式重新建任务。
+               否则面板点「继续推进」会自动 resume，关闭等于没关。 */
+            if (String(t.status || "") === "closed") {
+                complete({ success: false, message: "任务已关闭，不能恢复。需要继续请新建任务。", data: { id: t.id, status: t.status } });
+                return;
+            }
             t.status = "queued"; t.cancel = false; t.error = null;
+            t.phase = "idle"; t.phase_at = Date.now();
             await TASK.saveTask(t);
             complete({ success: true, message: "已恢复", data: { id: t.id, status: t.status, next: "run" } });
             return;
@@ -328,9 +336,15 @@ module.exports = function install(E, opts) {
             if (params.drop_product === true) {
                 try { await Tools.Files.deleteFile(t.product_dir, true, "android"); } catch (eD) {}
             }
+            /* 【第九十四轮】关闭必须同时打断推进循环。
+               踩过：只写 status=closed，正在 _advanceTaskInner 里跑模型的那一轮不知道要停，
+               它跑完 saveTask 时把内存里的 running 写回盘，closed 被覆盖，
+               面板切出去再进来就看到「模型生成中」+「继续推进」+ 秒数一路涨。
+               cancel=true 是推进循环唯一认的中断信号，先打信号再定终态。 */
+            t.cancel = true;
             t.status = "closed";
             await TASK.saveTask(t);
-            complete({ success: true, message: "已关闭" + (params.rollback === true ? "并回滚" : ""), data: { id: t.id, restored: restored } });
+            complete({ success: true, message: "已关闭" + (params.rollback === true ? "并回滚" : ""), data: { id: t.id, status: t.status, restored: restored } });
             return;
         }
         complete({ success: false, message: "action 只支持 cancel / resume / steer / close，收到：" + action, data: {} });

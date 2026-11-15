@@ -13,6 +13,10 @@
  * 出参：无，直接往 E 上挂三个工具。
  */
 var CFG = require("./sb_config.js");
+/* parseJson 原先在 subagent.js 顶层，拆分后拿不到；统一从 sb_parse.js 取。 */
+var PARSE = require("./sb_parse.js");
+var parseJson = PARSE.parseJson;
+
 var LLM = require("./sb_llm.js");
 var SKILL = require("./sb_skill.js");
 

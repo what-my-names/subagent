@@ -270,6 +270,28 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     }
     A.eq('拆分模块用到 CTX 函数必须解构', missing.length, 0);
     if (missing.length) console.log('    漏解构：' + missing.join(', '));
+
+    /* 【第八十九轮补】不只 CTX：主文件顶层任何函数/变量，子模块用到就必须自己声明或 require。
+       真例：clip / parseList / parseJson 留在 subagent.js，sb_tool_* 直接调用 →
+       真机一跑就抛 xxx is not defined，任务详情整页空白。 */
+    var mainSrc = A.src('packages/subagent.js');
+    var mainTop = [];
+    var reTop = /^(?:function|var) ([A-Za-z_][A-Za-z0-9_]*)/gm;
+    var m2;
+    while ((m2 = reTop.exec(mainSrc)) !== null) mainTop.push(m2[1]);
+    A.chk('主文件顶层符号可解析', mainTop.length > 0);
+
+    var leak = [];
+    for (var a = 0; a < mods.length; a++) {
+        var s2 = A.src(mods[a]);
+        for (var b = 0; b < mainTop.length; b++) {
+            var sym = mainTop[b];
+            if (new RegExp('(?:var|function|async function)\\s+' + sym + '\\b').test(s2)) continue;
+            if (new RegExp('\\b' + sym + '\\s*\\(').test(s2)) leak.push(mods[a] + ' → ' + sym);
+        }
+    }
+    A.eq('拆分模块不得直接使用主文件顶层符号', leak.length, 0);
+    if (leak.length) console.log('    未声明：' + leak.join(', '));
 })();
 
 A.finish();

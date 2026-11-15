@@ -755,32 +755,17 @@ var VERSION = "v1.0.0";
 /* 模型列表磁盘缓存有效期：24 小时。600+ 模型一次拉取数秒，命中缓存直接返回 */
 var MODELS_TTL_BACKEND = 24 * 60 * 60 * 1000;
 
-function parseList(raw) {
-    var out = [];
-    if (raw == null) return out;
-    if (Object.prototype.toString.call(raw) === "[object Array]") {
-        for (var i = 0; i < raw.length; i++) { var v = String(raw[i] == null ? "" : raw[i]).trim(); if (v) out.push(v); }
-        return out;
-    }
-    var t = String(raw);
-    t = t.split("，").join(",").split(";").join(",");
-    t = t.split(String.fromCharCode(10)).join(",").split(String.fromCharCode(13)).join(",");
-    t = t.split(String.fromCharCode(9)).join(",").split(" ").join(",");
-    var arr = t.split(",");
-    for (var j = 0; j < arr.length; j++) { var x = arr[j].trim(); if (x) out.push(x); }
-    return out;
-}
 
-function parseJson(raw, def) {
-    if (raw == null || raw === "") return def;
-    if (typeof raw === "object") return raw;
-    try { return JSON.parse(String(raw)); } catch (e) { return def; }
-}
 
 function clip(s, n) { return TOOLS.clip(s, n).text; }
 
 /* 共享上下文/可见性函数已抽到 sb_ctx.js。
    这里按名解构，保持原有调用点一个字都不用改。 */
+/* 参数解析小工具已抽到 sb_parse.js */
+var PARSE = require("./sb_parse.js");
+var parseList = PARSE.parseList;
+var parseJson = PARSE.parseJson;
+
 var CTX = require("./sb_ctx.js");
 var loadCtx = CTX.loadCtx;
 var notifyDone = CTX.notifyDone;

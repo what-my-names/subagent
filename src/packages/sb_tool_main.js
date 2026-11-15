@@ -16,6 +16,15 @@
 var CFG = require("./sb_config.js");
 var BUS = require("./sb_bus.js");
 var TOOLS = require("./sb_tools.js");
+/* parseList/parseJson 原先在 subagent.js 顶层，拆分后拿不到；统一从 sb_parse.js 取。 */
+var PARSE = require("./sb_parse.js");
+var parseList = PARSE.parseList;
+var parseJson = PARSE.parseJson;
+
+/* clip 原先定义在 subagent.js 顶层，拆分后子模块拿不到。sb_tools 已导出同名函数，
+   这里直接取用；否则 max_chars 分支一跑就抛 clip is not defined。 */
+var clip = TOOLS.clip ? function (s, n) { return TOOLS.clip(s, n).text; } : function (s) { return String(s == null ? "" : s); };
+
 var TASK = require("./sb_task.js");
 var GRP = require("./sb_group.js");
 var CTX = require("./sb_ctx.js");

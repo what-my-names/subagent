@@ -1048,18 +1048,6 @@ async function _advanceTaskInner(cfg, task) {
            error 字段却残留 —— 列表里出现「已完成」却带「上一次推进超时」的矛盾状态，
            用户以为又坏了。 */
         task.error = null;
-        /* 【第一百零八轮】零工具任务的结果不可信，必须打标。
-           踩过：allowed=[] 时模型没有任何工具，却在思考里写「我可以给一个合理的目录列表」，
-           直接编出 /sdcard 的内容，任务还报 success。主代理和主人都会当真。
-           这里在结果前面加醒目警告，让下游一眼看出「这是编的」。 */
-        var _cnt = (task.allowed_tools || []).length;
-        if (_cnt === 0) {
-            task.result = "【⚠️ 本任务没有任何工具，下面的内容不是真实执行结果，是模型凭空写的】\n\n"
-                + String(task.result || "");
-            task.no_tools = true;
-        } else {
-            task.no_tools = false;
-        }
     }
     task.last = {
         moves: movesOf(moves),

@@ -29,7 +29,7 @@ METADATA
         {
           "name": "tools",
           "type": "string",
-          "description": "允许的工具，逗号分隔。留空=一个都没有（全拒）；传 all=true 才放开全部；也可写具体工具名或 包名:工具名。",
+          "description": "允许的工具，逗号分隔。留空=一个都没有（全拒）；传 all=true 才放开全部。支持子命令级授权：super_admin:terminal(cd,ls,head) 只允许这几个命令，一条命令用 && || ; | 串联多个时每一段都必须在名单里，否则本地直接拒、不调桥。不写括号=整条放开。支持前缀通配 ls*。",
           "required": false
         },
         {

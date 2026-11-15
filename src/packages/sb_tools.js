@@ -175,6 +175,250 @@ function matchAllowed(name, allowed) {
     return false;
 }
 
+/* ── 【第一百零九轮】子命令级 allow tools：拆分 + 组合 ──
+
+   要解决的问题：
+   子代理能授权的粒度原来是「super_admin:terminal 整条」，一授权等于放开所有命令。
+   想让它「只能 cd / python3 / head，不许 rm」，做不到。
+
+   写法：
+     "super_admin:terminal"                    → 整条放开（老写法，不变）
+     "super_admin:terminal(cd,python3,head)"   → 只允许这三个子命令
+     "super_admin:terminal(cd,python3*)"       → 支持前缀通配
+     "super_admin:terminal()"                  → 一个子命令都不给
+
+   判定（拆分 → 组合）：
+     一条命令 `cd /a && python3 x.py | head -3`
+       → 拆成 [cd, python3, head]
+       → 三个都在括号里 → 放行
+       → 任一不在 → 拒，且**在 toolCall 之前 return，桥根本不碰**
+
+   切分规则（宁可多切，不多放）：
+     - 按 && || ; | 换行 切段，引号内不切
+     - heredoc（<< 'EOF' ... EOF）正文整段跳过，不当命令
+     - 每段跳过前导 `VAR=val` 环境变量赋值
+     - 取首词；路径形态（./x、/x/y）取 basename
+     - 取不到首词 → 拒
+ */
+
+/* 按 shell 分隔符切段。返回 [{ text, isHeredocBody }] 或简化成字符串数组。 */
+function splitCommands(cmd) {
+    var s = String(cmd == null ? "" : cmd);
+    var out = [];
+    var cur = "";
+    var i = 0;
+    var n = s.length;
+    var quote = "";       /* 当前引号：' 或 " 或空 */
+    var heredocTag = "";  /* heredoc 结束标记，非空时进入正文模式 */
+    var heredocBody = false;
+
+    while (i < n) {
+        var c = s.charAt(i);
+        var c2 = s.substr(i, 2);
+
+        /* heredoc 正文模式：整行读到下一次标记行 */
+        if (heredocBody) {
+            var nl = s.indexOf("\n", i);
+            if (nl < 0) { i = n; break; }
+            var line = s.slice(i, nl);
+            i = nl + 1;
+            if (heredocTag && line.trim() === heredocTag) {
+                heredocBody = false;
+                heredocTag = "";
+            }
+            continue;   /* 正文内容一律不看 */
+        }
+
+        /* 引号处理 */
+        if (quote) {
+            cur += c;
+            if (c === "\\" && i + 1 < n) { cur += s.charAt(i + 1); i += 2; continue; }
+            if (c === quote) quote = "";
+            i++;
+            continue;
+        }
+        if (c === "'" || c === '"') { quote = c; cur += c; i++; continue; }
+        if (c === "\\" && i + 1 < n) { cur += c + s.charAt(i + 1); i += 2; continue; }
+
+        /* heredoc 起点：<< 或 <<- 后跟标记 */
+        if (c2 === "<<") {
+            var rest = s.slice(i, s.indexOf("\n", i) < 0 ? n : s.indexOf("\n", i));
+            var mh = rest.match(/<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/);
+            if (mh) {
+                heredocTag = mh[1];
+                /* 到这一行末都算当前段的一部分（含 << 及标记） */
+                var nlh = s.indexOf("\n", i);
+                if (nlh < 0) { cur += s.slice(i); i = n; break; }
+                cur += s.slice(i, nlh);
+                i = nlh + 1;
+                heredocBody = true;
+                continue;
+            }
+        }
+
+        /* 分隔符 */
+        if (c2 === "&&" || c2 === "||") {
+            if (cur.trim()) out.push(cur.trim());
+            cur = "";
+            i += 2;
+            continue;
+        }
+        if (c === ";" || c === "|" || c === "\n") {
+            /* 单 | 与单 ; 与换行都切；|| 已在上面处理 */
+            if (cur.trim()) out.push(cur.trim());
+            cur = "";
+            i++;
+            continue;
+        }
+        cur += c;
+        i++;
+    }
+    if (heredocBody) {
+        /* 走到结尾 heredoc 没闭合：不算错，正文已全跳过 */
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+}
+
+/* 从一段命令里取真正的首词（跳过 VAR=val 赋值、重定向、常见前缀） */
+function firstWordOf(seg) {
+    var s = String(seg || "").trim();
+    if (!s) return "";
+    /* 循环剥掉前导的赋值 / 重定向 / 前导 ( { */
+    var guard = 0;
+    while (s && guard++ < 10) {
+        /* VAR=value 形式 */
+        var mv = s.match(/^[A-Za-z_][A-Za-z0-9_]*=/);
+        if (mv) {
+            /* 跳到这个 token 结尾（考虑引号） */
+            var k = 0, q = "";
+            while (k < s.length) {
+                var ch = s.charAt(k);
+                if (q) { if (ch === "\\") k += 2; else { if (ch === q) q = ""; k++; } continue; }
+                if (ch === "'" || ch === '"') { q = ch; k++; continue; }
+                if (ch === " " || ch === "\t") break;
+                k++;
+            }
+            s = s.slice(k).trim();
+            continue;
+        }
+        /* 前导重定向 2>&1 / >file / <file */
+        var mr = s.match(/^[0-9]*[<>]+[^ \t]*/);
+        if (mr) { s = s.slice(mr[0].length).trim(); continue; }
+        /* 前导 ( { */
+        if (s.charAt(0) === "(" || s.charAt(0) === "{") { s = s.slice(1).trim(); continue; }
+        break;
+    }
+    if (!s) return "";
+    /* 取首个 token */
+    var m = s.match(/^("[^"]*"|'[^']*'|[^\s]+)/);
+    if (!m) return "";
+    var w = m[1].replace(/^["']|["']$/g, "");
+    /* 去掉可能的尾随重定向 */
+    w = w.replace(/[<>].*$/, "");
+    if (!w) return "";
+    /* 路径形态取 basename */
+    if (w.indexOf("/") >= 0) {
+        var parts = w.split("/");
+        w = parts[parts.length - 1] || w;
+    }
+    return w;
+}
+
+/* 一条命令拆出所有子命令（去重、保持顺序） */
+function subCmdsOf(toolName, args) {
+    var n = String(toolName || "");
+    /* 只对带 command 的工具做子命令判定；其它工具返回 null = 无子命令概念 */
+    if (!/(^|:)terminal$/.test(n) && !/(^|:)shell$/.test(n)) return null;
+    var cmd = "";
+    if (args && typeof args === "object") {
+        cmd = String(args.command != null ? args.command : (args.cmd != null ? args.cmd : ""));
+    }
+    if (!cmd.trim()) return null;
+    var segs = splitCommands(cmd);
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < segs.length; i++) {
+        var w = firstWordOf(segs[i]);
+        if (!w) continue;
+        if (seen[w]) continue;
+        seen[w] = 1;
+        out.push(w);
+    }
+    return out;
+}
+
+/* 解析一条白名单写法：`name(sub1,sub2)` → { name, subs }；没括号 subs=null（整条放开） */
+function parsePat(pat) {
+    var p = String(pat || "").trim();
+    if (!p) return { name: "", subs: null };
+    var i = p.indexOf("(");
+    if (i < 0 || p.charAt(p.length - 1) !== ")") return { name: p, subs: null };
+    var name = p.slice(0, i).trim();
+    var inner = p.slice(i + 1, p.length - 1).trim();
+    var subs = [];
+    if (inner) {
+        var parts = inner.split(",");
+        for (var k = 0; k < parts.length; k++) {
+            var one = String(parts[k] || "").trim();
+            if (one) subs.push(one);
+        }
+    }
+    return { name: name, subs: subs };
+}
+
+/* 单个子命令是否在允许列表里；allowSubs 为 null = 整条放开 */
+function subAllowed(sub, allowSubs) {
+    if (allowSubs === null) return true;
+    if (!allowSubs || !allowSubs.length) return false;
+    if (!sub) return false;
+    for (var i = 0; i < allowSubs.length; i++) {
+        var a = String(allowSubs[i] || "");
+        if (!a) continue;
+        if (a === sub) return true;
+        if (a.indexOf("*") >= 0) {
+            try { if (new RegExp(globToRegExp(a)).test(sub)) return true; } catch (e) {}
+        }
+    }
+    return false;
+}
+
+/* 工具名 + 所有子命令双重校验。拒绝时返回 { ok:false, why }。
+   subs 为 null（不是 terminal/shell）→ 只看工具名。 */
+function checkToolAndSub(toolName, args, allowed) {
+    var list = allowed || [];
+    if (!list.length) return { ok: false, why: "允许列表为空，一个工具都用不了（留空=全拒，要全开传 all=true）" };
+
+    var subs = subCmdsOf(toolName, args);
+    var matchedName = false;
+    var bestWhy = "";
+
+    for (var i = 0; i < list.length; i++) {
+        var pp = parsePat(list[i]);
+        if (!pp.name) continue;
+        if (!matchOne(toolName, pp.name)) continue;
+        matchedName = true;
+        if (pp.subs === null) return { ok: true, why: "" };   /* 整条放开 */
+        if (subs === null) {
+            /* 该工具带 command 但取不到子命令：拒（无法证明合规） */
+            bestWhy = "取不到子命令，无法校验：" + toolName;
+            continue;
+        }
+        /* 逐个检查：必须全部命中 */
+        var bad = "";
+        for (var j = 0; j < subs.length; j++) {
+            if (!subAllowed(subs[j], pp.subs)) { bad = subs[j]; break; }
+        }
+        if (!bad) return { ok: true, why: "" };
+        bestWhy = "子命令不在允许范围：「" + bad + "」。本命令拆出 [" + subs.join(", ") + "]，允许 [" + pp.subs.join(", ") + "]";
+    }
+
+    if (!matchedName) {
+        return { ok: false, why: "工具不在允许范围：" + toolName + "。允许：" + list.join(", ") };
+    }
+    return { ok: false, why: bestWhy || "子命令校验失败：" + toolName };
+}
+
 function extractPaths(args) {
     var out = [];
     if (!args || typeof args !== "object") return out;
@@ -579,11 +823,12 @@ async function runOne(ctx, request) {
     var args = (request && request.args && typeof request.args === "object") ? request.args : {};
     if (!name) return { ok: false, tool: rawName, error: "缺少 tool" };
     if (isRecursive(name)) return { ok: false, tool: name, error: "禁止递归派子代理（名字以 subagent 开头的一律拒绝）" };
-    /* 【第一百零八轮】回到纯白名单：留空 = 一个工具都用不了，all = 全开。
-       第一百零七轮的括号子命令语法已撤 —— 主人明确要求「还是沿用 allow tool 的方式」。
-       拒绝仍然在 toolCall 之前：matchAllowed 不过就直接 return，桥不碰。 */
-    if (!matchAllowed(name, ctx.allowed)) {
-        return { ok: false, tool: name, error: "工具不在允许范围：" + name + "。允许：" + (ctx.allowed || []).join(", ") };
+    /* 【第一百零九轮】工具名 + 全部子命令双重校验。
+       子命令不在白名单就直接返回，**根本不调 toolCall** —— 桥不碰。
+       老写法 `super_admin:terminal` 不带括号 = 整条放开，行为不变。 */
+    var gate = checkToolAndSub(name, args, ctx.allowed);
+    if (!gate.ok) {
+        return { ok: false, tool: name, error: gate.why };
     }
     var write = isWriteTool(name);
     var noPathGuard = false;
@@ -599,9 +844,12 @@ async function runOne(ctx, request) {
             : ((args.params && typeof args.params === "object") ? args.params : {});
         if (!inner) return { ok: false, tool: name, error: "run_tool 缺少内层 tool" };
         if (isRecursive(inner)) return { ok: false, tool: name, error: "禁止递归派子代理（内层 " + inner + "）" };
-        /* 内层工具也必须在白名单里，否则 run_tool 就成了白名单后门 */
-        if (!matchAllowed(inner, ctx.allowed)) {
-            return { ok: false, tool: name, error: "内层工具不在允许范围：" + inner };
+        /* 内层工具也必须在白名单里，否则 run_tool 就成了白名单后门。
+           【第一百零九轮】内层同样要走子命令检查 —— 否则
+           `run_tool{terminal, "cd /a && rm -rf x"}` 能绕过 `terminal(cd)`。 */
+        var innerGate = checkToolAndSub(inner, innerArgs, ctx.allowed);
+        if (!innerGate.ok) {
+            return { ok: false, tool: name, error: "内层校验失败：" + innerGate.why };
         }
         /* 内层是写类才需要过写边界；只读工具不必拦 */
         if (isWriteTool(inner)) {
@@ -811,6 +1059,12 @@ module.exports = {
     isRecursive: isRecursive,
     matchAllowed: matchAllowed,
     matchOne: matchOne,
+    splitCommands: splitCommands,
+    firstWordOf: firstWordOf,
+    subCmdsOf: subCmdsOf,
+    parsePat: parsePat,
+    subAllowed: subAllowed,
+    checkToolAndSub: checkToolAndSub,
     globToRegExp: globToRegExp,
     cleanToolName: cleanToolName,
     extractPaths: extractPaths,

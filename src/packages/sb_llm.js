@@ -59,7 +59,22 @@ function runToolSchema(allowed) {
     var allOpen = false; /* allowed 里有 "*" = 全放开 */
 
     for (var i = 0; i < list.length; i++) {
-        var name = String(list[i] || "").trim();
+        var raw = String(list[i] || "").trim();
+        if (!raw) continue;
+        /* 【第一百零九轮】剥掉子命令括号：`super_admin:terminal(cd,ls)` → 工具名 terminal。
+           括号里的子命令不体现在 schema 名字里（模型看到的仍是 terminal），
+           实际拦截在 sb_tools.checkToolAndSub 做，拒绝点在 toolCall 之前。 */
+        var name = raw;
+        var subNote = "";
+        var pi = raw.indexOf("(");
+        if (pi > 0 && raw.charAt(raw.length - 1) === ")") {
+            name = raw.slice(0, pi).trim();
+            var subInner = raw.slice(pi + 1, raw.length - 1).trim();
+            subNote = subInner
+                ? ("\n【本任务只允许这些子命令】" + subInner
+                   + "（一条命令可以用 && || ; | 串联多个，但每一段的命令都必须在上面这份名单里，否则本次调用会被直接拒绝）")
+                : "\n【本任务不允许任何子命令】";
+        }
         if (!name) continue;
         /* 纯 * = 全放开：不是「通配收进兜底」，而是把内置表整表展开 */
         if (name === "*") { allOpen = true; continue; }
@@ -72,7 +87,7 @@ function runToolSchema(allowed) {
             type: "function",
             function: {
                 name: meta.name,
-                description: meta.description,
+                description: String(meta.description || "") + subNote,
                 parameters: meta.parameters
             }
         });

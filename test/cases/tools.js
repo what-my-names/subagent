@@ -140,18 +140,15 @@ if (L && typeof L.runToolSchema === 'function') {
     A.chk('sb_llm 可 require 且导出 runToolSchema', false, '模块加载失败');
 }
 
-/* ── 第一百零八轮：纯白名单（留空全拒，all 全开）+ 零工具结果打标 ── */
+/* ── 第一百零八轮：纯白名单（留空全拒，all 全开）── */
 (function () {
     var T = require('../../src/packages/sb_tools.js');
-    var TK = A.src('packages/sb_task.js');
     A.chk('留空全拒', T.matchAllowed('read_file', []) === false);
     A.chk('具体工具放行', T.matchAllowed('read_file', ['read_file']) === true);
     A.chk('未列出的拒', T.matchAllowed('super_admin:terminal', ['read_file']) === false);
     A.chk('* 全开', T.matchAllowed('super_admin:terminal', ['*']) === true);
     A.chk('包工具精确匹配', T.matchAllowed('super_admin:terminal', ['super_admin:terminal']) === true);
     A.chk('包工具通配', T.matchAllowed('super_admin:terminal', ['super_admin:*']) === true);
-    A.chk('零工具结果加警告', TK.indexOf('本任务没有任何工具') >= 0);
-    A.chk('零工具打 no_tools 标', TK.indexOf('task.no_tools = true') >= 0);
 
     /* 被拒时 toolCall 不能被调（不传桥） */
     var called = 0;
@@ -164,6 +161,57 @@ if (L && typeof L.runToolSchema === 'function') {
             A.chk('白名单外 toolCall 零调用（不传桥）', called === 0);
         })
         .catch(function (e) { A.chk('白名单外不应抛异常', false, String(e)); });
+})();
+
+/* ── 第一百零九轮：子命令级 allow tools（拆分组合 + 不传桥）── */
+(function () {
+    var T = require('../../src/packages/sb_tools.js');
+    function gate(cmd, allow) { return T.checkToolAndSub('super_admin:terminal', { command: cmd }, allow); }
+
+    /* 拆分 */
+    A.eq('拆 && | 成三段', JSON.stringify(T.splitCommands('cd /a && ls -la | head -3')),
+        JSON.stringify(['cd /a', 'ls -la', 'head -3']));
+    A.eq('拆 ; 和换行', JSON.stringify(T.subCmdsOf('super_admin:terminal', { command: 'ls; pwd\nwhoami' })),
+        JSON.stringify(['ls', 'pwd', 'whoami']));
+    A.eq('跳过环境变量前缀', JSON.stringify(T.subCmdsOf('super_admin:terminal', { command: 'FOO=1 BAR=2 ls -la' })),
+        JSON.stringify(['ls']));
+    A.eq('heredoc 正文不当命令', JSON.stringify(T.subCmdsOf('super_admin:terminal',
+        { command: "cd /a && python3 - << 'PYEOF'\nimport os\nos.system('rm -rf /x')\nPYEOF" })),
+        JSON.stringify(['cd', 'python3']));
+
+    /* 组合判定 */
+    A.chk('三段全授权 → 放行', gate('cd /x && ls | head -3', ['super_admin:terminal(cd,ls,head)']).ok === true);
+    A.chk('混入 rm → 拒', gate('cd /a && rm -rf /x', ['super_admin:terminal(cd,ls)']).ok === false);
+    A.chk('拒绝原因含被拦子命令', /「rm」/.test(gate('cd /a && rm -rf /x', ['super_admin:terminal(cd)']).why));
+    A.chk('heredoc 里 rm 不误拦', gate("cd /a && python3 - << 'PYEOF'\nrm -rf /x\nPYEOF",
+        ['super_admin:terminal(cd,python3)']).ok === true);
+    A.chk('前缀通配', gate('lsblk', ['super_admin:terminal(ls*)']).ok === true);
+    A.chk('空括号全拒', gate('ls', ['super_admin:terminal()']).ok === false);
+    A.chk('老写法整条放开', gate('rm -rf /x', ['super_admin:terminal']).ok === true);
+    A.chk('留空全拒', gate('ls', []).ok === false);
+    A.chk('all 全开', gate('rm -rf /x', ['*']).ok === true);
+    A.chk('非 terminal 工具不看子命令', T.checkToolAndSub('read_file', { path: '/x' }, ['read_file']).ok === true);
+
+    /* parseList 不能把括号里的逗号切碎（真机踩过：allowed_count=3 全是乱名字） */
+    var P = require('../../src/packages/sb_parse.js');
+    A.eq('parseList 保住括号整体', JSON.stringify(P.parseList('super_admin:terminal(cd,ls,head)')),
+        JSON.stringify(['super_admin:terminal(cd,ls,head)']));
+    A.eq('parseList 括号内空格归一', JSON.stringify(P.parseList('super_admin:terminal(cd, ls, head)')),
+        JSON.stringify(['super_admin:terminal(cd,ls,head)']));
+    A.eq('parseList 多工具仍能切', JSON.stringify(P.parseList('read_file, super_admin:terminal(cd,ls)')),
+        JSON.stringify(['read_file', 'super_admin:terminal(cd,ls)']));
+
+    /* 最关键的：被拒时 toolCall 零调用（不传桥） */
+    var called = 0;
+    var ctx = { allowed: ['super_admin:terminal(cd,ls)'], workspace: '/sdcard/x', roots: ['/sdcard/x'],
+        nextSeq: function () { return 1; }, loadUndo: function () { return []; },
+        appendUndo: function () {}, clearUndo: function () {}, toolCall: function () { called++; return { ok: true }; } };
+    T.runOne(ctx, { tool: 'super_admin:terminal', args: { command: 'ls && rm -rf /sdcard/x' } })
+        .then(function (r) {
+            A.chk('多命令混未授权 → runOne 失败', r.ok === false);
+            A.chk('多命令混未授权 → toolCall 零调用', called === 0);
+        })
+        .catch(function (e) { A.chk('多命令校验不应抛异常', false, String(e)); });
 })();
 
 A.finish();

@@ -769,7 +769,7 @@ A.eq('download_file 能提取出路径', TOOLS.extractPaths({ destination: '/x/a
 
 /* 洞3：run_tool 递归校验内层工具 */
 A.match('run_tool 拆内层工具名', A.src('packages/sb_tools.js'), /name === "run_tool"/);
-A.match('内层也走白名单', A.src('packages/sb_tools.js'), /内层工具不在允许范围/);
+A.match('内层也走白名单', A.src('packages/sb_tools.js'), /内层校验失败/);
 A.match('内层也走写边界', A.src('packages/sb_tools.js'), /checkWriteBoundary\(ctx, inner, innerArgs\)/);
 A.match('内层也拦递归', A.src('packages/sb_tools.js'), /禁止递归派子代理（内层/);
 
@@ -845,7 +845,13 @@ A.match('危险命令受开关控制', TS, /if \(allowDanger !== true\)/);
 A.nomatch('已删 CMD_READONLY', TS, /var CMD_READONLY/);
 A.nomatch('已删 CMD_BLOCK_RULES', TS, /var CMD_BLOCK_RULES/);
 A.nomatch('已删 splitCmdSegments', TS, /function splitCmdSegments/);
-A.nomatch('已删 firstWordOf', TS, /function firstWordOf/);
+/* 【第一百零九轮】firstWordOf 重新引入，但语义完全不同：
+   旧版（已删）用于「只读命令白名单」，把 sed/awk/find 当只读——那是个后门。
+   新版只用于「子命令级 allow tools」，判断每段命令的首词是否在授权名单里，
+   不做只读/可写的安全判断（那个交给 analyzeCommand）。 */
+A.match('firstWordOf 已按新语义重建', TS, /function firstWordOf\(seg\)/);
+A.match('splitCommands 存在', TS, /function splitCommands\(cmd\)/);
+A.match('checkToolAndSub 存在', TS, /function checkToolAndSub\(toolName, args, allowed\)/);
 A.nomatch('已删 command_policy 配置', A.src('packages/sb_config.js'), /command_policy/);
 A.nomatch('已删 command_allow 配置', A.src('packages/sb_config.js'), /command_allow/);
 A.nomatch('spawn 已无 command_policy 参数', A.src('packages/subagent.js'), /"name": "command_policy"/);

@@ -29,7 +29,7 @@ METADATA
         {
           "name": "tools",
           "type": "string",
-          "description": "允许的工具，逗号分隔。留空=一个都没有；* = 放开全部；包工具写 包名:工具名。支持子命令级白名单：super_admin:terminal(ls,cat,cd) 只允许这几个命令，其它命令在本地直接拒、不调桥；不写括号=整条放开。支持前缀通配 ls*。",
+          "description": "允许的工具，逗号分隔。留空=一个都没有（全拒）；传 all=true 才放开全部；也可写具体工具名或 包名:工具名。",
           "required": false
         },
         {
@@ -789,83 +789,6 @@ METADATA
           "required": false
         }
       ]
-    },
-    {
-      "name": "subagent_ls",
-      "description": "列目录。返回结构化条目（名字/类型/大小/修改时间），比读 ls 输出稳。只允许 /sdcard 与 外置存储根（STORAGE_ROOT） 之下。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "要列的目录，默认 /sdcard。支持 ~ 表示 /sdcard", "required": false },
-        { "name": "all", "type": "boolean", "description": "true=连隐藏文件（以 . 开头）一起列，默认不列", "required": false },
-        { "name": "limit", "type": "number", "description": "最多返回几项，默认 200，最大 500", "required": false }
-      ]
-    },
-    {
-      "name": "subagent_cat",
-      "description": "读文本文件。默认前 200 行，可按 start_line/lines 取区间；单次返回不超 200KB。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "文件绝对路径，必须在 /sdcard 或 外置存储根（STORAGE_ROOT） 之下", "required": true },
-        { "name": "start_line", "type": "number", "description": "从第几行开始读，从 1 开始，默认 1", "required": false },
-        { "name": "lines", "type": "number", "description": "读多少行，默认 200，最大 2000", "required": false }
-      ]
-    },
-    {
-      "name": "subagent_pwd",
-      "description": "看当前可操作范围与运行环境（包名/targetSdk/允许的根目录）。",
-      "parameters": []
-    },
-    {
-      "name": "subagent_find",
-      "description": "按文件名找文件。pattern 支持 * 与 ?（如 *.js、panel*）。逐层 list 实现，不调 find 命令。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "从哪个目录开始找，默认 /sdcard", "required": false },
-        { "name": "pattern", "type": "string", "description": "文件名通配符，必填，如 *.js", "required": true },
-        { "name": "depth", "type": "number", "description": "最多往下几层，默认 3，最大 8", "required": false },
-        { "name": "limit", "type": "number", "description": "最多返回几个，默认 50，最大 300", "required": false }
-      ]
-    },
-    {
-      "name": "subagent_grep",
-      "description": "在文件内容里搜关键词。返回 文件:行号:内容。跳过 1MB 以上文件。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "从哪个目录开始搜，默认 /sdcard/x", "required": false },
-        { "name": "keyword", "type": "string", "description": "要搜的关键词，必填，按子串匹配", "required": true },
-        { "name": "glob", "type": "string", "description": "只搜匹配的文件名，如 *.js；不传=所有文件", "required": false },
-        { "name": "case_sensitive", "type": "boolean", "description": "true=区分大小写，默认 false", "required": false },
-        { "name": "depth", "type": "number", "description": "最多往下几层，默认 3，最大 8", "required": false },
-        { "name": "limit", "type": "number", "description": "最多返回几行命中，默认 50，最大 300", "required": false }
-      ]
-    },
-    {
-      "name": "subagent_mkdir",
-      "description": "建目录，自动建父级（等同 mkdir -p）。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "要创建的目录绝对路径，必须在 /sdcard 或 外置存储根（STORAGE_ROOT） 之下", "required": true }
-      ]
-    },
-    {
-      "name": "subagent_copy",
-      "description": "复制或移动文件/目录。mode=copy 复制（含目录递归），mode=move 移动。",
-      "parameters": [
-        { "name": "from", "type": "string", "description": "源路径，必填", "required": true },
-        { "name": "to", "type": "string", "description": "目标路径，必填", "required": true },
-        { "name": "mode", "type": "string", "description": "copy=复制（默认）/ move=移动", "required": false }
-      ]
-    },
-    {
-      "name": "subagent_rm",
-      "description": "删除文件或目录。必须传 confirm=true 才真删；拒绝删 /sdcard 与 外置存储根（STORAGE_ROOT） 本身。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "要删的路径，必填", "required": true },
-        { "name": "confirm", "type": "boolean", "description": "必须传 true 才执行删除", "required": true }
-      ]
-    },
-    {
-      "name": "subagent_du",
-      "description": "统计目录占用（递归累加文件大小），返回总字节/文件数/目录数。",
-      "parameters": [
-        { "name": "path", "type": "string", "description": "要统计的目录，默认 /sdcard/x", "required": false },
-        { "name": "limit", "type": "number", "description": "最多扫多少个文件就停，默认 2000，最大 5000", "required": false }
-      ]
     }
   ]
 }
@@ -938,5 +861,3 @@ require("./sb_tool_cfg.js")(exports, { complete: complete, modelsTtl: MODELS_TTL
 require("./sb_tool_main.js")(exports, { complete: complete });
 /* ROOT 权限窗口：独立工具，不依赖群组。放在最后，确保 callerChatId 已就绪。 */
 require("./sb_tool_root.js")(exports, { complete: complete, callerChatId: callerChatId });
-/* 【第一百零六轮】常用文件/目录动作细分（ls/cat/pwd/find/grep/mkdir/copy/rm/du） */
-require("./sb_tool_shell.js")(exports, { complete: complete });

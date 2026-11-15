@@ -140,33 +140,30 @@ if (L && typeof L.runToolSchema === 'function') {
     A.chk('sb_llm 可 require 且导出 runToolSchema', false, '模块加载失败');
 }
 
-/* ── 第一百零七轮：子命令级白名单（不传桥）── */
+/* ── 第一百零八轮：纯白名单（留空全拒，all 全开）+ 零工具结果打标 ── */
 (function () {
     var T = require('../../src/packages/sb_tools.js');
-    A.chk('整条放开 rm 也过', T.checkToolAndSub('super_admin:terminal', { command: 'rm -rf /x' }, ['super_admin:terminal']).ok === true);
-    A.chk('terminal(ls) 放行 ls', T.checkToolAndSub('super_admin:terminal', { command: 'ls -la /x' }, ['super_admin:terminal(ls,cat)']).ok === true);
-    A.chk('terminal(ls) 拦 rm', T.checkToolAndSub('super_admin:terminal', { command: 'rm -rf /x' }, ['super_admin:terminal(ls,cat)']).ok === false);
-    A.chk('拦截原因含子命令名', /「rm」/.test(T.checkToolAndSub('super_admin:terminal', { command: 'rm -rf /x' }, ['super_admin:terminal(ls)']).why));
-    A.chk('前缀通配 ls*', T.checkToolAndSub('super_admin:terminal', { command: 'lsblk' }, ['super_admin:terminal(ls*)']).ok === true);
-    A.chk('空括号全拒', T.checkToolAndSub('super_admin:terminal', { command: 'ls' }, ['super_admin:terminal()']).ok === false);
-    A.chk('非 terminal 工具不看子命令', T.checkToolAndSub('read_file', { path: '/x' }, ['read_file']).ok === true);
+    var TK = A.src('packages/sb_task.js');
+    A.chk('留空全拒', T.matchAllowed('read_file', []) === false);
+    A.chk('具体工具放行', T.matchAllowed('read_file', ['read_file']) === true);
+    A.chk('未列出的拒', T.matchAllowed('super_admin:terminal', ['read_file']) === false);
+    A.chk('* 全开', T.matchAllowed('super_admin:terminal', ['*']) === true);
+    A.chk('包工具精确匹配', T.matchAllowed('super_admin:terminal', ['super_admin:terminal']) === true);
+    A.chk('包工具通配', T.matchAllowed('super_admin:terminal', ['super_admin:*']) === true);
+    A.chk('零工具结果加警告', TK.indexOf('本任务没有任何工具') >= 0);
+    A.chk('零工具打 no_tools 标', TK.indexOf('task.no_tools = true') >= 0);
 
-    /* 最关键：被拒时 toolCall 不能被调（不传桥） */
+    /* 被拒时 toolCall 不能被调（不传桥） */
     var called = 0;
-    var ctx = { allowed: ['super_admin:terminal(ls)'], workspace: '/sdcard/x', roots: ['/sdcard/x'],
+    var ctx = { allowed: ['read_file'], workspace: '/sdcard/x', roots: ['/sdcard/x'],
         nextSeq: function () { return 1; }, loadUndo: function () { return []; },
         appendUndo: function () {}, clearUndo: function () {}, toolCall: function () { called++; return { ok: true }; } };
-    /* 异步断言：e2e_all 在 setImmediate 后才 report，这里直接发异步任务即可被登记 */
-    (function () {
-        T.runOne(ctx, { tool: 'super_admin:terminal', args: { command: 'rm -rf /sdcard/x' } })
-            .then(function (r) {
-                A.chk('子命令被拒时 runOne 返回失败', r.ok === false);
-                A.chk('子命令被拒时 toolCall 零调用（不传桥）', called === 0);
-            })
-            .catch(function (e) {
-                A.chk('子命令被拒时 runOne 不应抛异常', false, String(e));
-            });
-    })();
+    T.runOne(ctx, { tool: 'super_admin:terminal', args: { command: 'ls' } })
+        .then(function (r) {
+            A.chk('白名单外 runOne 返回失败', r.ok === false);
+            A.chk('白名单外 toolCall 零调用（不传桥）', called === 0);
+        })
+        .catch(function (e) { A.chk('白名单外不应抛异常', false, String(e)); });
 })();
 
 A.finish();

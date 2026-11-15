@@ -20,7 +20,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 > 带了 CORS 头则是真逐字流式。判断方法：
 > `curl -sI -X OPTIONS -H 'Origin: http://localhost/subagent' <你的端点>`，看有没有 `access-control-allow-origin`。
 
-## 工具（32 个：23 大类）
+## 工具（23 个：23 大类）
 
 所有工具名都是大类，具体动作用参数区分。
 
@@ -42,23 +42,6 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 |---|---|
 | `subagent_group` | 群组管理。`action` = list / info / kick / unkick / perm / admit / delete / migrate |
 | `subagent_root` | ROOT 权限窗口。`action` = open / close / check / list。开窗返回 16 位识别码，拥有全部权限位（63），有效期最长 1440 分钟 |
-
-**文件操作细分（9 个）** —— 把「一条大命令」拆成结构化小工具，不用自己拼 shell：
-
-| 工具 | 做什么 | 主要参数 |
-|---|---|---|
-| `subagent_ls` | 列目录，返回结构化条目 | `path` 目录 · `all` 含隐藏 · `limit` 最多几项 |
-| `subagent_cat` | 读文本文件，可指定行区间 | `path` 文件 · `start_line` 起始行 · `lines` 读几行 |
-| `subagent_pwd` | 看可操作根目录与环境信息 | 无 |
-| `subagent_find` | 按文件名找文件 | `path` 起点 · `pattern` 通配符（*.js） · `depth` 层数 · `limit` 条数 |
-| `subagent_grep` | 在文件内容里搜关键词 | `path` 起点 · `keyword` 关键词 · `glob` 文件名过滤 · `case_sensitive` · `depth` · `limit` |
-| `subagent_mkdir` | 建目录（自动建父级） | `path` 目录 |
-| `subagent_copy` | 复制或移动 | `from` 源 · `to` 目标 · `mode` copy / move |
-| `subagent_rm` | 删除文件或目录 | `path` 路径 · `confirm` 必须 true |
-| `subagent_du` | 统计目录占用 | `path` 目录 · `limit` 最多扫几个文件 |
-
-> 这 9 个只允许操作 `/sdcard` 与 `外置存储根（STORAGE_ROOT）` 之下；`rm` 必须 `confirm=true`，且拒绝删除这两个根本身。
-> 复杂的一次性命令仍走 `super_admin:terminal`。不提供 `sudo` / `su` —— 要越权走 `subagent_root` 开窗。
 
 > 权限位：`READ=1` 读 / `WRITE=2` 推进 / `CREATE=4` 建子代理 / `DELETE=8` 删任务 / `KICK=16` 管成员 / `ROOT=32` 全量。
 > 预设：创始人 31、受邀 3、路人 1、ROOT 窗口 63。
@@ -118,7 +101,7 @@ src/
   manifest.json          ToolPkg 清单
   main.js                入口：注册 UI 路由 + 收件箱钩子
   packages/              后端（配置 / 任务 / LLM / 工具 / 钩子 / 消息总线）
-    subagent.js          32 个声明（23 大类），导出实现分散在 sb_tool_*.js
+    subagent.js          23 个声明（23 大类），导出实现分散在 sb_tool_*.js
     sb_config.js         配置读写、密钥环境变量、模型缓存
     sb_task.js           任务状态机与落盘
     sb_llm.js            端点解析、请求构造、模型列表

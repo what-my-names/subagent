@@ -62,7 +62,7 @@ if (missing.length) console.log('    缺失：' + missing.join(', '));
 /* METADATA 只声明 10 个大类 + 10 个面板保留名 = 20 */
 var declared = (SUB.match(/"name"\s*:\s*"subagent_/g) || []).length;
 /* 【第九十九轮】新增 subagent_wait 主工具，声明数 22 -> 23 */
-A.eq('METADATA 声明数量 = 32', declared, 32);
+A.eq('METADATA 声明数量 = 23', declared, 23);
 
 /* ── spawn 参数契约（合并后：tools/wait/budget/detail 替代旧三件） ── */
 A.match('spawn 有 task 必填', SUB, /"name"\s*:\s*"task"/);
@@ -110,7 +110,7 @@ A.chk('收件箱导出 add/list/remove/clear', /module\.exports = \{ add/.test(B
 /* ── 白名单硬拒绝 ── */
 A.chk('sb_tools 有 matchAllowed', /function matchAllowed|exports\.matchAllowed/.test(A.src('packages/sb_tools.js')));
 A.match('sb_tools 有 cleanToolName', A.src('packages/sb_tools.js'), /function cleanToolName/);
-A.match('runOne 先清洗再校验', A.src('packages/sb_tools.js'), /cleanToolName\(rawName\)[\s\S]{0,900}?checkToolAndSub/);
+A.match('runOne 先清洗再校验', A.src('packages/sb_tools.js'), /cleanToolName\(rawName\)[\s\S]{0,400}?matchAllowed/);
 
 /* ── 写前备份可撤回 ── */
 A.chk('TASK 有 undo 相关', /undo/i.test(TASK) || /undo/i.test(SUB));
@@ -659,28 +659,11 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.chk('done 清 error', T2.indexOf('成功完成必须清掉旧错误') >= 0);
 })();
 
-/* 第一百零六轮：shell 细分 9 个 + 自愈阈值 > LLM 超时 */
+/* 第一百零六轮保留项：自愈阈值必须大于 LLM 超时 */
 (function () {
-    var S = A.src('packages/sb_tool_shell.js');
-    var M = A.src('packages/subagent.js');
     var T2 = A.src('packages/sb_task.js');
-    ['ls','cat','pwd','find','grep','mkdir','copy','rm','du'].forEach(function (n) {
-        A.chk('shell 工具 ' + n, S.indexOf('E.subagent_' + n + ' = async function') >= 0);
-        A.chk('METADATA 声明 ' + n, M.indexOf('"subagent_' + n + '"') >= 0);
-    });
-    A.chk('路径白名单', S.indexOf('underSafeRoot') >= 0);
-    A.chk('rm 需 confirm', S.indexOf('params.confirm !== true') >= 0);
-    A.chk('拒删受保护根', S.indexOf('拒绝删除受保护的根目录') >= 0);
     A.chk('自愈阈值 6 分钟', T2.indexOf('PHASE_STUCK_MS = 6 * 60 * 1000') >= 0);
     A.chk('llm 阶段放宽到 10 分钟', T2.indexOf('PHASE_STUCK_LLM_MS = 10 * 60 * 1000') >= 0);
-})();
-
-/* 第一百零六轮：宿主返回值字段 + depth 语义 */
-(function () {
-    var S = A.src('packages/sb_tool_shell.js');
-    A.chk('list 取 entries 字段', S.indexOf('Array.isArray(r.entries)') >= 0);
-    A.chk('depth 从 0 开始', S.indexOf('await walk(base, 0)') >= 0);
-    A.chk('depth 边界用 >=', S.indexOf('depth >= maxDepth') >= 0);
 })();
 
 A.finish();

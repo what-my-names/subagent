@@ -56,6 +56,28 @@ function toast(msg, level) {
   var onTapFn = null;
   var onDoubleFn = null;
   var tapTimer = 0;
+  /* 【第九十七轮】双击进环不再只给 err。
+     主人原话：「右上角有一些弹窗，就是已关闭这些的状态，弹窗为什么不能双击弹射到中间」。
+     ok / warn / info 同样是通知，用户想凑到中间看、一起划掉，双击应该一样能用。
+     单击展开仍然只给 err（其他级别没有长内容可展开，点了展开反而莫名其妙）。 */
+  onDoubleFn = function () {
+    /* 【第九十二轮】双击改为进环形轮盘。
+       用户要的是「双击多个都能飞到中心，中心是一个上下滚动的圈」。
+       所以不再单条悬浮，而是把这条搬进 #ringBox 的圆柱里，
+       后面再双击别的就会一条条加进同一个圈。 */
+    try { clearTimeout(tapTimer); } catch (eT) {}
+    try { clearTimeout(rec.timer); } catch (eT2) {}
+    /* 停掉自动消失：进了轮盘就由用户手动关 */
+    rec.timer = null;
+    if (typeof ringPush === 'function') {
+      /* 先占住它，避免在堆叠里的计时器又把它杀掉 */
+      rec.inRing = true;
+      ringPush(el, rec);
+    } else {
+      /* 轮盘模块不在：退回旧行为 */
+      floatToast(el, rec);
+    }
+  };
   if (lv === 'err') {
     onTapFn = function () {
       /* 已经在悬浮态：单击直接关掉（不用再展开/收回） */
@@ -70,24 +92,6 @@ function toast(msg, level) {
           rec.timer = setTimeout(function () { killToast(rec); }, TST_LIFE.err);
         }
       }, 250);
-    };
-    onDoubleFn = function () {
-      /* 【第九十二轮】双击改为进环形轮盘。
-         用户要的是「双击多个都能飞到中心，中心是一个上下滚动的圈」。
-         所以不再单条悬浮，而是把这条搬进 #ringBox 的圆柱里，
-         后面再双击别的就会一条条加进同一个圈。 */
-      try { clearTimeout(tapTimer); } catch (eT) {}
-      try { clearTimeout(rec.timer); } catch (eT2) {}
-      /* 停掉自动消失：进了轮盘就由用户手动关 */
-      rec.timer = null;
-      if (typeof ringPush === 'function') {
-        /* 先占住它，避免在堆叠里的计时器又把它杀掉 */
-        rec.inRing = true;
-        ringPush(el, rec);
-      } else {
-        /* 轮盘模块不在：退回旧行为 */
-        floatToast(el, rec);
-      }
     };
   }
 

@@ -276,11 +276,51 @@ module.exports = function install(E, opts) {
            用户看到的「待开始」是因为 createTask 写的是 queued，要等第一次 advance 才变 running。
            但任务实际上马上要跑，所以这里直接标成 running，面板立刻显示「思考中」而不是「待开始」。
            注意：不写 phase=llm，因为还没真发请求；用 queued_next 表示「已排上，马上开跑」。 */
+        /* 【第九十七轮】wait=false 必须真的在后台跑起来。
+           踩过：这里只把 status 写成 running、phase 写成 queued_next，然后直接返回，
+           根本没调 advanceTask —— 任务停在「已排上」原地不动，
+           调用方看到「已建任务」以为在跑，实际永远不动，除非再手动 subagent_run。
+           现在：先落盘状态，再起一个不 await 的后台推进循环。
+           循环自己管步数上限与终态，异常一律落 failed，绝不静默。 */
         if (!wantWait) {
             task.status = "running";
             task.phase = "queued_next";
             task.phase_at = Date.now();
             try { await TASK.saveTask(task); } catch (eSP) {}
+            /* 后台跑：不 await，不阻塞本次返回。
+               用 setTimeout 0 让当前工具调用先返回，再开始推进。 */
+            var bgTaskId = String(task.id || "");
+            var bgMax = Number(task.max_steps || 20);
+            setTimeout(function () {
+                (async function () {
+                    var cur2 = await TASK.loadTask(bgTaskId);
+                    if (!cur2) return;
+                    var guard = 0;
+                    while (guard < bgMax) {
+                        guard++;
+                        var rr = await TASK.advanceTask(cfg, cur2);
+                        notifyDone(rr && rr.task);
+                        cur2 = (rr && rr.task) ? rr.task : cur2;
+                        var stB = String(cur2.status || "");
+                        if (stB === "done" || stB === "failed" || stB === "cancelled" || stB === "closed") break;
+                        /* 被别处推进（busy）时等一会儿再看，不重复推 */
+                        if (rr && rr.busy) { await new Promise(function (z) { setTimeout(z, 800); }); continue; }
+                        if (!rr || !rr.ok) break;
+                    }
+                })().catch(function (eBg) {
+                    try {
+                        TASK.loadTask(bgTaskId).then(function (tk) {
+                            if (!tk) return;
+                            var stE = String(tk.status || "");
+                            if (stE === "closed" || stE === "cancelled") return;
+                            tk.status = "failed";
+                            tk.error = "后台推进异常：" + String((eBg && eBg.message) || eBg);
+                            tk.phase = "idle";
+                            TASK.saveTask(tk);
+                        });
+                    } catch (e2) {}
+                });
+            }, 0);
         }
         if (wantWait) {
             /* waitMs=0 表示不设上限：一直推到 done/failed 或用户取消。

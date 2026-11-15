@@ -628,7 +628,12 @@ var _advancing = {};
    磁盘锁跨上下文可见。
    【僵死锁】带时间戳，超过 STALE_LOCK_MS 视为上一次推进已崩，允许抢占。
    万一真锁死了，删掉 cache/lock_<id>.json 即可解开。 */
-var STALE_LOCK_MS = 10 * 60 * 1000;
+/* 【第九十七轮】10 分钟改 90 秒。
+   踩过：一次推进崩了（桥断、宿主回收 JsEngine），锁文件留在盘上，
+   之后 10 分钟内任何推进都返回「该任务正在推进中，请稍后」——
+   用户点「继续推进」一直失败，看起来像彻底卡死。
+   单步超时默认 90 秒，所以 90 秒后锁必然已失效，可以直接抢占。 */
+var STALE_LOCK_MS = 90 * 1000;
 function lockPath(id) { return CFG.cacheDir() + "/lock_" + String(id || "x") + ".json"; }
 async function tryDiskLock(id) {
     if (!id) return { ok: true, stale: false };
@@ -648,13 +653,59 @@ async function tryDiskLock(id) {
     }
     return { ok: true, stale: !!old };
 }
+/* 【第九十七轮】查询「这个任务现在是否真有一处正在推进」。
+   内存锁 + 磁盘锁任一命中即算在跑。给 resume 用：
+   running 的任务只有在没锁时才允许重置成 queued。 */
+async function isAdvancing(id) {
+    var k = String(id || "");
+    if (!k) return false;
+    if (_advancing[k]) return true;
+    try {
+        var p = lockPath(k);
+        var raw = await readText(p);
+        if (!raw) return false;
+        var old = JSON.parse(raw);
+        if (!old || !old.at) return false;
+        /* 锁过期视为已崩，不算在跑 */
+        return (nowMs() - Number(old.at)) < STALE_LOCK_MS;
+    } catch (e) {
+        return false;
+    }
+}
+
 async function releaseDiskLock(id) {
     if (!id) return;
     try { await Tools.Files.deleteFile(lockPath(id), "android"); } catch (e) {}
 }
 
+/* 【第九十七轮】阶段卡死自愈。
+   踩过：LLM 调用挂住（端点连上但不返回、宿主 http timeout 没生效），
+   任务永久停在 running + phase=llm，面板一直转圈，用户点继续推进也被锁挡住。
+   这里在每次推进前先看：running 且 phase_at 超 3 分钟 → 认定上一次挂了，
+   落盘成 failed 并写清原因，让用户能重试。
+   只看 running：done/failed/cancelled/closed 不碰。 */
+var PHASE_STUCK_MS = 3 * 60 * 1000;
+async function healStuckPhase(task) {
+    if (!task) return task;
+    var st = String(task.status || "");
+    if (st !== "running") return task;
+    var at = Number(task.phase_at || 0);
+    if (!at) return task;
+    if ((nowMs() - at) < PHASE_STUCK_MS) return task;
+    /* 有活锁在跑就不算卡死，交给锁判 */
+    if (_advancing[String(task.id || "")]) return task;
+    task.status = "failed";
+    task.error = "上一次推进超过 3 分钟没有响应（阶段 " + String(task.phase || "?") + "），已自动标记失败。可直接点继续推进重试。";
+    task.phase = "idle";
+    task.phase_at = nowMs();
+    try { await saveTask(task); } catch (e) {}
+    return task;
+}
+
 async function advanceTask(cfg, task) {
     var _lk = String(task.id || "");
+    /* 推进前先自愈卡死阶段：否则锁和 running 标记会一起把任务钉死 */
+    try { await healStuckPhase(task); } catch (eH) {}
     if (_lk && _advancing[_lk]) return { ok: false, busy: true, task: task, message: "该任务正在推进中，请稍后" };
     var dk = await tryDiskLock(_lk);
     if (!dk.ok) {
@@ -804,12 +855,39 @@ async function _advanceTaskInner(cfg, task) {
             var freshSt = String(fresh.status || "");
             if (freshSt === "closed" || freshSt === "cancelled" || fresh.cancel === true) {
                 var keepSt = (freshSt === "closed") ? "closed" : "cancelled";
+                /* 【第九十七轮】中断不能把模型已经生成的内容扔掉。
+                   踩过：这里检测到取消就直接 return，res.content / res.reasoning 全丢，
+                   用户点停止后回去看，那半截思考与正文一个字都没有 —— 白花了 token。
+                   现在先把本轮已生成的内容落成正式 turn，再定终态。
+                   注意：只有真生成了东西才落盘，避免空 turn 污染上下文。 */
+                var _pc = String((res && res.content) || "");
+                var _pr = String((res && res.reasoning) || "");
+                if (_pc || _pr) {
+                    var _asst = { role: "assistant", content: _pc, reasoning: _pr };
+                    _asst.elapsed_ms = elapsed;
+                    _asst.interrupted = true;
+                    _asst.finish_reason = String((res && res.finishReason) || "cancelled");
+                    try {
+                        _asst.usage = { in: Number(res.usage && res.usage.in || 0), out: Number(res.usage && res.usage.out || 0), model: (res.model || profile.model || "") };
+                    } catch (eU2) {}
+                    task.turns.push(_asst);
+                    /* 用量照记：token 真花了，不记就对不上账 */
+                    try {
+                        task.step = Number(task.step || 0) + 1;
+                        task.usage.in = Number(task.usage.in || 0) + Number(res.usage && res.usage.in || 0);
+                        task.usage.out = Number(task.usage.out || 0) + Number(res.usage && res.usage.out || 0);
+                    } catch (eU3) {}
+                    task.interrupted_partial = true;
+                }
                 task.status = keepSt;
                 task.cancel = (keepSt === "cancelled");
                 task.phase = "idle";
                 task.phase_at = nowMs();
                 await saveTask(task);
-                return { ok: false, task: task, message: keepSt === "closed" ? "任务已关闭" : "任务已取消" };
+                return {
+                    ok: false, task: task,
+                    message: (keepSt === "closed" ? "任务已关闭" : "任务已取消") + (_pc || _pr ? "（已保存本轮生成的部分内容）" : "")
+                };
             }
         }
     } catch (eFresh) {}
@@ -1067,6 +1145,8 @@ async function migrateLegacy() {
 function dropCache(id) { _listCache.at = 0; _listCache.data = null; }
 
 module.exports = {
+    healStuckPhase: healStuckPhase,
+    isAdvancing: isAdvancing,
     tempRoot: tempRoot,
     groupsRoot: groupsRoot,
     newTaskId: newTaskId,

@@ -247,7 +247,9 @@ on('pagehide', shutdown);
     ['file_info', '文件信息', 0], ['file_exists', '文件存在', 0], ['file_grep', '文件搜索', 0], ['find_files', '找文件', 0],
     ['create_file', '新建文件', 1], ['edit_file', '编辑文件', 1], ['delete_file', '删除文件', 1], ['move_file', '移动文件', 1], ['copy_file', '复制文件', 1]
   ];
-  var ST_CN = { queued: '待开始', running: '运行中', done: '已完成', failed: '失败', closed: '已关闭', cancelled: '已停止' };
+  /* 【第九十七轮】interrupted 是展示层伪状态（running 但超 STALE_MS），必须在表里，
+   否则 stCn('interrupted') 会原样吐英文，用户在详情页看到 'interrupted'。 */
+  var ST_CN = { queued: '待开始', running: '运行中', done: '已完成', failed: '失败', closed: '已关闭', cancelled: '已停止', interrupted: '已中断' };
   /* 阶段文案：running 时不能只写「运行中」，用户要知道它此刻在干什么。
      llm=正在调模型（思考中），tool=正在跑工具，queued_next=已排上马上开跑。 */
   var PH_CN = { llm: '思考中', tool: '执行工具', queued_next: '即将开始', idle: '运行中' };
@@ -462,6 +464,12 @@ function warnMsg(m) { _say(m, 'warn'); }
     }
     if (kind === 'cancel') {
       S.advancing = false;
+      /* 【第九十七轮】停止必须顺手把续推定时器掐掉。
+         踩过：这里只置 advancing=false，advT 还在，700ms 后照样 advanceTask，
+         用户看到「已停止」然后任务又自己跑起来。 */
+      try { clearTimeout(S.advT); } catch (eCT3) {}
+      S.advT = null;
+      stopPoll();
       okMsg((r && r.message) || '已请求停止');
       if (S.cur) {
         /* 停止后立刻拉一次 trace：把已经产出的思考、正文、工具块都留在页面上，
@@ -530,6 +538,24 @@ function warnMsg(m) { _say(m, 'warn'); }
         S.streaming = false;
         okMsg('任务已停止');
         refreshList(true);
+      } else if (st2 === 'closed') {
+        /* 【第九十七轮】closed 也必须在这里收手。
+           踩过：这里只列了 done/failed/cancelled，关闭的任务落不进任何分支，
+           续推定时器 advT 和轮询都不停，界面上看着关了其实还在转。 */
+        stopPoll();
+        try { clearTimeout(S.advT); } catch (eCT) {}
+        S.advT = null;
+        setLive('');
+        S.streaming = false;
+        S.stopping = false;
+        refreshList(true);
+      } else if (st2 === 'interrupted') {
+        /* 展示层自愈出来的伪状态：说明后端卡住了，停手等用户点「继续推进」 */
+        stopPoll();
+        try { clearTimeout(S.advT); } catch (eCT2) {}
+        S.advT = null;
+        setLive('');
+        S.streaming = false;
       }
       return;
     }
@@ -908,10 +934,17 @@ function warnMsg(m) { _say(m, 'warn'); }
     /* 标题优先用任务描述；编号只是内部标识，不放到最上面给人看 */
     var ti = hit ? String(hit.title || '') : '';
     $('dtTitle').textContent = ti || '任务详情';
-    $('dtStatus').textContent = hit ? stCn(hit.status) : '加载中…';
+    /* 【第九十七轮】详情页必须和列表用同一套状态判断。
+       踩过：列表走 effStatus（超 STALE_MS 的 running 显示「已中断」），
+       详情页却直接 stCn(hit.status) 显示「运行中」。同一个任务两处说法不一样。
+       现在统一走 effStatus。 */
+    var stEff = hit ? effStatus(hit) : '';
+    $('dtStatus').textContent = hit ? stCn(stEff) : '加载中…';
     if (ti) $('dtStatus').title = id;   // 编号挂在状态行 tooltip 上，需要时可查
-    /* 刚创建的任务列表还没刷新回来时，别把已经设好的 queued/running 覆盖成空 */
-    S.curStatus = hit ? String(hit.status || '') : String(S.curStatus || '');
+    /* 刚创建的任务列表还没刷新回来时，别把已经设好的 queued/running 覆盖成空。
+       interrupted 是展示层自愈出来的伪状态，不能写进 curStatus（后端没这状态），
+       否则 syncDtBar 会把它当未知态、按钮判断全乱。 */
+    S.curStatus = hit ? (stEff === 'interrupted' ? 'interrupted' : String(hit.status || '')) : String(S.curStatus || '');
     /* 有缓存先秒显，同时在后台刷新。
        注意：流式进行中不能清 dtChat —— holder 就在里面，清掉等于把正在输出的内容抹了。
        这是「创建任务后内容一直空白」的直接原因：spawn 后 120ms 启动流式，
@@ -932,6 +965,12 @@ function warnMsg(m) { _say(m, 'warn'); }
     if (stNow === 'running') {
       setLive('上次的生成被中断，已保存已生成内容，点「继续推进」接着跑', true);
     }
+    /* 【第九十七轮】interrupted 也要说清楚。
+       列表写「已中断」，点进来一片空白还没提示，用户根本不知道发生了什么、该怎么办。
+       这里给一条明确的话：卡住了、内容还在、点右下角箭头能接着跑。 */
+    if (stNow === 'interrupted') {
+      setLive('这个任务在后端卡住了（超过 3 分钟没有更新）。已生成的内容都在，点右下角箭头接着跑。', true);
+    }
   }
   /* 操作条：根据状态决定显示「继续推进」还是「停止」 */
   function syncDtBar() {
@@ -944,7 +983,9 @@ function warnMsg(m) { _say(m, 'warn'); }
     /* 【关键】running 也要允许「继续推进」：面板退出时后端停在 running，
        用户回来看到的应该是「继续推进」而不是死等。真正的流式进行中会被
        runCur 的 STREAM.busy 守卫挡住，不会重复启动。 */
-    var canRun = !ended && !S.advancing && (st === 'queued' || st === 'failed' || st === 'cancelled' || st === 'running');
+    /* 【第九十七轮】interrupted 也要给「继续推进」：它本质是卡住的 running，
+       用户唯一的出路就是推一把。之前列表显示已中断，点进去既没停止也没推进，卡死。 */
+    var canRun = !ended && !S.advancing && (st === 'queued' || st === 'failed' || st === 'cancelled' || st === 'running' || st === 'interrupted');
     if ($('btnRun')) $('btnRun').style.display = canRun ? '' : 'none';
     if ($('btnStop')) $('btnStop').style.display = (running || queued) ? '' : 'none';
     /* 输入框：用户可手发消息的入口整个移除，追问走主代理 */
@@ -996,6 +1037,16 @@ function warnMsg(m) { _say(m, 'warn'); }
      /* 【第九十四轮】已关闭的任务不允许再推进。叉号的语义就是结束这个对话，
         这里必须硬拦，否则用户点一下又把它 resume 回 running。 */
      if (st === 'closed') { err('任务已关闭，需要继续请新建任务'); return; }
+     /* 【第九十七轮】interrupted 是前端判的「卡住了」，后端可能还写着 running。
+        这时不要走 resume（resume 会被锁拦住报「正在推进中」），
+        直接尝试推进；真卡死时后端锁 90 秒后自动过期，推得动。 */
+     if (st === 'interrupted') {
+       S.curStatus = 'running';
+       syncDtBar();
+       setLive('正在尝试重新推进…');
+       startRun(S.cur);
+       return;
+     }
      /* 【关键】running 不再直接拒绝。面板退出时后端会停在 running（流式没走完），
         用户回来点「继续推进」应该能接着跑，而不是被一句「任务正在运行」挡死。
         真正的流式进行中由下面 STREAM.busy 守卫拦住，不会重复启动。 */
@@ -3204,14 +3255,14 @@ document.addEventListener('visibilitychange', function () {
     var code = $('rootCode');
     var exp = d && d.expires_at ? Number(d.expires_at) : 0;
     if (!exp || exp <= Date.now()) {
-      if (st) st.textContent = '未开窗';
+      if (st) st.textContent = '未授权';
       if (row) row.style.display = 'none';
       if (btns) btns.style.display = 'none';
       try { clearInterval(ROOT_T.t); } catch (eR0) {}
       ROOT_T.t = null;
       return;
     }
-    if (st) st.textContent = '已开窗，剩余 ' + rootFmtLeft(exp - Date.now());
+    if (st) st.textContent = '已授权，剩余 ' + rootFmtLeft(exp - Date.now());
     if (row) row.style.display = '';
     if (btns) btns.style.display = '';
     if (code && d.code) code.value = String(d.code);
@@ -3222,7 +3273,7 @@ document.addEventListener('visibilitychange', function () {
         if (!s2) return;
         var left = exp - Date.now();
         if (left <= 0) { rootPaint(null); return; }
-        s2.textContent = '已开窗，剩余 ' + rootFmtLeft(left);
+        s2.textContent = '已授权，剩余 ' + rootFmtLeft(left);
       }, 1000);
     }
   }
@@ -3240,19 +3291,19 @@ document.addEventListener('visibilitychange', function () {
   }
   function rootOpen() {
     var mv = Number(($('inRootMin') && $('inRootMin').value) || 30);
-    if (!(mv >= 1 && mv <= 1440)) { err('有效分钟数要在 1 到 1440 之间'); return; }
+    if (!(mv >= 1 && mv <= 1440)) { err('分钟数要在 1 到 1440 之间'); return; }
     call('subagent:subagent_root', { action: 'open', minutes: mv, reason: '面板设置页手动开窗' }, 'rootOpen', function (r) {
-      if (r && r.success === false) { err(r.message || '开窗失败'); return; }
+      if (r && r.success === false) { err(r.message || '授权失败'); return; }
       var d = (r && r.data) || {};
       rootPaint(d.window || d);
-      okMsg('已开窗，识别码已显示');
+      okMsg('已授权，当前对话拿到全权限');
     });
   }
   function rootClose() {
     call('subagent:subagent_root', { action: 'close' }, 'rootClose', function (r) {
       if (r && r.success === false) { err(r.message || '收回失败'); return; }
       rootPaint(null);
-      okMsg('已收回 ROOT 权限');
+      okMsg('已收回权限');
     });
   }
 

@@ -422,23 +422,24 @@
         <span>ROOT 权限窗口</span>
       </div>
       <div class="cfg-block">
-        <div class="cb-lb">临时全量权限</div>
-        <div class="cb-sub">开窗后本对话拥有全部权限位（越权读写、跨群组可见、跳过写边界）。到期自动失效。</div>
+        <div class="cb-lb">临时授权（sudo）</div>
+        <div class="cb-sub">平时子代理只能在自己目录里干活。这里给当前对话临时开一次全权限，像 sudo 一样限时生效。</div>
         <div class="cb-row">
-          <input id="inRootMin" type="number" min="1" max="1440" value="30" placeholder="有效分钟数">
-          <button class="cb-ico" data-act="rootOpen" title="开窗">
+          <input id="inRootMin" type="number" min="1" max="1440" value="30" placeholder="分钟">
+          <button class="cb-ico" data-act="rootOpen" title="临时授权">
             <svg><use href="#i-check"/></svg>
           </button>
         </div>
-        <div class="root-state" id="rootState">未开窗</div>
+        <div class="root-state" id="rootState">未授权</div>
         <div class="root-code-row" id="rootCodeRow" style="display:none">
-          <div class="root-code-lb">识别码（16 位，复制给需要授权的 agent）</div>
+          <div class="root-code-lb">本次授权码（复制给别人，等于把 sudo 借出去；自己用不需要）</div>
           <input class="root-code-v" id="rootCode" readonly>
         </div>
         <div class="root-btns" id="rootBtns" style="display:none">
           <button class="btn sm" data-act="rootCheck">刷新状态</button>
-          <button class="btn sm danger" data-act="rootClose">收回权限</button>
+          <button class="btn sm danger" data-act="rootClose">立即收回</button>
         </div>
+        <div class="hint">能做什么：读写自己目录以外的文件、看到所有群组的任务、跳过写入范围检查。到期自动失效，也可以随时点「立即收回」。</div>
       </div>
 
       <!-- 版本更新已搬到主页最下方（用户要求：不放在配置页，会挤压保存按钮） -->

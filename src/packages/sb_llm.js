@@ -353,6 +353,72 @@ async function callAnthropic(cfg, profile, messages, allowed, level, timeoutMs) 
     };
 }
 
+/* 【第九十八轮】从正文里捞 XML 形式的工具调用。
+   支持几种真机见过的写法：
+     <tool_call>{"tool":"read_file","args":{...}}</tool_call>
+     <tool_call name="read_file">{"path":"..."}</tool_call>
+     <invoke><tool_name>x</tool_name><parameters>{...}</parameters></invoke>
+   拿不准就返回空数组，绝不瞎猜 —— 宁可让模型看到「没工具可调」，
+   也不要把半截乱码当成调用发出去。 */
+function pickXmlToolCalls(text) {
+    var out = [];
+    var s = String(text || "");
+    if (!s || s.indexOf("<") < 0) return out;
+
+    /* 写法一：<tool_call ...>JSON</tool_call> */
+    var re1 = /<tool_call\b([^>]*)>([\s\S]*?)<\/tool_call>/gi;
+    var m1;
+    while ((m1 = re1.exec(s)) !== null) {
+        var attrs = String(m1[1] || "");
+        var body = String(m1[2] || "").trim();
+        var nm = "";
+        var am = /name\s*=\s*["']([^"']+)["']/i.exec(attrs);
+        if (am) nm = am[1];
+        var obj = null;
+        try { obj = JSON.parse(body); } catch (e1) { obj = null; }
+        if (obj && typeof obj === "object") {
+            var nm2 = String(obj.tool || obj.name || nm || "");
+            var ar = (obj.args && typeof obj.args === "object") ? obj.args
+                   : ((obj.arguments && typeof obj.arguments === "object") ? obj.arguments
+                   : ((obj.parameters && typeof obj.parameters === "object") ? obj.parameters : {}));
+            if (nm2) out.push({ id: "call_xml_" + out.length, name: nm2, args: ar });
+        }
+    }
+
+    /* 写法二：<invoke>…<tool_name>x</tool_name>…<parameters>JSON</parameters>…</invoke> */
+    if (!out.length) {
+        var re2 = /<invoke\b[^>]*>([\s\S]*?)<\/invoke>/gi;
+        var m2;
+        while ((m2 = re2.exec(s)) !== null) {
+            var seg = String(m2[1] || "");
+            var nmM = /<tool_name>([\s\S]*?)<\/tool_name>/i.exec(seg);
+            var paM = /<parameters>([\s\S]*?)<\/parameters>/i.exec(seg);
+            if (!nmM) continue;
+            var nmI = String(nmM[1] || "").trim();
+            if (!nmI) continue;
+            var arI = {};
+            if (paM) { try { arI = JSON.parse(String(paM[1] || "{}")); } catch (e2) { arI = {}; } }
+            out.push({ id: "call_xml_" + out.length, name: nmI, args: arI });
+        }
+    }
+    return out;
+}
+
+/* 剥掉正文里的调用标记与残渣。
+   只删明确的标签块与孤立残片，不碰正常正文里的尖括号（如 3 < 5）。 */
+function stripCallMarkup(text) {
+    var s = String(text == null ? "" : text);
+    if (!s) return s;
+    s = s.replace(/<tool_call\b[^>]*>[\s\S]*?<\/tool_call>/gi, "");
+    s = s.replace(/<invoke\b[^>]*>[\s\S]*?<\/invoke>/gi, "");
+    /* 孤立残片：只有结束标签、没有开头的（真机见过 </arg_value></tool_call>） */
+    s = s.replace(/<\/?(?:arg_value|tool_calls?|arguments|parameters|tool_name)>/gi, "");
+    s = s.replace(/<\/(?:tool_call|invoke)>/gi, "");
+    /* 清理后可能留下成片空行 */
+    s = s.replace(/\n{3,}/g, "\n\n").trim();
+    return s;
+}
+
 async function callChat(cfg, profile, messages, allowed, level, timeoutMs) {
     if (String(profile.base_url || "").indexOf("mock://") === 0) {
         var seenTool = false;
@@ -424,12 +490,29 @@ async function callChat(cfg, profile, messages, allowed, level, timeoutMs) {
         toolCalls.push({ id: String(tc.id || ("call_" + i)), name: name, args: args });
     }
     var usage = res.json.usage || {};
+    /* 【第九十八轮】有些端点/模型不走标准 tool_calls，而是把调用写在 content 里，
+       形如 `... <tool_call>{"tool":"x","args":{...}}</tool_call>`，
+       或者更糟：整段 XML 片段直接漏进正文（真机见过 `terminal_func.dc7b93a28d</arg_value></tool_call>`）。
+       不清理的话：① 模型以为调了工具其实没调；② 这堆碎片会落盘成正式正文，用户看到乱码。
+       这里做两层：先从 content 里捞出真调用，再把残留标记剥掉。 */
+    var rawContent = String(msg.content || "");
+    var contentOut = rawContent;
+    if (!toolCalls.length && rawContent) {
+        var picked = pickXmlToolCalls(rawContent);
+        if (picked.length) {
+            toolCalls = picked;
+            contentOut = stripCallMarkup(rawContent);
+        }
+    } else if (rawContent) {
+        /* 已经有标准调用，正文里若还夹着残留标记也要清 */
+        contentOut = stripCallMarkup(rawContent);
+    }
     return {
         ok: true,
-        content: String(msg.content || ""),
+        content: contentOut,
         reasoning: String(msg.reasoning_content || msg.reasoning || ""),
         toolCalls: toolCalls,
-        finishReason: String((res.json.choices[0] || {}).finish_reason || ""),
+        finishReason: String((res.json.choices[0] || {}).finish_reason || "") || (toolCalls.length ? "tool_calls" : ""),
         usage: {
             in: Number(usage.prompt_tokens || 0),
             out: Number(usage.completion_tokens || 0),

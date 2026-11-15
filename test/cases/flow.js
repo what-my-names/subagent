@@ -460,4 +460,64 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.match('同 display 去重', ENV, /_byDisp\[keyD\]/);
 })();
 
+/* ── 【第九十七轮】中断/关闭链路的残留定时器 + 状态一致性 ── */
+(function () {
+    var P = A.src('ui/web/panel.js');
+    var T2 = A.src('packages/sb_task.js');
+
+    /* 详情页与列表状态一致 */
+    A.match('详情页用 effStatus', P, /var stEff = hit \? effStatus\(hit\)/);
+    A.match('interrupted 有中文', P, /interrupted: '已中断'/);
+    A.match('interrupted 可推进', P, /st === 'interrupted'\)/);
+
+    /* advance 分支认 closed / interrupted */
+    A.match('advance 认 closed', P, /else if \(st2 === 'closed'\)/);
+    A.match('advance 认 interrupted', P, /else if \(st2 === 'interrupted'\)/);
+
+    /* cancel 分支掐定时器 */
+    A.match('cancel 清 advT', P, /eCT3/);
+
+    /* 中断保存已生成内容 */
+    A.match('中断保存部分内容', T2, /已保存本轮生成的部分内容/);
+    A.match('中断标记 interrupted', T2, /_asst\.interrupted = true/);
+
+    /* 僵死锁 90 秒 */
+    A.match('僵死锁 90 秒', T2, /STALE_LOCK_MS = 90 \* 1000/);
+})();
+
+/* ── 【第九十七轮补】resume 不覆盖正在跑的任务 + interrupted 可推 ── */
+(function () {
+    var MAIN = A.src('packages/sb_tool_main.js');
+    var T2 = A.src('packages/sb_task.js');
+    var P = A.src('ui/web/panel.js');
+
+    /* resume 遇 running 先查锁 */
+    A.match('resume 查推进锁', MAIN, /var _busyRs = await TASK\.isAdvancing/);
+    A.match('resume 拒绝重复推', MAIN, /不要重复推/);
+
+    /* isAdvancing 导出且实现 */
+    A.match('isAdvancing 实现', T2, /async function isAdvancing\(id\)/);
+    A.match('isAdvancing 导出', T2, /isAdvancing: isAdvancing/);
+
+    /* interrupted 走直接推进而非 resume */
+    A.match('interrupted 直接推进', P, /if \(st === 'interrupted'\) \{[\s\S]{0,200}?startRun\(S\.cur\)/);
+    A.match('interrupted 有提示', P, /这个任务在后端卡住了/);
+})();
+
+/* ── 【第九十七轮补二】spawn(wait=false) 必须真在后台跑 ── */
+(function () {
+    var TK = A.src('packages/sb_tool_task.js');
+    A.match('spawn 后台推进', TK, /var bgTaskId = String\(task\.id \|\| ""\)/);
+    A.match('spawn 后台调 advance', TK, /TASK\.advanceTask\(cfg, cur2\)/);
+    A.match('后台异常落 failed', TK, /后台推进异常/);
+})();
+
+/* ── 【第九十七轮补三】阶段卡死自愈 ── */
+(function () {
+    var T2 = A.src('packages/sb_task.js');
+    A.match('阶段卡死自愈', T2, /async function healStuckPhase\(task\)/);
+    A.match('自愈在推进前调用', T2, /await healStuckPhase\(task\)/);
+    A.match('自愈有阈值', T2, /PHASE_STUCK_MS = 3 \* 60 \* 1000/);
+})();
+
 A.finish();

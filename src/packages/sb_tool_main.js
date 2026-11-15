@@ -300,6 +300,24 @@ module.exports = function install(E, opts) {
                 complete({ success: false, message: "任务已关闭，不能恢复。需要继续请新建任务。", data: { id: t.id, status: t.status } });
                 return;
             }
+            /* 【第九十七轮】running 的任务不能无条件重置成 queued。
+               踩过：面板把「running 超 3 分钟」显示成「已中断」，用户点继续推进，
+               前端先发 resume，后端不看状态直接改成 queued —— 正在跑的那一轮被覆盖，
+               结果变成两个推进循环打架（双份计费 + 丢步骤）。
+               规则：running 时只有「确实没有锁在跑」才允许重置；
+               锁还在说明真在跑，直接告诉调用方「正在跑，别重复推」。 */
+            var _stRs = String(t.status || "");
+            if (_stRs === "running") {
+                var _busyRs = await TASK.isAdvancing(t.id);
+                if (_busyRs) {
+                    complete({
+                        success: false,
+                        message: "任务正在推进中（后端锁未释放），不要重复推。若确认已卡死，等 90 秒锁过期后再试。",
+                        data: { id: t.id, status: t.status, busy: true }
+                    });
+                    return;
+                }
+            }
             t.status = "queued"; t.cancel = false; t.error = null;
             t.phase = "idle"; t.phase_at = Date.now();
             await TASK.saveTask(t);

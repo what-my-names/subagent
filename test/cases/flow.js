@@ -565,7 +565,7 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
 
     /* BUS 要有已读记录能力 */
     A.match('readIds 存在', BUS, /function readIds\(chatId\)/);
-    A.match('markRead 存在', BUS, /function markRead\(id\)/);
+    A.match('markRead 存在', BUS, /function markRead\(id, chatId\)/);
     A.match('readIds 导出', BUS, /readIds: readIds, markRead: markRead/);
 
     /* 清空前校验未读 */
@@ -574,7 +574,7 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.match('拒绝时给调用', TK, /请先逐条取：subagent_get/);
 
     /* 取结论时记已读 */
-    A.match('取结论记已读', MAIN, /BUS\.markRead\(tid\)/);
+    A.match('取结论记已读', MAIN, /BUS\.markRead\(tid, callerChatId\(\)\)/);
 })();
 
 /* ── 【第一百零二轮】收件箱硬拦截：未读>=3 时非读类工具一律拒 ── */
@@ -639,6 +639,24 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.chk('main 引入 slimOf', M.indexOf('var slimOf = CTX.slimOf') >= 0);
     A.chk('列表用 slimOf', M.indexOf('slimOf(shown[i])') >= 0);
     A.chk('列表限条数', M.indexOf('var capN = 20') >= 0);
+})();
+
+/* 第一百零五轮：已读表按对话隔离 + 去重回包解锁 */
+(function () {
+    var B = A.src('packages/sb_bus.js');
+    var M = A.src('packages/sb_tool_main.js');
+    var P = A.src('ui/web/panel.js');
+    A.chk('已读表按对话分桶', B.indexOf('按 chatId 分桶') >= 0);
+    A.chk('markRead 收 chatId', B.indexOf('function markRead(id, chatId)') >= 0);
+    A.chk('调用传 chatId', M.indexOf('BUS.markRead(tid, callerChatId())') >= 0);
+    A.chk('去重回包也解锁', P.indexOf('回包被丢弃时 onOk') >= 0);
+    A.chk('丢弃不当已最新', P.indexOf('已取消（有更新的检查在跑）') >= 0);
+})();
+
+/* 第一百零五轮补：成功完成清旧错误 */
+(function () {
+    var T2 = A.src('packages/sb_task.js');
+    A.chk('done 清 error', T2.indexOf('成功完成必须清掉旧错误') >= 0);
 })();
 
 A.finish();

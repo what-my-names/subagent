@@ -312,7 +312,7 @@ module.exports = function install(E, opts) {
                这条是「清空收件箱前必须先逐条读过」的凭据：
                只有走过这里（真把结论取出来看了），才允许后续 action=read 清空。 */
             if (params.id) {
-                try { BUS.markRead(tid); } catch (eMR) {}
+                try { BUS.markRead(tid, callerChatId()); } catch (eMR) {}
                 try { BUS.remove(tid); } catch (eR) {}
             }
             var tt = await TASK.loadTask(tid);

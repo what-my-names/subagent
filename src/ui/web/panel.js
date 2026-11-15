@@ -379,7 +379,13 @@ function warnMsg(m) { _say(m, 'warn'); }
         var ret = SBNative.call(JSON.stringify({ tool: tool, params: params || {}, kind: kind || '', id: id }));
         var fire = function (v) {
           if (!ALIVE) return;
-          if (kind && S.lastId[kind] > id) return;
+          if (kind && S.lastId[kind] > id) {
+            /* 【第一百零五轮】回包被丢弃时 onOk 不会执行 —— 带 loading 锁的调用
+               （updCheck 的 UPD.checking、cfg 的 keySaving 等）会永久卡在转圈。
+               这里补一句：丢弃也要把锁解开。 */
+            try { if (onOk) onOk({ success: true, data: {}, _dropped: true }, {}); } catch (eD) {}
+            return;
+          }
           var r = null; try { r = JSON.parse(v); } catch (eP) {}
           if (!r) { err('返回解析失败'); return; }
           /* silent：页面销毁期的桥调用，不打扰用户 */
@@ -3361,6 +3367,8 @@ document.addEventListener('visibilitychange', function () {
       return;
     }
     var d = r.data || {};
+    /* 回包被去重丢弃时 d 是空的，不能当成「已是最新」骗人 */
+    if (d._dropped) { updMsg('已取消（有更新的检查在跑）', 'warn'); return; }
     if (d.current && $('updCur')) $('updCur').textContent = d.current;
     UPD.release = d;
     if (!d.has_update) {

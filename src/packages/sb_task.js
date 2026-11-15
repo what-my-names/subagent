@@ -1034,6 +1034,11 @@ async function _advanceTaskInner(cfg, task) {
     } else {
         task.result = res.content || "";
         task.status = "done";
+        /* 【第一百零五轮】成功完成必须清掉旧错误。
+           踩过：任务曾因超时被标 failed 并写了 error，重跑成功后 status 变 done，
+           error 字段却残留 —— 列表里出现「已完成」却带「上一次推进超时」的矛盾状态，
+           用户以为又坏了。 */
+        task.error = null;
     }
     task.last = {
         moves: movesOf(moves),

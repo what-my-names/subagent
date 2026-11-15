@@ -81,28 +81,47 @@ function listAll() { return load(); }
    这里维护一份已读 id 表，清空前校验：还有没读过的就拒绝清空。
    存在内存 + SP 双写，与收件箱本身同一通道。 */
 var READ_KEY = "read_ids";
+/* 【第一百零五轮】已读表必须按对话隔离。
+   踩过：readIds(chatId) 收了 chatId 却根本没用，所有对话共用一张表 ——
+   A 对话读过的任务，B 对话清空时会被误认为「已读过」，硬拦截形同虚设。
+   现在按 chatId 分桶：{ "<chatId>": { "<taskId>": 1 } }。 */
 function readIds(chatId) {
+    var cid = String(chatId || "_default");
     try {
         var p = sp();
         if (!p) return {};
         var raw = String(p.getString(READ_KEY, "{}") || "{}");
-        var o = JSON.parse(raw);
+        var all = JSON.parse(raw);
+        if (!all || typeof all !== "object") return {};
+        var o = all[cid];
         return (o && typeof o === "object") ? o : {};
     } catch (e) { return {}; }
 }
-function markRead(id) {
+function markRead(id, chatId) {
     var k = String(id || "");
     if (!k) return;
+    var cid = String(chatId || "_default");
     try {
-        var o = readIds("");
+        var p = sp();
+        if (!p) return;
+        var raw = String(p.getString(READ_KEY, "{}") || "{}");
+        var all = JSON.parse(raw);
+        if (!all || typeof all !== "object") all = {};
+        var o = all[cid];
+        if (!o || typeof o !== "object") o = {};
         o[k] = 1;
-        /* 上限 200，防止无限增长 */
+        /* 单对话上限 200，防无限增长 */
         var keys = Object.keys(o);
         if (keys.length > 200) {
             for (var i = 0; i < keys.length - 200; i++) delete o[keys[i]];
         }
-        var p = sp();
-        if (p) p.edit().putString(READ_KEY, JSON.stringify(o)).apply();
+        all[cid] = o;
+        /* 对话桶上限 50，防整体膨胀 */
+        var cks = Object.keys(all);
+        if (cks.length > 50) {
+            for (var j = 0; j < cks.length - 50; j++) delete all[cks[j]];
+        }
+        p.edit().putString(READ_KEY, JSON.stringify(all)).apply();
     } catch (e) {}
 }
 function remove(id) {

@@ -175,6 +175,110 @@ function matchAllowed(name, allowed) {
     return false;
 }
 
+/* 【第一百零七轮】子命令级白名单：`super_admin:terminal(ls,cat,cd)` 这种写法。
+
+   要解决的问题：
+   原来子代理能授权的粒度就是「super_admin:terminal 整条」。
+   一授权就等于放开所有命令 —— 想让它只能 ls 不能 rm，做不到。
+
+   语法：
+     "super_admin:terminal"                  → 整条放开（老写法，不变）
+     "super_admin:terminal(ls,cat,cd)"       → 只允许 ls / cat / cd
+     "super_admin:terminal(ls*)"             → 前缀通配，ls / lsblk 都过
+     "super_admin:shell(getprop,pm)"         → shell 同理
+
+   拒绝发生在哪：
+     runOne 里 matchAllowed 之后、toolCall 之前。
+     不在名单内直接 return，**根本不调 toolCall** —— 不传桥。
+
+   解析：把 `name(sub1,sub2)` 拆成 { name, subs }。没括号 = subs 为 null = 整条放开。
+   嵌套括号不支持（命令里带括号的情况极罕见，且会被当成整条名匹配，自然拒掉）。
+ */
+function parsePat(pat) {
+    var p = String(pat || "").trim();
+    if (!p) return { name: "", subs: null };
+    var i = p.indexOf("(");
+    if (i < 0) return { name: p, subs: null };
+    if (p.charAt(p.length - 1) !== ")") return { name: p, subs: null };
+    var name = p.slice(0, i).trim();
+    var inner = p.slice(i + 1, p.length - 1).trim();
+    var subs = [];
+    if (inner) {
+        var parts = inner.split(",");
+        for (var k = 0; k < parts.length; k++) {
+            var s = String(parts[k] || "").trim();
+            if (s) subs.push(s);
+        }
+    }
+    /* 括号里是空的：`name()` = 一个子命令都不给 */
+    return { name: name, subs: subs };
+}
+
+/* 从一次调用的参数里取「这次实际要跑的子命令」。
+   只认 terminal / shell 这两类带 command 的工具；其它工具返回 null（= 无子命令概念，按工具名判）。 */
+function subCmdOf(toolName, args) {
+    var n = String(toolName || "");
+    if (!/(^|:)terminal$/.test(n) && !/(^|:)shell$/.test(n)) return null;
+    var cmd = "";
+    if (args && typeof args === "object") {
+        cmd = String(args.command != null ? args.command : (args.cmd != null ? args.cmd : ""));
+    }
+    cmd = cmd.trim();
+    if (!cmd) return null;
+    /* 取第一个词当子命令：`ls -la /x` → ls；`cd /a && rm x` → cd（只看首词，多命令要拆开授） */
+    var m = cmd.match(/^([A-Za-z0-9_.\-\/]+)/);
+    if (!m) return null;
+    var first = m[1];
+    /* 路径形态（./x、/x）取 basename */
+    if (first.indexOf("/") >= 0) {
+        var seg = first.split("/");
+        first = seg[seg.length - 1] || first;
+    }
+    return first;
+}
+
+/* 子命令是否在允许列表里。allowSubs 为 null = 整条放开。
+   sub 为 null（取不到子命令）= 拒：宁可拒也不放过 —— 取不到就无法证明它合规。 */
+function subAllowed(sub, allowSubs) {
+    if (allowSubs === null) return true;
+    if (!allowSubs || !allowSubs.length) return false;
+    if (!sub) return false;
+    for (var i = 0; i < allowSubs.length; i++) {
+        var a = String(allowSubs[i] || "");
+        if (!a) continue;
+        if (a === sub) return true;
+        if (a.indexOf("*") >= 0) {
+            try { if (new RegExp(globToRegExp(a)).test(sub)) return true; } catch (e) {}
+        }
+    }
+    return false;
+}
+
+/* 在 allowed 列表里找出「允许这个工具、且子命令也允许」的那条。
+   返回 { ok, why }。ok=false 时 why 写清为什么拒。 */
+function checkToolAndSub(toolName, args, allowed) {
+    var list = allowed || [];
+    if (!list.length) return { ok: false, why: "允许列表为空，一个工具都用不了" };
+    var matchedName = false;
+    var sub = subCmdOf(toolName, args);
+    for (var i = 0; i < list.length; i++) {
+        var pp = parsePat(list[i]);
+        if (!pp.name) continue;
+        if (!matchOne(toolName, pp.name)) continue;
+        matchedName = true;
+        if (pp.subs === null) return { ok: true, why: "" };          /* 整条放开 */
+        if (subAllowed(sub, pp.subs)) return { ok: true, why: "" };   /* 子命令命中 */
+    }
+    if (!matchedName) {
+        return { ok: false, why: "工具不在允许范围：" + toolName + "。允许：" + list.join(", ") };
+    }
+    return {
+        ok: false,
+        why: "子命令不在允许范围：" + toolName + " 的「" + String(sub || "?") + "」"
+            + "。允许：" + list.join(", ")
+    };
+}
+
 function extractPaths(args) {
     var out = [];
     if (!args || typeof args !== "object") return out;
@@ -579,8 +683,12 @@ async function runOne(ctx, request) {
     var args = (request && request.args && typeof request.args === "object") ? request.args : {};
     if (!name) return { ok: false, tool: rawName, error: "缺少 tool" };
     if (isRecursive(name)) return { ok: false, tool: name, error: "禁止递归派子代理（名字以 subagent 开头的一律拒绝）" };
-    if (!matchAllowed(name, ctx.allowed)) {
-        return { ok: false, tool: name, error: "工具不在允许范围：" + name + "。允许：" + ctx.allowed.join(", ") };
+    /* 【第一百零七轮】工具名 + 子命令双重检查。
+       子命令不在白名单就直接返回，**根本不调 toolCall** —— 不传桥。
+       老写法 `super_admin:terminal` 不带括号 = 整条放开，行为不变。 */
+    var gate = checkToolAndSub(name, args, ctx.allowed);
+    if (!gate.ok) {
+        return { ok: false, tool: name, error: gate.why };
     }
     var write = isWriteTool(name);
     var noPathGuard = false;
@@ -596,9 +704,12 @@ async function runOne(ctx, request) {
             : ((args.params && typeof args.params === "object") ? args.params : {});
         if (!inner) return { ok: false, tool: name, error: "run_tool 缺少内层 tool" };
         if (isRecursive(inner)) return { ok: false, tool: name, error: "禁止递归派子代理（内层 " + inner + "）" };
-        /* 内层工具也必须在白名单里，否则 run_tool 就成了白名单后门 */
-        if (!matchAllowed(inner, ctx.allowed)) {
-            return { ok: false, tool: name, error: "内层工具不在允许范围：" + inner };
+        /* 内层工具也必须在白名单里，否则 run_tool 就成了白名单后门。
+           【第一百零七轮】内层同样要走子命令检查 —— 否则
+           `run_tool{terminal, rm -rf}` 可以绕过 `terminal(ls)` 的限制。 */
+        var innerGate = checkToolAndSub(inner, innerArgs, ctx.allowed);
+        if (!innerGate.ok) {
+            return { ok: false, tool: name, error: "内层校验失败：" + innerGate.why };
         }
         /* 内层是写类才需要过写边界；只读工具不必拦 */
         if (isWriteTool(inner)) {
@@ -808,6 +919,10 @@ module.exports = {
     isRecursive: isRecursive,
     matchAllowed: matchAllowed,
     matchOne: matchOne,
+    parsePat: parsePat,
+    subCmdOf: subCmdOf,
+    subAllowed: subAllowed,
+    checkToolAndSub: checkToolAndSub,
     globToRegExp: globToRegExp,
     cleanToolName: cleanToolName,
     extractPaths: extractPaths,

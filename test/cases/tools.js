@@ -140,4 +140,33 @@ if (L && typeof L.runToolSchema === 'function') {
     A.chk('sb_llm 可 require 且导出 runToolSchema', false, '模块加载失败');
 }
 
+/* ── 第一百零七轮：子命令级白名单（不传桥）── */
+(function () {
+    var T = require('../../src/packages/sb_tools.js');
+    A.chk('整条放开 rm 也过', T.checkToolAndSub('super_admin:terminal', { command: 'rm -rf /x' }, ['super_admin:terminal']).ok === true);
+    A.chk('terminal(ls) 放行 ls', T.checkToolAndSub('super_admin:terminal', { command: 'ls -la /x' }, ['super_admin:terminal(ls,cat)']).ok === true);
+    A.chk('terminal(ls) 拦 rm', T.checkToolAndSub('super_admin:terminal', { command: 'rm -rf /x' }, ['super_admin:terminal(ls,cat)']).ok === false);
+    A.chk('拦截原因含子命令名', /「rm」/.test(T.checkToolAndSub('super_admin:terminal', { command: 'rm -rf /x' }, ['super_admin:terminal(ls)']).why));
+    A.chk('前缀通配 ls*', T.checkToolAndSub('super_admin:terminal', { command: 'lsblk' }, ['super_admin:terminal(ls*)']).ok === true);
+    A.chk('空括号全拒', T.checkToolAndSub('super_admin:terminal', { command: 'ls' }, ['super_admin:terminal()']).ok === false);
+    A.chk('非 terminal 工具不看子命令', T.checkToolAndSub('read_file', { path: '/x' }, ['read_file']).ok === true);
+
+    /* 最关键：被拒时 toolCall 不能被调（不传桥） */
+    var called = 0;
+    var ctx = { allowed: ['super_admin:terminal(ls)'], workspace: '/sdcard/x', roots: ['/sdcard/x'],
+        nextSeq: function () { return 1; }, loadUndo: function () { return []; },
+        appendUndo: function () {}, clearUndo: function () {}, toolCall: function () { called++; return { ok: true }; } };
+    /* 异步断言：e2e_all 在 setImmediate 后才 report，这里直接发异步任务即可被登记 */
+    (function () {
+        T.runOne(ctx, { tool: 'super_admin:terminal', args: { command: 'rm -rf /sdcard/x' } })
+            .then(function (r) {
+                A.chk('子命令被拒时 runOne 返回失败', r.ok === false);
+                A.chk('子命令被拒时 toolCall 零调用（不传桥）', called === 0);
+            })
+            .catch(function (e) {
+                A.chk('子命令被拒时 runOne 不应抛异常', false, String(e));
+            });
+    })();
+})();
+
 A.finish();

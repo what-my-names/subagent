@@ -769,7 +769,7 @@ A.eq('download_file 能提取出路径', TOOLS.extractPaths({ destination: '/x/a
 
 /* 洞3：run_tool 递归校验内层工具 */
 A.match('run_tool 拆内层工具名', A.src('packages/sb_tools.js'), /name === "run_tool"/);
-A.match('内层也走白名单', A.src('packages/sb_tools.js'), /内层工具不在允许范围/);
+A.match('内层也走白名单', A.src('packages/sb_tools.js'), /内层校验失败/);
 A.match('内层也走写边界', A.src('packages/sb_tools.js'), /checkWriteBoundary\(ctx, inner, innerArgs\)/);
 A.match('内层也拦递归', A.src('packages/sb_tools.js'), /禁止递归派子代理（内层/);
 

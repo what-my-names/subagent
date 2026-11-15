@@ -110,7 +110,7 @@ A.chk('收件箱导出 add/list/remove/clear', /module\.exports = \{ add/.test(B
 /* ── 白名单硬拒绝 ── */
 A.chk('sb_tools 有 matchAllowed', /function matchAllowed|exports\.matchAllowed/.test(A.src('packages/sb_tools.js')));
 A.match('sb_tools 有 cleanToolName', A.src('packages/sb_tools.js'), /function cleanToolName/);
-A.match('runOne 先清洗再校验', A.src('packages/sb_tools.js'), /cleanToolName\(rawName\)[\s\S]{0,400}?matchAllowed/);
+A.match('runOne 先清洗再校验', A.src('packages/sb_tools.js'), /cleanToolName\(rawName\)[\s\S]{0,900}?checkToolAndSub/);
 
 /* ── 写前备份可撤回 ── */
 A.chk('TASK 有 undo 相关', /undo/i.test(TASK) || /undo/i.test(SUB));

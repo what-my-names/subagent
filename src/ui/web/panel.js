@@ -500,13 +500,8 @@ function mathHtml(texEsc, display) {
     return html;
   }
   var LIST_TTL = 8000;
-  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, page: 'welcome', probed: false };
+  var S = { items: [], cur: null, sel: [], tools: null, dlg: null, think: 'medium', seq: 0, lastId: {}, keyOk: null, cfgModel: '', cfgProv: '', listAt: 0, listBusy: false, listUnlockT: null, allModels: [], modelsAt: 0, keySaving: false, keyFilled: false, curStatus: '', advancing: false, advT: null, taskDraft: '', streaming: false, curPhase: 'idle', curToolNow: '', bridgeDropped: 0, pollT: null, cfmYes: null, multi: false, selIds: {}, initAnim: false, initLoaded: false, page: 'welcome', probed: false, groupList: [], grpClosed: {}, thk: {}, thkFor: '', thkRaw: {}, grpCur: '' };
   var WRITE_RE = /(create_file|edit_file|delete_file|move_file|copy_file|write)/;
-  /* 【第八十三轮补丁C】群组展示状态：
-     groupList = 后端返回的群组清单（code/name/readonly/mask）
-     grpClosed = 列表页手动折叠过的分组 key 集合，刷新后保持折叠 */
-  S.groupList = [];
-  S.grpClosed = {};
   var HIGH = /(delete_file|move_file|terminal|shell)/;
   var FALLBACK = [
     ['read_file', '读文件', 0], ['read_file_part', '读文件片段', 0], ['list_files', '列目录', 0],
@@ -1214,7 +1209,14 @@ function warnMsg(m) { toast(m, 'warn'); }
         if (hay.indexOf(kw) >= 0) src.push(it0);
       }
     }
-    if (!src.length) { target.innerHTML = '<div class="empty small">' + (kw ? '没有匹配的任务。' : '还没有任务，点右下 ＋ 新建一个。') + '</div>'; return; }
+    /* 【第八十五轮】不能只按「任务数为 0」就判空。
+       群组可能是新建的、还没派任务，这时列表页仍要显示群组头（含详情入口）。
+       所以列表页的空判断要放宽：任务为空但群组非空时，交给 groupHtml 渲染。 */
+    var hasGroups = !!(S.groupList && S.groupList.length);
+    if (!src.length && (target === rbox || !hasGroups)) {
+      target.innerHTML = '<div class="empty small">' + (kw ? '没有匹配的任务。' : '还没有任务，点右下 ＋ 新建一个。') + '</div>';
+      return;
+    }
     /* 首屏（最近任务）保持平铺：只有 6 条，分组反而切割视线。
        列表页才是「按群组 / 按父 agent 分类」的完整视图。 */
     if (target === rbox) {
@@ -1314,6 +1316,18 @@ function warnMsg(m) { toast(m, 'warn'); }
         }
       }
       if (!canManage) g0 += '<div class="gi-tip">你没有管理权限（KICK 位），只能查看。</div>';
+      /* 【第八十六轮】删除群组：只给创始人看。
+         后端会二次校验创始人身份，前端这里只负责不误导别人点。
+         判据只用 my_mask === 31（创始人固定 31），不再依赖 S.chatId ——
+         前端拿不到可靠的 chatId，硬比会误判。 */
+      if (Number(g.my_mask != null ? g.my_mask : 0) === 31) {
+        g0 += '<div class="gi-del">'
+          + '<button class="gi-del-btn" data-act="grpDel" data-val="' + esc(c) + '">'
+          + '<svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/></svg>'
+          + '删除这个群组</button>'
+          + '<div class="gi-del-hint">群组会立刻消失，组内任务不会被删，会退回「未归属」。此操作不可恢复。</div>'
+          + '</div>';
+      }
       S.grpCur = c;
       openSheet('群组 ' + c, g0);
     });
@@ -1326,6 +1340,20 @@ function warnMsg(m) { toast(m, 'warn'); }
        3) 群组还没建对应任务时也显示（空群组不渲染，避免噪音）
      搜索时退化成平铺：结果跨组散落，分组反而难找。 */
   function groupHtml(src, searching) {
+    /* 【第八十五轮】整段包 try/catch。
+       分组渲染是整个列表页的最后一环，一旦这里抛异常，
+       上层 renderList 直接中断 → 页面只剩空容器，用户看到的就是「打不开」。
+       宁可退化成平铺，也不能让整个面板挂掉。 */
+    try {
+      return groupHtmlUnsafe(src, searching);
+    } catch (eG) {
+      try { if (window.console && console.warn) console.warn('groupHtml failed', eG); } catch (eL) {}
+      var hf2 = '';
+      for (var qi = 0; qi < src.length; qi++) { try { hf2 += taskRow(src[qi]); } catch (eR) {} }
+      return hf2;
+    }
+  }
+  function groupHtmlUnsafe(src, searching) {
     if (searching || S.multi) {
       var hl = '';
       for (var i = 0; i < src.length; i++) hl += taskRow(src[i]);
@@ -1334,6 +1362,11 @@ function warnMsg(m) { toast(m, 'warn'); }
     var gmap = {}, order = [];
     function bucket(key, title, sub) {
       if (!gmap[key]) { gmap[key] = { key: key, title: title, sub: sub || '', items: [] }; order.push(key); }
+      return gmap[key];
+    }
+    /* 轻量头：非群组的分组（父对话 / 无归属）不该长得像群组 */
+    function bucketLite(key, title, sub) {
+      if (!gmap[key]) { gmap[key] = { key: key, title: title, sub: sub || '', items: [], lite: true }; order.push(key); }
       return gmap[key];
     }
     for (var j = 0; j < src.length; j++) {
@@ -1347,23 +1380,50 @@ function warnMsg(m) { toast(m, 'warn'); }
         bucket('g:' + gc, gname, gsub).items.push(it);
       } else {
         var pc = String(it.parent_chat_id || '');
-        bucket('c:' + (pc || '_'), pc ? ('父对话 ' + pc.slice(-8)) : '无归属', pc ? pc : '').items.push(it);
+        /* 【第八十五轮】父对话 / 无归属走轻量头。
+           它们是「归类说明」，不是群组：没有码、没有成员、没有详情，
+           套真群组的沉底色 + sticky 顶栏看起来非常生硬。
+           无归属这一桶再淡一层：它只是「没挂任何父对话的任务」。 */
+        if (pc) bucketLite('c:' + pc, '父对话 ' + pc.slice(-8), pc).items.push(it);
+        else bucketLite('c:_', '未归属任何对话', '').items.push(it);
       }
+    }
+    /* 【第八十五轮】没有任务的群组也要显示。
+       踩过：这里以前只按任务建桶，于是「新建了群组但还没派任务」时整个群组
+       在列表里完全消失，用户以为群组没建成。
+       空群组照样给一个分组头（成员数 0），至少让用户看到码、能点进详情。 */
+    for (var gk = 0; gk < (S.groupList || []).length; gk++) {
+      var g1 = S.groupList[gk] || {};
+      var code1 = String(g1.code || '');
+      if (!code1) continue;
+      bucket('g:' + code1, g1.name ? g1.name : ('群组 ' + code1),
+             code1 + (g1.readonly ? '｜只读' : ''));
     }
     var html = '';
     for (var o = 0; o < order.length; o++) {
-      var b = gmap['#' + order[o]];
-      if (!b || !b.items.length) continue;
-      html += '<div class="grp-head" data-act="foldGrp" data-val="' + esc(order[o]) + '">'
+      var b = gmap[order[o]];
+      /* 【第八十五轮】空群组也要画分组头。
+         以前这里 `!b.items.length` 直接 continue，空群组整块消失。
+         现在只跳过「既没有任务、又不是真群组」的桶（即空的父对话桶）。 */
+      if (!b) continue;
+      var isRealGroup = !!gc0(order[o]);
+      if (!b.items.length && !isRealGroup) continue;
+      html += '<div class="grp-head' + (b.lite ? ' lite' : '') + '" data-act="foldGrp" data-val="' + esc(order[o]) + '">'
         + '<svg class="grp-chv' + (S.grpClosed && S.grpClosed[order[o]] ? ' closed' : '') + '" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>'
         + '<span class="grp-name">' + esc(b.title) + '</span>'
         + (b.sub ? '<span class="grp-code">' + esc(b.sub) + '</span>' : '')
         + '<span class="grp-n">' + b.items.length + '</span>'
         /* 群组头右侧的「详情」：只有真群组才给（父对话桶没有码可查） */
-        + (gc0(order[o]) ? '<button class="grp-info" data-act="grpInfo" data-val="' + esc(gc0(order[o])) + '" title="群组详情"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.5"/></svg></button>' : '')
+        + (isRealGroup ? '<button class="grp-info" data-act="grpInfo" data-val="' + esc(gc0(order[o])) + '" title="群组详情"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.5"/></svg></button>' : '')
         + '</div>';
-      if (!(S.grpClosed && S.grpClosed[order[o]])) {
+      if (!b.items.length) {
+        /* 空群组给一行说明，别让下面彻底空着显得像坏了 */
+        html += '<div class="grp-empty">这个群组还没有子代理任务</div>';
+      } else if (!(S.grpClosed && S.grpClosed[order[o]])) {
+        /* 【第八十六轮】展开时内容滑入，让「点了有反应」看得出来 */
+        html += '<div class="grp-body-anim">';
         for (var m = 0; m < b.items.length; m++) html += taskRow(b.items[m]);
+        html += '</div>';
       }
     }
     return html;
@@ -1831,21 +1891,24 @@ var SVG_CHEV = '<svg class="chv" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></s
        之前每条 turn 各自生成一个 .agent-block，一轮 25 步就被切成 25 个卡片。
        现在：从第一条 assistant 到最后一个 tool，共用一个 .agent-block，
        内部依次排列「思考过程」段 → 工具调用段 → 正文段，全部同一张卡。 */
-    /* 【第六十一轮】按任务状态决定默认展开还是收起。
-       用户原话：「这个是一个已经完成的任务，为什么不收起？」
-       运行中要展开看实时进展；已结束就收起来，别撑满一屏。 */
-    var live = (d.status === 'running' || d.status === 'queued');
-    var stInit = live ? '1' : '0';
+    /* 【第八十五轮】默认一律收起。
+       用户原话：「正常第一次进去，它不该是展开的呀，它应该是收起来的」。
+       旧逻辑按状态分：running 展开、已结束收起。
+       但运行中展开会把一屏全占满，用户进来先看到一大片思考正文，
+       还要手动往回折 —— 想看进展点一下就行，默认收起更省地方。
+       注意：这只是「默认值」，用户手动设过的档位仍由 S.thk 记忆优先。 */
+    var stInit = '0';
     /* 【第八十四轮】每个折叠段带一个稳定 key：turn 下标 + 段类型。
        重渲染时优先用用户手动设过的档位（S.thk），没设过才用默认 stInit。
        这就是「关上之后又自己打开」的根治点：之前每次重渲染都无条件回 stInit。 */
-    S.thk = S.thk || {};
+    /* 折叠记忆：S.thk 已在 S 对象里初始化，这里不再重复声明 */
     /* 【关键】折叠记忆必须按任务隔离。
        否则切到另一个任务时，"3:think" 这种下标键会撞上上一个任务的档位，
        表现为「打开新任务，思考块莫名是折叠的」。 */
     var sid = String(d.id || '');
     if (S.thkFor !== sid) { S.thk = {}; S.thkFor = sid; }
     S.thkRaw = {};   /* 本轮渲染实际用到的 key，用于清理删掉的 turn 的残留记忆 */
+    S.thkRaw = S.thkRaw || {};
     function thinkState(key) {
       if (Object.prototype.hasOwnProperty.call(S.thk, key)) return S.thk[key];
       return stInit;
@@ -2388,7 +2451,11 @@ document.addEventListener('visibilitychange', function () {
       if ($('inSteps') && o.steps) $('inSteps').value = o.steps;
       if ($('inTimeout') && o.timeout) $('inTimeout').value = o.timeout;
       if ($('inDepth') && o.depth !== undefined) $('inDepth').value = o.depth;
-      if (o.think && THINK_CN[o.think]) setThinkSlider(o.think);
+      /* 【第八十七轮·修 P0】原来写的是 THINK_CN[o.think]，但全文没有 THINK_CN 这个变量
+         （真正的常量叫 THINK_ORDER）。因为这行在 try 里，报错被吞掉不崩，
+         但「思考等级」永远不回填 —— 用户上次选的档位下次进新建页就丢了。
+         这里用 THINK_ORDER.indexOf 判断合法性，再调 setThinkSlider。 */
+      if (o.think && THINK_ORDER.indexOf(String(o.think)) >= 0) setThinkSlider(o.think);
       if (o.sel && o.sel.length) { S.sel = o.sel.slice(); syncSelLabel(); }
       /* 危险命令开关回填：先写真实值再重绘，两条路径共用 paintDanger */
       if ($('inDanger') && o.danger) { $('inDanger').value = o.danger ? '1' : '0'; }
@@ -2981,7 +3048,8 @@ document.addEventListener('visibilitychange', function () {
     var thinkEl = holder.querySelector('.sb-think');
     var bodyEl = holder.querySelector('.sb-body');
     var thinkBuf = '', bodyBuf = '';
-    /* 【第五十七轮】当前流式工具卡容器：一批工具共用一个卡，换轮时置空 */
+    /* 上一次已渲染的正文，用于跳过重复的 md() 重算 */
+    var lastBodyMd = '';
     var _streamToolCard = null;
     /* 【第五十八轮】当前流式卡片容器，思考段与工具段共用它 */
     var _streamBlock = null;
@@ -3029,7 +3097,14 @@ document.addEventListener('visibilitychange', function () {
           thinkEl.scrollTop = _prevTop;
         }
       }
-      if (bodyBuf) bodyEl.innerHTML = md(bodyBuf);
+      /* 【第八十七轮·修 P2】正文没变就不要重算 markdown。
+          md() 是全量重解析，流式过程中每个 delta 都重算一遍整段，
+         复杂度 O(n²) —— 几千字回复到后面明显掉帧。
+         这里做最短路径短路：内容与上次相同就直接跳过。 */
+      if (bodyBuf && bodyBuf !== lastBodyMd) {
+        lastBodyMd = bodyBuf;
+        bodyEl.innerHTML = md(bodyBuf);
+      }
       var c = $('dtChat');
       if (c) c.scrollTop = c.scrollHeight;
     }
@@ -3112,6 +3187,8 @@ document.addEventListener('visibilitychange', function () {
         return;
       }
       thinkBuf = ''; bodyBuf = '';
+      /* 新一轮的正文从头开始，短路缓存必须一起清，否则新内容会被误判为「没变」 */
+      lastBodyMd = '';
       /* 【第六十轮】_streamBlock 整轮复用不重置，_streamToolCard 每轮重开段 */
       _streamToolCard = null;
       setLive(depth === 0 ? '模型生成中…' : '继续推理…');
@@ -3190,21 +3267,26 @@ document.addEventListener('visibilitychange', function () {
            用户实测就是这个现象：先冒出 list_files 工具块，然后整块消失变成正文。 */
         try {
           if (thinkBuf || bodyBuf) {
-            /* 【第六十轮】正文也进同一个卡片 */
-            if (bodyBuf) {
-              var _txt = document.createElement('div');
-              _txt.className = 'agent-text';
-              _txt.innerHTML = md(bodyBuf);
-              if (!_blk) { _blk = document.createElement('div'); _blk.className = 'agent-block'; }
-              _blk.appendChild(_txt);
-            }
-            /* 【第六十轮】整轮共用一个 agent-block，不再每条新建 */
+            /* 【第八十七轮·修 P0】先建/复用 agent-block，再往里塞内容。
+               旧代码的错误：`var _blk` 在函数作用域内被声明两次，第二处
+               `var _blk = _streamBlock` 会把上面 `if (!_blk)` 新建的那个 div 覆盖掉。
+               体感后果：模型在调工具前写的那段说明正文，append 进了那个被覆盖的
+               局部 div，那个 div 从没插入 host，正文随它一起被 GC —— 用户只看到
+               思考段和工具行，正文凭空消失。
+               现在顺序是：先拿到稳定的 _blk，再往里 append，不会再被覆盖。 */
             var _blk = _streamBlock;
             if (!_blk || !_blk.parentNode) {
               _blk = document.createElement('div');
               _blk.className = 'agent-block';
               host.insertBefore(_blk, holder);
               _streamBlock = _blk;
+            }
+            /* 正文先入卡：这是模型在调工具前说的话，必须保留 */
+            if (bodyBuf) {
+              var _txt = document.createElement('div');
+              _txt.className = 'agent-text';
+              _txt.innerHTML = md(bodyBuf);
+              _blk.appendChild(_txt);
             }
             if (thinkBuf) {
               var _th = document.createElement('div');
@@ -3217,6 +3299,7 @@ document.addEventListener('visibilitychange', function () {
             }
             if (_blk.childNodes.length) host.insertBefore(_blk, holder);
             thinkBuf = ''; bodyBuf = '';
+            lastBodyMd = '';
             holder.innerHTML = '<div class="sb-think" data-state="0" style="display:none"></div>'
               + '<div class="sb-body md-body"></div>';
             thinkEl = holder.querySelector('.sb-think');
@@ -3609,41 +3692,33 @@ document.addEventListener('visibilitychange', function () {
       if ($('updNew')) $('updNew').style.display = 'none';
       return;
     }
-    /* 有新版本：填卡片 */
+    /* 【第八十六轮】检出新版 → 弹窗，不再往配置页写卡片。
+       用户原话：「更新提示应该是一个弹窗的形式，首先弹窗告诉你需要更新了，
+       然后下面有一个同意、一个取消，还有一个去官网下载」。 */
     updMsg('发现新版本 ' + d.latest, 'ok');
+    openUpdDlg(d);
+  }
+
+  /* 打开更新弹窗：填版本号、更新说明、包大小 */
+  function openUpdDlg(d) {
+    d = d || UPD.release || {};
+    UPD.release = d;
     if ($('updTag')) $('updTag').textContent = d.latest || '';
-    /* 更新说明默认折起：超过 3 行的才给「展开」按钮 */
+    UPD.notesOpen = false;
     if ($('updNotes')) {
-      var noteEl = $('updNotes');
-      var txt = d.notes || d.notes_full || '（该版本没有写更新说明）';
-      noteEl.textContent = txt;
-      noteEl.classList.remove('open');
-      /* 判断是否超长：临时撑开量高度，超过 3 行才显示展开按钮 */
-      var needMore = false;
-      try {
-        var wasOpen = noteEl.classList.contains('open');
-        noteEl.classList.add('open');
-        var fullH = noteEl.scrollHeight;
-        noteEl.classList.remove('open');
-        needMore = fullH > (noteEl.clientHeight + 4);
-        if (wasOpen) noteEl.classList.add('open');
-      } catch (eN) { needMore = String(txt).length > 90; }
-      if ($('updMore')) {
-        $('updMore').style.display = needMore ? '' : 'none';
-        $('updMore').textContent = '展开更新说明';
-      }
+      $('updNotes').textContent = String(d.notes || d.body || '本次更新没有附说明。');
+      $('updNotes').className = 'upd-notes';
     }
-    if ($('updSize')) {
-      var sz = Number(d.asset_size) || 0;
-      $('updSize').textContent = d.has_asset
-        ? ('更新包 ' + (sz > 0 ? fmtBytes(sz) : '大小未知') + (d.prerelease ? ' · 预发布版' : ''))
-        : '该版本没有上传 .toolpkg 资产，无法下载';
-    }
-    if ($('updDlBtn')) {
-      $('updDlBtn').style.display = d.has_asset ? '' : 'none';
-      $('updDlBtn').textContent = '下载更新包';
-    }
-    if ($('updNew')) $('updNew').style.display = '';
+    if ($('updMore')) $('updMore').style.display = 'inline-block';
+    if ($('updSize')) $('updSize').textContent = d.asset_size
+      ? ('更新包 ' + fmtSize(d.asset_size)) : '';
+    if ($('updDlBtn')) { $('updDlBtn').textContent = '同意更新'; $('updDlBtn').disabled = false; }
+    if ($('updMask')) $('updMask').classList.add('on');
+    if ($('updDlg')) $('updDlg').classList.add('on');
+  }
+  function closeUpdDlg() {
+    if ($('updMask')) $('updMask').classList.remove('on');
+    if ($('updDlg')) $('updDlg').classList.remove('on');
   }
 
   /* 展开 / 收起更新说明 */
@@ -4204,6 +4279,25 @@ document.addEventListener('visibilitychange', function () {
     /* 群组详情入口。注意 e.stopPropagation()：这个按钮在可折叠的分组头里，
        不拦会把点击冒泡成折叠，等于点详情顺手把列表收起来。 */
     if (act === 'grpInfo') { e.stopPropagation(); return openGrpInfo(val); }
+    /* 【第八十六轮】删除群组：二次确认。不可恢复动作，文案必须写清后果。 */
+    if (act === 'grpDel') {
+      e.stopPropagation();
+      var dc = String(val || '');
+      if (!dc) return;
+      openCfm('删除群组 ' + dc + '？',
+        '群组会立刻消失，此操作不可恢复。组内任务不会被删除，会退回「未归属」。',
+        function () {
+          call('subagent:subagent_group', { action: 'delete', code: dc }, 'grpAct', function (r2) {
+            if (r2 && r2.success === false) { err(r2.message || '删除失败'); return; }
+            okMsg((r2 && r2.message) || '已删除群组');
+            closeSheet();
+            S.groupList = [];
+            S.listAt = 0;
+            try { refreshList(true); } catch (eRf) {}
+          });
+        });
+      return;
+    }
     /* 剔除 / 解禁：val 是 "群组码|chatId" */
     if (act === 'grpKick' || act === 'grpUnkick') {
       e.stopPropagation();
@@ -4350,9 +4444,11 @@ document.addEventListener('visibilitychange', function () {
     if (act === 'doProbe') return probe();
     /* 版本更新（第三十轮） */
     if (act === 'updCheck') { hf(); return updCheck(true); }
-    if (act === 'updDownload') { hf(); return updDownload(); }
+    /* 【第八十六轮】更新弹窗三按钮 */
+    if (act === 'updDlgCancel') { hf(); return closeUpdDlg(); }
+    if (act === 'updDownload') { hf(); closeUpdDlg(); return updDownload(); }
     if (act === 'updInstall') { hf(); return updInstall(); }
-    if (act === 'updToggleNotes') { hf(); return updToggleNotes(); }
+    if (act === 'updToggleNotes') { return updToggleNotes(); }
     if (act === 'updOpenSite') { hf(); return updOpenSite(); }
     if (act === 'saveKey') return saveKey();
     if (act === 'doCreate') return createTask();

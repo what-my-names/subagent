@@ -249,15 +249,54 @@ body{background:var(--bg);color:var(--fg);font:13.5px/1.6 -apple-system,"Harmony
   border-bottom:1px solid var(--ln);border-top:1px solid var(--ln);cursor:pointer;
   font-size:12.5px;color:var(--fg);position:sticky;top:0;z-index:2}
 .grp-head:active{background:rgba(74,141,255,.12)}
+/* 【第八十六轮】箭头方向反转：用户要求「收起来往上滑、弹出来往下滑」。
+   箭头语义跟着统一：展开时朝下（内容的走向），收起时朝右（收拢的走向）。
+   之前是展开 90 度朝下、收起 0 度朝右 —— 这版本把 lite 头也用同一套，
+   不再因为「轻量」就把箭头藏掉。 */
 .grp-chv{width:13px;height:13px;flex-shrink:0;fill:none;stroke:var(--mut);stroke-width:2.2;
-  stroke-linecap:round;stroke-linejoin:round;transform:rotate(90deg);transition:transform .16s}
+  stroke-linecap:round;stroke-linejoin:round;transform:rotate(90deg);
+  transition:transform .18s cubic-bezier(.3,.9,.4,1)}
 .grp-chv.closed{transform:rotate(0)}
 .grp-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
 .grp-code{color:var(--mut);font-size:10.5px;flex-shrink:0;letter-spacing:.4px}
 .grp-n{color:var(--mut);font-size:10.5px;flex-shrink:0;min-width:16px;text-align:right}
+/* 空群组占位行 */
+.grp-empty{padding:14px 14px;color:var(--mut);font-size:11.5px;text-align:center;
+  border-bottom:1px solid var(--ln)}
+/* 【第八十六轮】分组内容滑入：展开时从上方滑下来（往下铺）。
+   收起方向上滑收回 —— 收起路径是直接删 DOM，用 groupHtml 重渲染，
+   所以这里只负责「出现」的动效，视觉上配箭头旋转就够读懂了。
+   动效只动 opacity + translateY，不触发重排。 */
+@keyframes grpDown{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.grp-body-anim{animation:grpDown .2s cubic-bezier(.3,.9,.4,1) both}
+/* 【第八十六轮】「无归属」桶：轻量分组头。
+   用户反馈：①看起来很生硬 ②完全看不出能点，字还是灰的，
+   收起和展开也没有视觉差别。所以这版重点解决「可点性」：
+   - 保留折叠箭头（之前被我 display:none 掉了，等于把唯一的可点暗示删了）
+   - 字色从 --mut 提到 78% 透明度，不再是死灰
+   - 加一条短横线做分组感，不抢群组头的层级
+   - 展开/收起用箭头旋转表达，配合内容滑入滑出 */
+.grp-head.lite{background:none;border-top:0;position:static;padding:13px 14px 6px;
+  font-size:11.5px;color:rgba(255,255,255,.62);font-weight:600;letter-spacing:.2px}
+.grp-head.lite:active{background:rgba(127,141,179,.08)}
+.grp-head.lite .grp-chv{width:12px;height:12px;stroke:rgba(255,255,255,.62);stroke-width:2.4}
+.grp-head.lite .grp-name{font-weight:600}
+/* 轻量头右侧给个「轻提示」，让人知道这里能点 */
+.grp-head.lite .grp-n{color:rgba(255,255,255,.45)}
+.grp-head.lite::after{content:'';flex:1 0 12px}
 /* 群组头右侧的信息按钮：不参与折叠，点了只开详情 */
 .grp-info{border:0;background:none;padding:0 2px;width:22px;height:22px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;color:var(--mut);cursor:pointer}
+/* 【第八十六轮】群组详情里的删除区：危险动作，视觉上要和普通按钮拉开距离 */
+.gi-del{margin-top:18px;padding-top:14px;border-top:1px solid var(--ln)}
+.gi-del-btn{width:100%;height:40px;display:flex;align-items:center;justify-content:center;gap:7px;
+  border-radius:10px;border:1px solid rgba(224,108,90,.4);background:rgba(224,108,90,.1);
+  color:#e06c5a;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;
+  -webkit-tap-highlight-color:transparent}
+.gi-del-btn:active{background:rgba(224,108,90,.18);transform:scale(.985)}
+.gi-del-btn svg{width:14px;height:14px;fill:none;stroke:#e06c5a;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.gi-del-hint{margin-top:7px;font-size:11px;line-height:1.6;color:var(--mut);text-align:center}
 .grp-info svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.9;
   stroke-linecap:round;stroke-linejoin:round}
 .grp-info:active{color:var(--acc)}
@@ -1084,6 +1123,50 @@ textarea{resize:vertical;min-height:72px}
 /* 检查中的旋转 */
 .cb-ico.spin svg{animation:updspin 1s linear infinite}
 @keyframes updspin{to{transform:rotate(360deg)}}
+
+/* ── 【第八十六轮】主页底部的版本行 ──
+   用户要求：更新不放在配置页（会把保存按钮挤扁），挪到主页最下方。
+   平时只是一行低调的版本号，不抢内容。 */
+.home-upd{margin:18px 14px 26px;border-radius:11px;background:rgba(127,141,179,.06);
+  border:1px solid var(--ln);overflow:hidden}
+.hu-row{display:flex;align-items:center;gap:8px;padding:11px 13px;cursor:pointer;
+  -webkit-tap-highlight-color:transparent}
+.hu-row:active{background:rgba(127,141,179,.1)}
+.hu-ico{width:14px;height:14px;flex-shrink:0;fill:none;stroke:var(--mut);stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.hu-lb{font-size:12px;color:var(--mut);flex:1}
+.hu-go{font-size:12px;color:var(--acc);font-weight:600}
+.hu-go.err{color:#e0705a}
+.hu-go.ok{color:#5ac48a}
+.hu-prog{padding:0 13px 12px}
+.hu-prog-hd{display:flex;justify-content:space-between;gap:8px;font-size:11px;
+  color:var(--mut);margin-bottom:6px}
+.hu-prog-hd .upd-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0}
+
+/* ── 【第八十六轮】更新弹窗 ──
+   检出新版时弹，三按钮：取消 / 去官网下载 / 同意更新。
+   同意后调起系统下载（通知栏进度条），插件内只留一行轻量进度。 */
+#updMask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;display:none;
+  backdrop-filter:blur(2px)}
+#updMask.on{display:block;animation:updFade .18s ease}
+@keyframes updFade{from{opacity:0}to{opacity:1}}
+#updDlg{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%) scale(.94);
+  width:min(88vw,340px);background:var(--bg2);border:1px solid var(--ln);border-radius:16px;
+  z-index:61;display:none;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+#updDlg.on{display:block;animation:updIn .2s cubic-bezier(.25,.9,.35,1) forwards}
+@keyframes updIn{to{transform:translate(-50%,-50%) scale(1)}}
+.upd-hd{display:flex;align-items:center;gap:9px;padding:17px 17px 12px;
+  font-size:14.5px;font-weight:700;color:var(--fg)}
+.upd-hd-ico{width:19px;height:19px;flex-shrink:0;fill:none;stroke:var(--acc);
+  stroke-width:2.1;stroke-linecap:round;stroke-linejoin:round}
+.upd-body{padding:0 17px 14px;max-height:46vh;overflow-y:auto}
+.upd-body .upd-notes{margin-top:0}
+.upd-foot{display:flex;gap:8px;padding:0 13px 15px}
+.upd-btn{flex:1;height:38px;border-radius:10px;border:1px solid var(--ln);
+  background:var(--bg3);color:var(--fg);font-size:13px;font-weight:600;
+  font-family:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.upd-btn:active{transform:scale(.97)}
+.upd-btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 /* ── 上滑彩蛋（第三十七轮改版：整页上推）──
    用户要的是：页面滚到底后继续上滑，整个内容往上推走，露出下面一屏彩蛋。
    顶部搜索栏在 viewport 之外，钉住不动。

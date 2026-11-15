@@ -393,18 +393,49 @@ var CMD_DANGER = [
     { re: /\|\s*(base64|xxd|uudecode|openssl)\b[^|]*\|\s*(sh|bash|zsh|python|perl|node)\b/, why: "解码后直接执行" }
 ];
 
-/* 从命令里粗提绝对路径，用于校验是否越出 workspace。
-   只看以 / 或 ~/ 开头的 token（相对路径按 cwd 算，cwd 已限定在 workspace）。 */
+/* 从命令里粗提路径，用于校验是否越出 workspace。
+   【第八十七轮·修 P1】原来只认以 / 或 ~/ 开头的 token，理由是「相对路径按 cwd 算，
+   cwd 已限定在 workspace」。但 cd ../../../etc 这种是靠 cd 自己走出 workspace 的，
+   cwd 限定管不住 —— 只要宿主允许 terminal 的 cwd 往上走，这就是一条真实逃逸路径。
+   现在也提取 ../ 开头的 token，交给上层按 workspace 深度做层数判定。 */
 function extractCmdPaths(cmd) {
     var out = [];
     var s = String(cmd || "");
-    var re = /(?:^|[\s'"=<>|;&(])((?:\/|~\/)[^\s'"|;&<>)]*)/g;
+    /* 绝对路径 + 家目录 */
+    var reAbs = /(?:^|[\s'"=<>|;&(])((?:\/|~\/)[^\s'"|;&<>)]*)/g;
     var m;
-    while ((m = re.exec(s)) !== null) {
+    while ((m = reAbs.exec(s)) !== null) {
         var p = String(m[1] || "").trim();
         if (p) out.push(p);
     }
+    /* 向上逃逸的相对路径：.. 或 ../.. 或 a/../../b */
+    var reRel = /(?:^|[\s'"=<>|;&(])([^\s'"|;&<>)]*\.\.[^\s'"|;&<>)]*)/g;
+    while ((m = reRel.exec(s)) !== null) {
+        var q = String(m[1] || "").trim();
+        if (q && out.indexOf(q) < 0) out.push(q);
+    }
     return out;
+}
+
+/* 判断一个路径片段是不是「往上跳」的相对路径，以及跳了几层。
+   in : p 路径片段
+   out: { up: 层数 } 或 null（不是向上跳的路径）
+   用于 cwd 逃逸检测：cd ../../.. 是合法命令，但它把 cwd 带出了 workspace。 */
+function upwardDepth(p) {
+    var s = String(p || "");
+    if (s.indexOf("..") < 0) return null;
+    /* 绝对路径不参与「往上跳」判定，它已经有自己的越界检查 */
+    if (s.charAt(0) === "/" || s.indexOf("~/") === 0) return null;
+    var parts = s.split(/[\/\\]+/);
+    var up = 0;
+    for (var i = 0; i < parts.length; i++) {
+        if (parts[i] === "..") up++;
+        else if (parts[i] && parts[i] !== ".") {
+            /* 先下潜再上升：depth 抵消，抵消掉的部分不算逃逸 */
+            if (up > 0) up--;
+        }
+    }
+    return { up: up };
 }
 
 /* 命令安全判定。
@@ -424,6 +455,17 @@ function analyzeCommand(cmd, roots, allowDanger) {
 
     /* ② 路径越界：始终执行 */
     var paths = extractCmdPaths(s);
+    /* 【第八十七轮·修 P1】向上逃逸检测。
+       cd ../../../etc 里的 ../../../etc 不以 / 开头，旧逻辑完全不检查它。
+       这里按「跳了多少层 ..」判定：只要向上层数 >= 1，就说明 cwd 会离开 workspace。
+       workspace 内部想引用兄弟目录应该用相对名字（a/b），不需要往上跳。
+       所以规则简单且安全：任何向上跳都拒。 */
+    for (var u = 0; u < paths.length; u++) {
+        var ud = upwardDepth(paths[u]);
+        if (ud && ud.up > 0) {
+            return { ok: false, reason: "命令里出现向上跳的路径（" + paths[u] + "，跳出 " + ud.up + " 层），会把工作目录带出 workspace，已拒绝" };
+        }
+    }
     for (var j = 0; j < paths.length; j++) {
         var p = paths[j];
         if (p === "/" || p === "~" || p === "~/") {

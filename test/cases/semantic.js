@@ -393,7 +393,10 @@ A.match('下载后默认自动安装', UPDM, /if \(params\.auto_install !== fals
 A.match('自动安装调 installUpdate', UPDM, /inst = await installUpdate\(\{ path: path \}\)/);
 /* 工具与面板 */
 A.match('self-update install 走 step=install', SA2, /step === "install"/);
-A.match('面板有立即安装按钮', A.src('ui/web/panel.html'), /data-act="updInstall"/);
+/* 【第八十六轮】更新提示改成弹窗，DOM 结构跟着换：
+   安装按钮仍在（下载完成后用它），但入场按钮改叫「同意更新」。 */
+A.match('更新弹窗有同意更新按钮', A.src('ui/web/panel.html'), /id="updDlBtn">同意更新/);
+A.match('有取消按钮', A.src('ui/web/panel.html'), /data-act="updDlgCancel"/);
 A.match('安装后提示已生效', P, /已写入 ' \+ d\.path/);
 A.match('未装上时显示手动安装', P, /ok && !installed/);
 /* ── 第三十四轮：工具数必须与实际一致 ── */
@@ -465,9 +468,12 @@ A.match('展开态解除限高', CSS2, /\.upd-notes\.open\{[^}]*max-height:none/
 A.match('折叠渐变遮罩', CSS2, /mask-image:linear-gradient\(180deg,#000 60%,transparent\)/);
 A.match('展开逻辑用 toggle', P, /var open = el\.classList\.toggle\('open'\)/);
 A.match('展开按钮文案会切换', P, /btn\.textContent = open \? '收起' : '展开更新说明'/);
-A.match('超长才显示展开按钮', P, /needMore = fullH > \(noteEl\.clientHeight \+ 4\)/);
+/* 【第八十六轮】弹窗里更新说明不再「超长才显示展开」——
+   弹窗空间有限，说明默认折起 3 行，展开按钮常在其他位置按需出现。
+   这里改为断言弹窗里有展开入口即可。 */
+A.match('弹窗说明可展开', P, /UPD\.notesOpen = false/);
 /* 官网下载入口：本机 github.com 不可达，只能交给系统浏览器 */
-A.match('有官网下载按钮', H2, /id="updOpenSite"/);
+A.match('有官网下载按钮', H2, /data-act="updOpenSite"/);
 A.match('官网地址取后端 url 字段', P, /UPD\.release && UPD\.release\.url/);
 A.match('官网有兜底地址', P, /github\.com\/what-my-names\/subagent\/releases/);
 /* 下载主链路必须保留：进度条 + 轮询 + 自动安装 */
@@ -662,8 +668,10 @@ A.match('思考段按任务状态定默认态', P, /return stInit;/);
 /* ── 【第六十轮】整轮共用一个卡片 ── */
 A.match('整轮共用开卡函数', P, /function openBlk\(\)/);
 
-/* 【第六十一轮】已结束任务默认收起 */
-A.match('运行中才默认展开', P, /var live = \(d\.status === 'running'/);
+/* 【第八十五轮】默认一律收起（反转第六十一轮的「运行中展开」）。
+   用户原话：「正常第一次进去，它不该是展开的呀，它应该是收起来的」。
+   用户手动设过的档位仍由 S.thk 记忆优先，这里的 stInit 只是「第一次的默认值」。 */
+A.match('默认一律收起', P, /var stInit = '0';/);
 
 /* ── 【第六十二轮】滑动 + 色彩分层 + 弹出动画 ── */
 A.match('聊天区子项禁止收缩', CSS2, /\.dt-chat>\*\{flex-shrink:0/);
@@ -676,7 +684,7 @@ A.match('展开时内容淡入', CSS2, /@keyframes thkIn/);
 A.match('展开加动效类', P, /classList\.add\('thk-in'\)/);
 A.match('toast 浮中带回弹', CSS2, /\.tst\.float\{[^}]*cubic-bezier\(\.34,1\.4,\.64,1\)/);
 A.match('toast 非展开也可拖飞', P, /var needScroll = !el\.classList\.contains\('float'\)/);
-A.match('默认态由状态决定', P, /var stInit = live \? '1' : '0'/);
+A.match('默认态恒为收起', P, /var stInit = '0';/);
 A.match('有收卡函数', P, /function closeBlk\(\)/);
 A.match('正文进同一卡片', P, /class="agent-text">/);
 A.match('流式正文也进卡', P, /_blk\.appendChild\(_txt\)/);

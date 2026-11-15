@@ -327,12 +327,12 @@ METADATA
     },
     {
       "name": "subagent_group",
-      "description": "群组与权限管理：list=列我有权访问的群组 / info=看群组详情与成员权限 / kick=剔除成员（进黑名单，再输码也进不来）/ unkick=解禁 / perm=改某人权限位 / admit=邀请成员 / migrate=迁移老任务目录结构。权限位 READ=1 WRITE=2 CREATE=4 DELETE=8 KICK=16，创始人 31、受邀 3、路人 1。管理动作需要 KICK 位。",
+      "description": "群组与权限管理：list=列我有权访问的群组 / info=看群组详情与成员权限 / kick=剔除成员（进黑名单，再输码也进不来）/ unkick=解禁 / perm=改某人权限位 / admit=邀请成员 / delete=删除群组（仅创始人，不可恢复，组内任务退回未归属）/ migrate=迁移老任务目录结构。权限位 READ=1 WRITE=2 CREATE=4 DELETE=8 KICK=16，创始人 31、受邀 3、路人 1。管理动作需要 KICK 位。",
       "parameters": [
         {
           "name": "action",
           "type": "string",
-          "description": "list/info/kick/unkick/perm/admit/migrate",
+          "description": "list/info/kick/unkick/perm/admit/delete/migrate",
           "required": true
         },
         {
@@ -1325,7 +1325,8 @@ exports.subagent_advance = async function (params) {
     var cfg = await CFG.load();
     var task = await TASK.loadTask(String(params.id || ""));
     if (!task) { complete({ success: false, message: "找不到任务", data: {} }); return; }
-    var n = Math.max(1, Math.min(3, Number(params.steps || 1)));
+    /* 与 subagent_run 一致：两个参数名都认，max_steps 优先 */
+    var n = Math.max(1, Math.min(3, Number(params.max_steps || params.steps || 1)));
     var last = null;
     for (var i = 0; i < n; i++) {
         last = await TASK.advanceTask(cfg, task);
@@ -1663,20 +1664,35 @@ exports.subagent_config = async function (params) {
                 return;
             }
         }
-        /* 端点/模型/协议/请求头属于 profile，必须写进 cfg.profile，否则 status() 读不到 */
+        /* 【第八十七轮·修 P0】改动必须写回 profiles 数组，不能只写 cfg.profile。
+           踩坑：旧代码先 `cfg.profile[k] = patch[k]`，再调 `applyActive(cfg)`，
+           而 applyActive 会按 active_profile 从 profiles 里重新取一项赋给 cfg.profile
+           —— 刚写进去的值立刻被覆盖回旧值，保存实际不生效。
+           正确顺序：先确保 profile 在 profiles 里有对应项，把改动写进那一项，
+           再 applyActive 让它指向同一对象，这样写和读才对得上。 */
         var profKeys = ["base_url", "model", "protocol", "custom_headers", "extra_body", "api_key_env", "name", "api_provider"];
+        CFG.ensureProfiles(cfg);
+        var actId = String(cfg.active_profile || "");
+        var actProf = null;
+        for (var ai = 0; ai < cfg.profiles.length; ai++) {
+            if (String(cfg.profiles[ai].id) === actId) { actProf = cfg.profiles[ai]; break; }
+        }
+        if (!actProf) { actProf = cfg.profiles[0]; cfg.active_profile = actProf.id; }
         var rest = {};
         for (var k in patch) {
             if (!Object.prototype.hasOwnProperty.call(patch, k)) continue;
             if (k === "api_key") continue;
-            if (profKeys.indexOf(k) >= 0) { cfg.profile[k] = patch[k]; }
+            if (profKeys.indexOf(k) >= 0) { actProf[k] = patch[k]; }
             else { rest[k] = patch[k]; }
         }
+        /* profiles 数组里的那一项已经改完，现在才让 cfg.profile 指过去 */
+        cfg.profile = actProf;
         for (var k2 in rest) {
             if (!Object.prototype.hasOwnProperty.call(rest, k2)) continue;
             cfg[k2] = rest[k2];
         }
-        /* 让 cfg.profile 指向 profiles 数组中的活动项；之后的写入会直接落到该对象上 */
+        /* 若 patch 里显式给了 profiles 数组（面板可能整包提交），合并进来再对齐 */
+        try { if (patch.profiles && patch.profiles.length) cfg.profiles = patch.profiles; } catch (eP) {}
         try { CFG.applyActive(cfg); } catch (e) {}
         await CFG.save(cfg);
         complete({ success: true, message: "配置已保存", data: CFG.status(cfg) });
@@ -2698,8 +2714,14 @@ function _wlCheck(params, allowed, actionName) {
            每个分支的白名单不必各自重复列，否则会出现
            「step="check" 被 update(check) 自己拦掉」这类自伤。
            id/action/target/what/step/wait/ids/dry_run 一律放行。 */
+        /* 【第八十七轮·修 P0】name 也加入路由参数放行。
+           踩坑：METADATA 里 subagent_cfg 的 name 写着「目标 profile 或模板名」，
+           模型按 schema 传了，但白名单没放行 → 直接被拒「不接受参数：name」，
+           use/rm/add 三个动作全废。name 和 step/action 一样是选分支用的，
+           属于同一类，不该让每个分支各列一遍。 */
         if (k === "id" || k === "action" || k === "target" || k === "what"
-            || k === "step" || k === "wait" || k === "ids" || k === "dry_run") continue;
+            || k === "step" || k === "wait" || k === "ids" || k === "dry_run"
+            || k === "name") continue;
         /* 【第七十九轮】宿主注入的内部键放行：每次工具调用 Operit 都会自动带上
            __operit_* 系列与 containerPackageName/toolPkgId 等，这些不是模型传的，
            不能拦。以 __operit_ 前缀或已知宿主键名识别。 */
@@ -2731,7 +2753,12 @@ exports.subagent_run = async function (params) {
            所以这里手动做一轮 advance 的等价物：调 TASK.advanceTask 后自己 complete。 */
         var task = await TASK.loadTask(id);
         if (!task) { complete({ success: false, message: "找不到任务 " + id, data: {} }); return; }
-        var n = Math.max(1, Math.min(3, Number(params.max_steps || 1)));
+        /* 【第八十七轮·修 P0】steps 与 max_steps 统一。
+           历史原因：旧 subagent_advance 读 params.steps，新 subagent_run 读 params.max_steps，
+           而两者的参数白名单都同时放行了 steps 和 max_steps —— 结果是
+           调用方传 steps 给 run 时被静默忽略（死参数），传 max_steps 给旧 advance 也一样。
+           这里两个都认，max_steps 优先（新名），保证新旧调用方行为一致。 */
+        var n = Math.max(1, Math.min(3, Number(params.max_steps || params.steps || 1)));
         var last = null;
         for (var i = 0; i < n; i++) {
             last = await TASK.advanceTask(cfg, task);
@@ -2998,6 +3025,36 @@ exports.subagent_group = async function (params) {
                 members: g.members || [], kicked: g.kicked || [],
                 my_mask: mem.mask
             }
+        });
+        return;
+    }
+
+    /* 删群组：在 KICK 校验之前单独处理 —— 判据是「创始人」，不是权限位。
+       理由：群组可能因为无人具备 CREATE 而转只读，权限位会被改；
+       但创始人不该因为被改权限就删不掉自己的群组。 */
+    if (action === "delete") {
+        if (String(g.founder || "") !== String(cid || "")) {
+            complete({ success: false, message: "只有群组创始人可以删除群组", data: { founder: String(g.founder || "") } });
+            return;
+        }
+        var freedD = 0;
+        try {
+            var allD = await TASK.listTasks(false);
+            for (var di = 0; di < allD.length; di++) {
+                var tD = allD[di];
+                if (String(tD.group || "") !== code) continue;
+                tD.group = "";
+                tD.group_dir = "";
+                tD.group_created_at = 0;
+                await TASK.saveTask(tD);
+                freedD++;
+            }
+        } catch (eFreeD) {}
+        await GRP.delGroup(g);
+        complete({
+            success: true,
+            message: "已删除群组 " + code + (freedD ? "，其中 " + freedD + " 个任务退回未归属" : ""),
+            data: { code: code, freed: freedD }
         });
         return;
     }

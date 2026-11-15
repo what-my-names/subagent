@@ -304,6 +304,24 @@ async function setPerm(g, chatId, mask) {
     return g;
 }
 
+/* 删群组：整个目录连 group.json 与 index.json 一起删。
+   调用方负责权限校验（创始人 / KICK+DELETE 双位）。
+   任务不跟着删 —— 任务目录在 tasks/ 下，与本群组目录是两棵独立的树。
+   删完群组后，原本挂在该群组下的任务 group 字段会指向一个不存在的码，
+   由调用方把那些任务的 group 清空，退回「未归属」。 */
+async function delGroup(g) {
+    if (!g || !g.code) return false;
+    var dir = groupDirOf(g.code, g.created_at);
+    /* 注意 API 名是 deleteFile（不是 delete），且第二参 recursive */
+    try {
+        await Tools.Files.deleteFile(dir, true, "android");
+    } catch (e) {
+        /* 目录不存在不算失败；真删不掉才抛 */
+        throw new Error("删群组目录失败：" + dir + "（" + String((e && e.message) || e) + "）");
+    }
+    return true;
+}
+
 /* 列出某个 chatId 有权访问的群组。
    - 是 founder 或 root_chat_id 相同的对话（含分支）→ 可见
    - 在 members 里 → 可见
@@ -367,5 +385,6 @@ module.exports = {
     kick: kick,
     unkick: unkick,
     setPerm: setPerm,
+    delGroup: delGroup,
     listGroupsFor: listGroupsFor
 };

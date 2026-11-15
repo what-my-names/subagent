@@ -201,11 +201,26 @@ A.match('列表页走群组分类渲染',
 A.match('有群组按群组码归桶',
     P, /bucket\('g:' \+ gc, gname, gsub\)/);
 A.match('无群组按父对话归桶',
-    P, /bucket\('c:' \+ \(pc \|\| '_'\)/);
+    P, /bucketLite\('c:' \+ pc, '父对话 '/);
+A.match('无归属单独成桶且走轻量头',
+    P, /bucketLite\('c:_', '未归属任何对话'/);
+A.match('轻量头带 lite 类',
+    P, /b\.lite \? ' lite' : ''/);
 A.match('分组头可折叠',
     P, /S\.grpClosed\[gk\] = !S\.grpClosed\[gk\]/);
 A.match('群组清单随列表回传并保存',
     P, /S\.groupList = d\.groups \|\| r\.groups \|\| \[\]/);
+/* 分组桶的存取键必须一致。踩过：写入用 gmap[key]，读取还拼 gmap['#'+key]，
+   取到 undefined → continue → 整个列表空白。 */
+A.match('分组桶读取键与写入一致',
+    P, /var b = gmap\[order\[o\]\];/);
+A.nomatch('分组桶不再拼 # 前缀',
+    P, /gmap\['#' \+/);
+/* 【第八十五轮】空群组也要显示：新建群组还没派任务时不能整块消失 */
+A.match('空群组也建桶', P, /for \(var gk = 0; gk < \(S\.groupList \|\| \[\]\)\.length; gk\+\+\)/);
+A.match('空群组不因无任务被跳过', P, /if \(!b\.items\.length && !isRealGroup\) continue;/);
+A.match('空群组给占位说明', P, /class="grp-empty"/);
+A.match('有群组时列表不判空', P, /var hasGroups = !!\(S\.groupList && S\.groupList\.length\)/);
 A.match('陈旧 running 改判已中断',
     P, /if \(\(Date\.now\(\) - t0\) > STALE_MS\) return 'interrupted'/);
 A.match('陈旧判定不动后端状态',

@@ -133,6 +133,21 @@
       <input id="listSearch" placeholder="筛选任务标题或状态…">
     </div>
     <div id="homeList" class="home-list"></div>
+
+    <!-- 版本更新（用户要求：放主页最下方，不放配置页）
+         平时只显示一行版本号，有新版本才点亮；检查结果用弹窗提示。 -->
+    <div class="home-upd" id="homeUpd">
+      <div class="hu-row" data-act="updCheck">
+        <svg class="hu-ico" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/></svg>
+        <span class="hu-lb">版本 <b class="upd-cur" id="updCur">—</b></span>
+        <span class="hu-go" id="updMsg">检查更新</span>
+      </div>
+      <!-- 下载进度：同意更新后在这里显示 -->
+      <div class="hu-prog" id="updProg" style="display:none">
+        <div class="hu-prog-hd"><span id="updProgLb">下载中</span><span class="upd-path" id="updPath"></span></div>
+        <div class="upd-bar"><div class="upd-bar-in" id="updBarIn"></div></div>
+      </div>
+    </div>
   </div>
 
 
@@ -291,6 +306,25 @@
     </div>
   </div>
 
+  <!-- 【第八十六轮】版本更新弹窗：检出新版时弹这个，三按钮（同意/取消/去官网） -->
+  <div id="updMask"></div>
+  <div id="updDlg">
+    <div class="upd-hd">
+      <svg class="upd-hd-ico" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+      <span>发现新版本 <b class="upd-tag" id="updTag"></b></span>
+    </div>
+    <div class="upd-body">
+      <div class="upd-notes" id="updNotes"></div>
+      <button class="upd-more" id="updMore" data-act="updToggleNotes" style="display:none">展开更新说明</button>
+      <div class="upd-size" id="updSize"></div>
+    </div>
+    <div class="upd-foot">
+      <button class="upd-btn" data-act="updDlgCancel">取消</button>
+      <button class="upd-btn" data-act="updOpenSite">去官网下载</button>
+      <button class="upd-btn pri" data-act="updDownload" id="updDlBtn">同意更新</button>
+    </div>
+  </div>
+
   <!-- 消息/步骤详情抽屉 -->
   <div id="sheet-mask"></div>
   <div id="sheet">
@@ -375,41 +409,7 @@
       <button class="btn" data-act="doProbe">测试连通性</button>
       <div class="hint">端点 / 模型改动后点「保存全部设置」</div>
 
-      <!-- 自更新（第三十轮）：检查 GitHub Release → 下载 .toolpkg → 去包管理导入 -->
-      <div class="sec-head">
-        <svg class="sec-ico"><use href="#i-refresh"/></svg>
-        <span>版本更新</span>
-      </div>
-      <div class="cfg-block">
-        <div class="cb-lb">当前版本</div>
-        <div class="cb-row">
-          <span class="upd-cur" id="updCur">—</span>
-          <button class="cb-ico" data-act="updCheck" title="检查更新">
-            <svg><use href="#i-refresh"/></svg>
-          </button>
-        </div>
-        <div class="upd-msg" id="updMsg"></div>
-      </div>
-
-      <!-- 有新版本时才显示 -->
-      <div class="cfg-block" id="updNew" style="display:none">
-        <div class="cb-lb">发现新版本 <span class="upd-tag" id="updTag"></span></div>
-        <!-- 更新说明默认折起（3 行），点「展开」看全部 -->
-        <div class="upd-notes" id="updNotes"></div>
-        <button class="upd-more" id="updMore" data-act="updToggleNotes" style="display:none">展开更新说明</button>
-        <div class="upd-size" id="updSize"></div>
-        <button class="btn pri" data-act="updDownload" id="updDlBtn">下载更新包</button>
-        <button class="btn" data-act="updInstall" id="updInstall" style="display:none">立即安装</button>
-        <button class="btn" data-act="updOpenSite" id="updOpenSite">打开官网下载</button>
-      </div>
-
-      <!-- 下载进度 / 结果 -->
-      <div class="cfg-block" id="updProg" style="display:none">
-        <div class="cb-lb" id="updProgLb">下载中</div>
-        <div class="upd-bar"><div class="upd-bar-in" id="updBarIn"></div></div>
-        <div class="upd-msg" id="updProgMsg"></div>
-        <div class="upd-path" id="updPath"></div>
-      </div>
+      <!-- 版本更新已搬到主页最下方（用户要求：不放在配置页，会挤压保存按钮） -->
     </div>
   </div>
 

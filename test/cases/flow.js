@@ -21,10 +21,12 @@ A.chk('manifest 有 toolpkg_id', /"toolpkg_id"\s*:\s*"com\.whatsmynames\.subagen
 A.chk('manifest 有 main 入口', /"main"\s*:\s*"main\.js"/.test(M));
 A.chk('manifest 有 subpackages', /"subpackages"\s*:\s*\[/.test(M));
 A.chk('manifest 声明 api_version', /"api_version"/.test(M));
-A.chk('manifest 三个 resources 齐全', (M.match(/"key"\s*:/g) || []).length >= 3);
-A.chk('resources 指向真实文件 panel.html', /ui\/web\/panel\.html/.test(M));
-A.chk('resources 指向真实文件 panel.css', /ui\/web\/panel\.css/.test(M));
-A.chk('resources 指向真实文件 panel.js', /ui\/web\/panel\.js/.test(M));
+/* 【第八十六轮】manifest 不再声明 resources。
+   原因：代码早就不用 readResource（真机永久 pending），改成 html 字符串内联；
+   声明留着会让宿主去争资源所有权，别人装包即报
+   "Bad state: Module read requires an active resource owner"。
+   这里改成反向断言，防止有人好心再加回来。 */
+A.chk('manifest 不声明 resources（否则装包报 resource owner）', !/"resources"\s*:/.test(M));
 
 /* ── 37 个实现函数全保留（面板直接调旧名），10 个大类新声明 ── */
 var TOOL_NAMES = [

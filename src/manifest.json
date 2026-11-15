@@ -31,22 +31,5 @@
       }
     }
   ],
-  "api_version": "1.0.1",
-  "resources": [
-    {
-      "key": "subagent_panel_html",
-      "path": "ui/web/panel.html",
-      "mime": "text/html"
-    },
-    {
-      "key": "subagent_panel_css",
-      "path": "ui/web/panel.css",
-      "mime": "text/css"
-    },
-    {
-      "key": "subagent_panel_js",
-      "path": "ui/web/panel.js",
-      "mime": "application/javascript"
-    }
-  ]
+  "api_version": "1.0.1"
 }

@@ -88,9 +88,8 @@ function report() {
         for (var j = 0; j < g.lines.length; j++) console.log(g.lines[j]);
         console.log('');
     }
-    console.log('══════════════════════════════════');
-    console.log('总计：PASS ' + tp + ' / FAIL ' + tf);
-    console.log('══════════════════════════════════');
+    /* 【第一百零一轮】总计行统一交给 e2e_all.js 打。
+       这里原来也打一行，导致崩溃时出现两个「总计」，旧的还是 FAIL 0，把人骗了。 */
     return { pass: tp, fail: tf };
 }
 

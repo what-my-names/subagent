@@ -48,10 +48,20 @@ for (var i = 0; i < run.length; i++) {
    再 report 并退出。 */
 setImmediate(function () {
     var result = A.report();
+    /* 【第一百零一轮】用例崩溃必须算失败，不能只在底部打一行小字。
+       踩过：flow.js 里一个正则写错导致整个文件语法错，require 抛异常被 catch 吞进 crashed，
+       report 仍打「PASS 1068 / FAIL 0」——219 条断言根本没跑，看起来全绿。
+       现在：崩溃数计入 FAIL 行，并在总计里明写。 */
     if (crashed.length) {
         console.log('');
-        console.log('⚠ 用例执行异常：');
+        console.log('⚠ 用例执行异常（这些文件里的断言全部没跑）：');
         for (var c = 0; c < crashed.length; c++) console.log('  - ' + crashed[c]);
+        console.log('');
+        console.log('═══ 总计：PASS ' + result.pass + ' / FAIL ' + (result.fail + crashed.length)
+            + '（其中 ' + crashed.length + ' 个用例文件整体崩溃）═══');
+    } else {
+        console.log('');
+        console.log('═══ 总计：PASS ' + result.pass + ' / FAIL ' + result.fail + ' ═══');
     }
     /* 退出码：有失败或崩溃就非 0，方便脚本串联 */
     process.exit((result.fail > 0 || crashed.length > 0) ? 1 : 0);

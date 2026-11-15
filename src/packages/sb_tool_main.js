@@ -258,7 +258,13 @@ module.exports = function install(E, opts) {
         var allDone = true;
         for (var j = 0; j < ids.length; j++) {
             var tid = ids[j];
-            if (params.id) { try { BUS.remove(tid); } catch (eR) {} }
+            /* 【第一百零一轮】取结论 = 真读过，记一笔已读。
+               这条是「清空收件箱前必须先逐条读过」的凭据：
+               只有走过这里（真把结论取出来看了），才允许后续 action=read 清空。 */
+            if (params.id) {
+                try { BUS.markRead(tid); } catch (eMR) {}
+                try { BUS.remove(tid); } catch (eR) {}
+            }
             var tt = await TASK.loadTask(tid);
             if (!tt) { outs.push({ id: tid, ok: false, error: "找不到任务" }); allDone = false; continue; }
             if (tt.status !== "done") allDone = false;

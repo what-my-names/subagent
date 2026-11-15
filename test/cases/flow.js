@@ -545,7 +545,7 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
 (function () {
     var T = A.src('packages/sb_tools.js');
     A.match('非文件写工具白名单', T, /var NON_FILE_WRITE_PREFIX = \[/);
-    A.match('isNonFileWrite 存在', T, /function isNonFileWrite\\(name\)/);
+    A.match('isNonFileWrite 存在', T, /function isNonFileWrite\(name\)/);
     A.match('isWriteTool 排除非文件写', T, /if \(isNonFileWrite\(n\)\) return false;/);
     A.match('basic_memory 在名单里', T, /"basic_memory:"/);
 })();
@@ -555,6 +555,26 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     var T = A.src('packages/sb_tools.js');
     A.match('伪设备名单', T, /var PSEUDO = \["\/dev\/null"/);
     A.match('伪设备跳过', T, /if \(isPseudoPath\(p\)\) continue;/);
+})();
+
+/* ── 【第一百零一轮】清空收件箱前必须先逐条读过 ── */
+(function () {
+    var TK = A.src('packages/sb_tool_task.js');
+    var BUS = A.src('packages/sb_bus.js');
+    var MAIN = A.src('packages/sb_tool_main.js');
+
+    /* BUS 要有已读记录能力 */
+    A.match('readIds 存在', BUS, /function readIds\(chatId\)/);
+    A.match('markRead 存在', BUS, /function markRead\(id\)/);
+    A.match('readIds 导出', BUS, /readIds: readIds, markRead: markRead/);
+
+    /* 清空前校验未读 */
+    A.match('清空校验未读', TK, /var notRead = \[\];/);
+    A.match('未读则拒绝清空', TK, /不能直接清空：还有 /);
+    A.match('拒绝时给调用', TK, /请先逐条取：subagent_get/);
+
+    /* 取结论时记已读 */
+    A.match('取结论记已读', MAIN, /BUS\.markRead\(tid\)/);
 })();
 
 A.finish();

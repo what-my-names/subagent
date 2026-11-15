@@ -558,9 +558,34 @@ module.exports = function install(E, opts) {
     E.subagent_inbox = async function (params) {
         params = params || {};
         if (String(params.action || "") === "read") {
+            /* 【第一百零一轮】清空不等于读过。
+               踩过：主人要求「收件箱 ≥3 条必须先逐条读完」，结果我用 action=read
+               一键清空 11 条，等于把 11 条结论全绕过——内容一条没看，未读数归零。
+               这跟直接删收件箱没区别。
+               现在：清空前先看这一轮有没有真读过（BUS 记 readIds），
+               没读过的条数 > 0 就拒绝清空，并列出该读哪些。 */
+            var unread = [];
+            try { unread = BUS.list(callerChatId()) || []; } catch (e) { unread = []; }
+            var readIds = {};
+            try { readIds = BUS.readIds ? (BUS.readIds(callerChatId()) || {}) : {}; } catch (e) { readIds = {}; }
+            var notRead = [];
+            for (var i = 0; i < unread.length; i++) {
+                var uid = String((unread[i] || {}).id || "");
+                if (uid && !readIds[uid]) notRead.push(uid);
+            }
+            if (notRead.length) {
+                complete({
+                    success: false,
+                    message: "不能直接清空：还有 " + notRead.length + " 条没读过（清空不等于读过）。"
+                        + "请先逐条取：subagent_get(id=\"" + notRead[0] + "\")"
+                        + (notRead.length > 1 ? ("，其余 " + (notRead.length - 1) + " 条同理") : ""),
+                    data: { blocked: true, not_read: notRead, total: unread.length }
+                });
+                return;
+            }
             var n = 0;
             try { n = BUS.clear ? BUS.clear() : 0; } catch (e) { n = 0; }
-            complete({ success: true, message: "已清空收件箱（" + n + " 条）", data: { cleared: n } });
+            complete({ success: true, message: "已清空收件箱（" + n + " 条，均已读过）", data: { cleared: n } });
             return;
         }
         /* 只报真实可观测的数据：

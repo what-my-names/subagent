@@ -75,6 +75,36 @@ function list(chatId) {
     return out;
 }
 function listAll() { return load(); }
+/* 【第一百零一轮】记录「这一轮真读过哪些」。
+   为什么需要：主人要求「收件箱 ≥3 条必须先逐条读完」，但 action=read 一键清空
+   可以完全绕过这条规则 —— 清空不等于读过。
+   这里维护一份已读 id 表，清空前校验：还有没读过的就拒绝清空。
+   存在内存 + SP 双写，与收件箱本身同一通道。 */
+var READ_KEY = "read_ids";
+function readIds(chatId) {
+    try {
+        var p = sp();
+        if (!p) return {};
+        var raw = String(p.getString(READ_KEY, "{}") || "{}");
+        var o = JSON.parse(raw);
+        return (o && typeof o === "object") ? o : {};
+    } catch (e) { return {}; }
+}
+function markRead(id) {
+    var k = String(id || "");
+    if (!k) return;
+    try {
+        var o = readIds("");
+        o[k] = 1;
+        /* 上限 200，防止无限增长 */
+        var keys = Object.keys(o);
+        if (keys.length > 200) {
+            for (var i = 0; i < keys.length - 200; i++) delete o[keys[i]];
+        }
+        var p = sp();
+        if (p) p.edit().putString(READ_KEY, JSON.stringify(o)).apply();
+    } catch (e) {}
+}
 function remove(id) {
     var arr = load();
     var out = [];
@@ -88,4 +118,4 @@ function clear() { var n = load().length; save([]); return n; }
 function stat() {
     return { count: load().length };
 }
-module.exports = { add: add, list: list, listAll: listAll, remove: remove, clear: clear, stat: stat };
+module.exports = { add: add, list: list, listAll: listAll, remove: remove, clear: clear, stat: stat, readIds: readIds, markRead: markRead };

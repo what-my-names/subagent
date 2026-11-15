@@ -239,6 +239,22 @@ METADATA
       ]
     },
     {
+      "name": "subagent_wait",
+      "description": {
+        "zh": "等任务跑完再返回。指定 id/ids 等特定任务，或 all=true 等全部（任一返回就返回那个）。带 timeout_ms 上限与 need 凑数。",
+        "en": "Wait until tasks finish, then return. Target specific ids or all=true (returns whichever finishes first). Supports timeout_ms and need."
+      },
+      "parameters": [
+        { "name": "id", "type": "string", "description": "要等的任务 id（单个）", "required": false },
+        { "name": "ids", "type": "string", "description": "要等的任务 id，逗号分隔多个", "required": false },
+        { "name": "all", "type": "boolean", "description": "true=等全部任务，任一跑完就返回那一个", "required": false },
+        { "name": "timeout_ms", "type": "integer", "description": "最长等待毫秒，默认 300000（5 分钟），最短 3000", "required": false },
+        { "name": "need", "type": "integer", "description": "要凑够几个任务结束才返回，默认 1", "required": false },
+        { "name": "detail", "type": "string", "description": "返回详细度 brief/standard/full，默认 standard", "required": false },
+        { "name": "max_chars", "type": "integer", "description": "结论截断长度", "required": false }
+      ]
+    },
+    {
       "name": "subagent_ctrl",
       "description": {
         "zh": "改任务状态：action=cancel(请求停止)/resume(拉回可推)/steer(追加指令,配 message)/close(关闭,可 rollback 先恢复写入、drop_product 删产物)。各 action 的参数严格校验，传错直接报错。",

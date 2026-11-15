@@ -56,9 +56,29 @@ var READ_ONLY_TOOLS = {
     terminal_wait: true, terminal_getscreen: true, terminal_read: true,
     web_search: true, chat: true
 };
+/* 【第一百轮】不写文件系统的「写类名字」工具。
+   踩过：`basic_memory:write_note` 名字里有 write_，被兜底正则判成写类工具，
+   进而走写边界校验；它的 `directory` 是逻辑目录名（"subagent"），
+   不是绝对路径，`inRoot("subagent", "/sdcard/x/subagent")` 恒假 ——
+   结果任何 basic_memory 写笔记的调用都被报「路径越界：subagent」。
+   这类工具写的是外部系统的数据，不是本机文件，不该走文件写边界。 */
+var NON_FILE_WRITE_PREFIX = [
+    "basic_memory:", "extended_memory_tools:", "oa_data:", "oa_bind:",
+    "workflow:", "operit_editor:", "system_tools:", "github:"
+];
+function isNonFileWrite(name) {
+    var n = String(name || "").toLowerCase();
+    for (var i = 0; i < NON_FILE_WRITE_PREFIX.length; i++) {
+        if (n.indexOf(NON_FILE_WRITE_PREFIX[i]) === 0) return true;
+    }
+    return false;
+}
+
 function isWriteTool(name) {
     var n = String(name || "");
     if (READ_ONLY_TOOLS[n]) return false;
+    /* 非文件类写工具不归写边界管 */
+    if (isNonFileWrite(n)) return false;
     if (WRITE_TOOLS[n]) return true;
     if (WRITE_NO_PATH_TOOLS[n]) return true;
     var lower = n.toLowerCase();
@@ -418,11 +438,24 @@ function extractCmdPaths(cmd) {
     var out = [];
     var s = String(cmd || "");
     /* 绝对路径 + 家目录 */
+    /* 【第一百轮】系统伪设备不算写目标。
+       踩过：`cmd 2>&1` / `cmd >/dev/null` 这种重定向写法，正则会把 /dev/null 当路径抓出来，
+       然后写边界校验报「路径越界：/dev/null」—— 一条完全正常的命令被拦死。
+       这些是 shell 语法的一部分，不落盘，不该过路径检查。 */
+    var PSEUDO = ["/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero", "/dev/random", "/dev/urandom"];
+    function isPseudoPath(x) {
+        for (var pi2 = 0; pi2 < PSEUDO.length; pi2++) {
+            if (x === PSEUDO[pi2]) return true;
+        }
+        return false;
+    }
     var reAbs = /(?:^|[\s'"=<>|;&(])((?:\/|~\/)[^\s'"|;&<>)]*)/g;
     var m;
     while ((m = reAbs.exec(s)) !== null) {
         var p = String(m[1] || "").trim();
-        if (p) out.push(p);
+        if (!p) continue;
+        if (isPseudoPath(p)) continue;
+        out.push(p);
     }
     /* 向上逃逸的相对路径：.. 或 ../.. 或 a/../../b */
     var reRel = /(?:^|[\s'"=<>|;&(])([^\s'"|;&<>)]*\.\.[^\s'"|;&<>)]*)/g;

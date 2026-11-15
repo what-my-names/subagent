@@ -61,7 +61,8 @@ if (missing.length) console.log('    缺失：' + missing.join(', '));
 
 /* METADATA 只声明 10 个大类 + 10 个面板保留名 = 20 */
 var declared = (SUB.match(/"name"\s*:\s*"subagent_/g) || []).length;
-A.eq('METADATA 声明数量 = 22', declared, 22);
+/* 【第九十九轮】新增 subagent_wait 主工具，声明数 22 -> 23 */
+A.eq('METADATA 声明数量 = 23', declared, 23);
 
 /* ── spawn 参数契约（合并后：tools/wait/budget/detail 替代旧三件） ── */
 A.match('spawn 有 task 必填', SUB, /"name"\s*:\s*"task"/);
@@ -160,7 +161,10 @@ var HOOK = A.src('packages/sb_hook.js');
 A.match('hook 导出 subagentInboxHook', HOOK, /exports\.subagentInboxHook/);
 A.match('无未读时注入能力提示', HOOK, /CAPABILITY_HINT/);
 A.match('能力提示含 subagent_spawn 用法', HOOK, /subagent_spawn\(task=/);
-A.match('能力提示含 subagent_result 用法', HOOK, /subagent_result\(id=/);
+/* 【第九十八轮】工具名早已收敛：result->get、inbox->box。
+   旧断言检查的是废弃名，等于把错误锁死。现在改成检查现行名。 */
+A.match('能力提示含 subagent_get 用法', HOOK, /subagent_get\(id=/);
+A.nomatch('能力提示不含废弃 subagent_result', HOOK, /subagent_result\(id=/);
 A.match('有未读时列收件箱', HOOK, /\[子代理收件箱\] 有 /);
 /* 铁律：钩子内禁止调工具 API（会回环导致 ANR）——检查代码行，排除注释。
    注意：不能只按行首星号或斜杠过滤，块注释的续行（如「为什么用 SP...」）不以星号开头，
@@ -518,6 +522,39 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.match('阶段卡死自愈', T2, /async function healStuckPhase\(task\)/);
     A.match('自愈在推进前调用', T2, /await healStuckPhase\(task\)/);
     A.match('自愈有阈值', T2, /PHASE_STUCK_MS = 3 \* 60 \* 1000/);
+})();
+
+/* ── 【第九十八轮】hook 与收件箱提示不许教错工具名 ── */
+(function () {
+    var HK = A.src('packages/sb_hook.js');
+    var CTX = A.src('packages/sb_ctx.js');
+
+    /* hook 里不能再出现废弃工具名（注释里的历史记录除外） */
+    A.nomatch('hook 不教 subagent_result', HK, /subagent_result\(id=/);
+    A.nomatch('hook 不教 subagent_inbox 调用', HK, /call subagent_inbox/);
+    A.nomatch('hook 参数名用 context_files', HK, /pass files=/);
+    A.match('hook 用 context_files', HK, /context_files=/);
+
+    /* 收件箱提示要带 id 与可执行调用 */
+    A.match('收件箱带 id', CTX, /最新 " \+ id/);
+    A.match('收件箱给调用', CTX, /subagent_get\(id=/);
+    A.nomatch('收件箱不教旧名', CTX, /subagent_inbox 查看/);
+})();
+
+/* ── 【第一百轮】非文件写工具不归写边界管 ── */
+(function () {
+    var T = A.src('packages/sb_tools.js');
+    A.match('非文件写工具白名单', T, /var NON_FILE_WRITE_PREFIX = \[/);
+    A.match('isNonFileWrite 存在', T, /function isNonFileWrite\\(name\)/);
+    A.match('isWriteTool 排除非文件写', T, /if \(isNonFileWrite\(n\)\) return false;/);
+    A.match('basic_memory 在名单里', T, /"basic_memory:"/);
+})();
+
+/* ── 【第一百轮】系统伪设备不算写目标 ── */
+(function () {
+    var T = A.src('packages/sb_tools.js');
+    A.match('伪设备名单', T, /var PSEUDO = \["\/dev\/null"/);
+    A.match('伪设备跳过', T, /if \(isPseudoPath\(p\)\) continue;/);
 })();
 
 A.finish();

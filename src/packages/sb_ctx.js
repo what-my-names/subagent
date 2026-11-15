@@ -221,10 +221,22 @@ async function visibleTasks(params, force) {
     }
     return { items: out, groups: myGroups };
 }
+/* 【第九十八轮】收件箱提示要能直接照做。
+   旧文案只说了「有几条」+ 一个早就不存在的工具名，主代理看到当噪音直接忽略。
+   现在带上具体 id 与标题，并给出一条能直接复制的调用。 */
 function inboxSuffix(chatId) {
     try {
-        var n = BUS.list(chatId).length;
-        return n > 0 ? ("｜收件箱 " + n + " 条未读结论（subagent_inbox 查看）") : "";
+        var arr = BUS.list(chatId) || [];
+        var n = arr.length;
+        if (!n) return "";
+        var head = arr[0] || {};
+        var id = String(head.id || "");
+        var tt = String(head.title || head.task_title || "");
+        if (tt.length > 30) tt = tt.slice(0, 30) + "…";
+        var s = "｜收件箱 " + n + " 条未读";
+        if (id) s += "，最新 " + id + (tt ? "《" + tt + "》" : "") + "，取：subagent_get(id=\"" + id + "\")";
+        else s += "，全部取：subagent_get(ids=\"...\")";
+        return s;
     } catch (e) { return ""; }
 }
 

@@ -498,6 +498,115 @@ module.exports = function install(E, opts) {
         complete({ success: false, message: "未知 action：" + action + "（支持 list/info/kick/unkick/perm/admit/migrate）", data: {} });
     };
 
+    /* ── wait：等任务跑完再返回（第九十九轮新增主工具） ──
+       主人要求：「wait 参数就是等某个对话完成之后返回那个对话，可以指定对话、有 timeout，
+                 也可以指定多个对话，也可以 all（任一返回就返回那个），
+                 复用返回详细度，还能选择要凑够几条才算完成」。
+       参数：
+         id / ids     等指定任务（可多个）
+         all=true     等全部任务，任一返回就返回那一个
+         timeout_ms   超时上限，默认 300000（5 分钟），最短 3000
+         need=N       要凑够 N 个任务结束才返回，默认 1
+         detail       返回详细度，复用 get 的四档
+         max_chars    结论截断长度
+       行为：每 800ms 扫一次，命中终态（done/failed/cancelled/closed）就收；
+             凑够 need 个或超时即返回，返回里带 finished/need/unfinished/timed_out。 */
+    E.subagent_wait = async function (params) {
+        params = params || {};
+        var wlW = _wlCheck(params, ["all", "timeout_ms", "need", "detail", "max_chars"], "wait");
+        if (wlW) { complete({ success: false, message: wlW, data: {} }); return; }
+
+        var idsW = [];
+        if (params.ids) idsW = parseList(params.ids);
+        if (!idsW.length && params.id) idsW = [String(params.id)];
+
+        var waitAll = params.all === true;
+        if (!idsW.length) waitAll = true;
+        var needN = Math.max(1, Number(params.need || 1));
+        var timeoutMs = Math.max(3000, Number(params.timeout_ms || 300000));
+        var deadlineW = Date.now() + timeoutMs;
+        var detailW = String(params.detail || "standard");
+        var TERM = { done: 1, failed: 1, cancelled: 1, closed: 1 };
+
+        /* 一条任务都没指定也不是 all，就无法等 —— 提前说清楚，不要空转 */
+        if (!waitAll && !idsW.length) {
+            complete({ success: false, message: "没指定要等哪个任务：传 id / ids，或传 all=true 等全部", data: {} });
+            return;
+        }
+
+        var finished = [];
+        var seenTerm = {};
+        var lastScan = [];
+        while (Date.now() < deadlineW) {
+            var pool = [];
+            if (waitAll) {
+                pool = await TASK.listTasks(false);
+            } else {
+                for (var wi = 0; wi < idsW.length; wi++) {
+                    var tk = await TASK.loadTask(idsW[wi]);
+                    if (tk) pool.push(tk);
+                }
+            }
+            lastScan = pool;
+            for (var pi = 0; pi < pool.length; pi++) {
+                var pt = pool[pi] || {};
+                var pid = String(pt.id || "");
+                if (!pid || seenTerm[pid]) continue;
+                if (!waitAll && idsW.indexOf(pid) < 0) continue;
+                if (TERM[String(pt.status || "")]) {
+                    seenTerm[pid] = 1;
+                    finished.push(pt);
+                }
+            }
+            if (finished.length >= needN) break;
+            /* 指定任务全被删了也算结束，避免死等 */
+            if (!waitAll && !pool.length) break;
+            await new Promise(function (r) { setTimeout(r, 800); });
+        }
+
+        var outsW = [];
+        for (var fi = 0; fi < finished.length; fi++) {
+            var ft = finished[fi];
+            var stF = String(ft.status || "");
+            var txtW = null;
+            if (stF === "done") {
+                txtW = TASK.buildResult(ft, detailW);
+                if (txtW && params.max_chars) txtW = clip(txtW, Number(params.max_chars));
+            }
+            outsW.push({
+                id: ft.id, ok: stF === "done", status: stF, steps: ft.step,
+                usage: ft.usage, result: txtW, task: briefOf(ft)
+            });
+        }
+
+        var unfinishedW = 0;
+        if (waitAll) {
+            for (var ui = 0; ui < lastScan.length; ui++) {
+                if (!TERM[String(lastScan[ui].status || "")]) unfinishedW++;
+            }
+        } else {
+            for (var uj = 0; uj < idsW.length; uj++) {
+                if (!seenTerm[idsW[uj]]) unfinishedW++;
+            }
+        }
+
+        var okW = finished.length >= needN;
+        var msgW = okW
+            ? ("已等到 " + finished.length + " 个任务结束" + (unfinishedW ? ("，还有 " + unfinishedW + " 个未完成") : ""))
+            : ("超时：只等到 " + finished.length + "/" + needN + " 个任务结束，其余仍在跑");
+        complete({
+            success: okW,
+            message: msgW + inboxSuffix(callerChatId()),
+            data: {
+                finished: finished.length,
+                need: needN,
+                unfinished: unfinishedW,
+                timed_out: !okW,
+                items: outsW
+            }
+        });
+    };
+
     E.subagent_box = async function (params) {
         params = params || {};
         var wl = _wlCheck(params, ["action"], "box");

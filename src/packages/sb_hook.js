@@ -45,7 +45,7 @@ var SP_SKIPS = "hook_disabled_skips";
 var ENV_ENABLED = "SUBAGENT_HOOK_ENABLED";
 
 /* 注入上限：钩子每轮都跑，正文全带会把上下文撑爆。
-   只给 id + 标题 + 摘要，正文由 subagent_result(id=...) 现取。 */
+   只给 id + 标题 + 摘要，正文由 subagent_get(id=...) 现取。 */
 var MAX_ITEMS = 5;
 var MAX_TEXT = 120;
 
@@ -64,7 +64,7 @@ var CAPABILITY_HINT_ZH = [
   "派活：subagent_spawn(task=\"...\", tools=\"read_file,edit_file,create_file\", workspace=\"/sdcard/x/...\")",
   "【参数纪律】task 只写任务本身。tools 和 workspace 是独立参数，不要塞进 task 字符串——塞进去会把 JSON 撑坏，调用直接失败。",
   "【工具授权】tools 留空 = 一个工具都用不了；传 \"*\" 放开全部（派子代理仍被硬拦）。",
-  "【长规格】要交代的细节多（规格、验收标准、代码片段），写进一个文件，用 files=\"/sdcard/x/tmp/spec.md\" 传，不要硬塞 task。",
+  "【长规格】要交代的细节多（规格、验收标准、代码片段），写进一个文件，用 context_files=\"/sdcard/x/tmp/spec.md\" 传，不要硬塞 task。",
   "【等结果两种姿势】spawn 时 wait=true 就当场跑完并返回结论，不传 budget 会一直等到结束；不等就用返回的 id 调 subagent_run(id=..., wait=true)。",
   "取产出：subagent_get(id=..., detail=brief|standard|full|trace)。detail=trace 才拿逐步明细。",
   "改状态：subagent_ctrl(id=..., action=cancel|resume|steer|close)。追加指令用 action=steer + message。",
@@ -76,7 +76,7 @@ var CAPABILITY_HINT_EN = [
   "Delegate: subagent_spawn(task=\"...\", tools=\"read_file,edit_file,create_file\", workspace=\"/sdcard/x/...\")",
   "[Parameter discipline] task holds the job only. tools and workspace are separate parameters; stuffing them into the task string breaks the JSON and the call fails.",
   "[Tool grants] Empty tools means no tools at all; pass \"*\" to allow everything (spawning subagents stays blocked).",
-  "[Long specs] Put detailed specs/acceptance criteria/code snippets in a file and pass files=\"/sdcard/x/tmp/spec.md\" instead of cramming them into task.",
+  "[Long specs] Put detailed specs/acceptance criteria/code snippets in a file and pass context_files=\"/sdcard/x/tmp/spec.md\" instead of cramming them into task.",
   "[Two ways to wait] spawn with wait=true runs it to completion and returns the conclusion; omit budget to wait until it finishes. Otherwise use the returned id with subagent_run(id=..., wait=true).",
   "Get output: subagent_get(id=..., detail=brief|standard|full|trace). Only detail=trace yields step-by-step detail.",
   "Change state: subagent_ctrl(id=..., action=cancel|resume|steer|close). Append instructions with action=steer plus message.",
@@ -174,10 +174,13 @@ function buildInboxBlock(arr, en) {
       + " | " + clipText(it.text || it.conclusion || "", MAX_TEXT));
   }
   if (arr.length > list.length) {
-    if (en) lines.push("(" + (arr.length - list.length) + " more; call subagent_inbox for the full list)");
-    else lines.push("（还有 " + (arr.length - list.length) + " 条，调 subagent_inbox 看全量）");
+    if (en) lines.push("(" + (arr.length - list.length) + " more; call subagent_box() for the full list)");
+    else lines.push("（还有 " + (arr.length - list.length) + " 条，调 subagent_box() 看全量）");
   }
-  lines.push(en ? "Take one: subagent_result(id=...)." : "取用：subagent_result(id=...)。");
+  /* 【第九十八轮】这里原来写的是 subagent_result / subagent_inbox ——
+     两个工具早就不存在了（现在是 subagent_get / subagent_box）。
+     提示里教错名字，主代理照着调必然报「找不到工具」。 */
+  lines.push(en ? "Take one: subagent_get(id=...)." : "取用：subagent_get(id=...)。");
   return lines.join(String.fromCharCode(10));
 }
 
@@ -206,7 +209,19 @@ function subagentInboxHook(event) {
 
     var en = payload.useEnglish === true;
     var arr = readInbox();
-    var addon = arr.length ? buildInboxBlock(arr, en) : pickHint(payload);
+    /* 【第一百轮】收件箱积压到 3 条以上就转成硬约束。
+       主人要求：「收件箱有三个以上的，没有读的，就强制让他读，不然不允许他执行任何工具」。
+       只提示不强制，主代理会当噪音忽略——实测积到 9 条也没人看。
+       这里在系统提示词里插一段禁令，语气要硬，明确「先读再干活」。 */
+    var addon;
+    if (arr.length >= 3) {
+        addon = buildInboxBlock(arr, en) + String.fromCharCode(10) + String.fromCharCode(10)
+            + (en
+                ? "[HARD RULE] " + arr.length + " unread subagent conclusions are piling up. Before calling ANY other tool, read them: subagent_get(id=...). This is mandatory, not a suggestion."
+                : "【硬性规则】收件箱积压 " + arr.length + " 条未读子代理结论。在执行任何其他工具之前，必须先读完：subagent_get(id=...)。这不是建议，是强制。");
+    } else {
+        addon = arr.length ? buildInboxBlock(arr, en) : pickHint(payload);
+    }
 
     /* 空 base 时也要返回 addon（有些调用方 systemPrompt 为空），
        但不能返回空串 —— 空串等于把系统提示词清空。 */

@@ -20,7 +20,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 > 带了 CORS 头则是真逐字流式。判断方法：
 > `curl -sI -X OPTIONS -H 'Origin: http://localhost/subagent' <你的端点>`，看有没有 `access-control-allow-origin`。
 
-## 工具（22 个：22 大类）
+## 工具（23 个：23 大类）
 
 所有工具名都是大类，具体动作用参数区分。
 
@@ -31,6 +31,7 @@ Operit ToolPkg 插件，面板为 WebView 单文件（无外部依赖）。
 | `subagent_spawn` | 建任务并派给子代理。只有 `task` 必填；`tools` 留空＝无工具、传 `*` 放开全部；含写类工具必须给 `workspace` |
 | `subagent_run` | 推进已有任务。`wait=false` 推 1-3 步；`wait=true` 在 budget 内推到完成 |
 | `subagent_get` | 取任务产出。不传 id 列全部；传 id 按 `detail` 返回 brief/standard/full/trace |
+| `subagent_wait` | 等任务跑完再返回。id/ids 指定任务，all=true 等全部（任一返回即返回）；timeout_ms 上限，need 凑几个，detail 控详细度 |
 | `subagent_ctrl` | 改状态。`action` = cancel / resume / steer / close |
 | `subagent_del` | 删任务（任务文件 + 产物 + 快照 + 收件箱）。`confirm=true` 才真删 |
 | `subagent_undo` | 列出或恢复该任务写过的文件。`dry_run` 默认 true 只看不改 |
@@ -100,7 +101,7 @@ src/
   manifest.json          ToolPkg 清单
   main.js                入口：注册 UI 路由 + 收件箱钩子
   packages/              后端（配置 / 任务 / LLM / 工具 / 钩子 / 消息总线）
-    subagent.js          22 个声明（22 大类），导出实现分散在 sb_tool_*.js
+    subagent.js          23 个声明（23 大类），导出实现分散在 sb_tool_*.js
     sb_config.js         配置读写、密钥环境变量、模型缓存
     sb_task.js           任务状态机与落盘
     sb_llm.js            端点解析、请求构造、模型列表

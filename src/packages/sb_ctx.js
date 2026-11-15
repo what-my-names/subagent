@@ -247,6 +247,22 @@ function tsOf(ms) {
         return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + " " + z(d.getHours()) + ":" + z(d.getMinutes());
     } catch (e) { return ""; }
 }
+/* 【第一百零四轮】给 agent 看的精简版。
+   踩过：get(all=true, detail=brief) 返回 32 个任务、每个 25+ 字段，十几 KB，
+   主人复制都复制不完。brief 名不副实。
+   agent 真正需要的只有：id / title / status / step / 出错原因。 */
+function slimOf(task) {
+    var o = {
+        id: task.id,
+        title: String(task.title || "").slice(0, 40),
+        status: task.status,
+        step: task.step
+    };
+    if (task.max_steps) o.max_steps = task.max_steps;
+    if (task.error) o.error = String(task.error).slice(0, 120);
+    return o;
+}
+
 function briefOf(task, unreadCache) {
     /* phase 是「此刻在干什么」：llm=正在调模型，tool=正在跑工具，idle=空闲。
        面板靠它显示「思考中」而不是干等一个「运行中」。
@@ -299,5 +315,6 @@ module.exports = {
     visibleTasks: visibleTasks,
     inboxSuffix: inboxSuffix,
     tsOf: tsOf,
-    briefOf: briefOf
+    briefOf: briefOf,
+    slimOf: slimOf
 };

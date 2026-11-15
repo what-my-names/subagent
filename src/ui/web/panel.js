@@ -627,6 +627,12 @@ function warnMsg(m) { _say(m, 'warn'); }
       syncCfgTip();
       return;
     }
+    /* 【第一百零四轮】兜底：没匹配到 kind 分支时不能静默吞。
+       踩过：新增 kind 忘了加分支，回包凭空消失 —— 点了没反应也没报错，最难查。
+       这里统一报到右上角。带 onOk 回调的调用走 call() 内部派发，到不了这。 */
+    if (kind && r && r.success === false) {
+      err(r.message || ('调用失败：' + kind));
+    }
   };
 
   /* ── 主页：会话列表 ── */

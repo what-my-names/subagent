@@ -297,8 +297,29 @@ async function _listTasksAll(force) {
         var rs = await Promise.all(batch);
         for (var m = 0; m < rs.length; m++) { if (rs[m]) out.push(rs[m]); }
     }
+    /* 【第一百零三轮】列表读取时顺手自愈卡死任务。
+       踩过：healStuckPhase 只在 advanceTask 里调，任务没人推就永远不自愈 ——
+       实测有 7 个任务 phase_at 早超 3 分钟，列表里一直显示「运行中」，
+       用户看着像卡死，实际是没人再推它、自愈也就没机会跑。
+       这里在返回列表前批量检查：running 且超时且无活锁 → 落 failed。 */
+    var healed = 0;
+    for (var hi = 0; hi < out.length; hi++) {
+        var ht = out[hi];
+        if (!ht) continue;
+        if (String(ht.status || "") !== "running") continue;
+        var hat = Number(ht.phase_at || 0);
+        if (!hat) continue;
+        if ((nowMs() - hat) < PHASE_STUCK_MS) continue;
+        if (_advancing[String(ht.id || "")]) continue;
+        ht.status = "failed";
+        ht.error = "上一次推进超过 3 分钟没有响应（阶段 " + String(ht.phase || "?") + "），已自动标记失败。可直接点继续推进重试。";
+        ht.phase = "idle";
+        ht.phase_at = nowMs();
+        try { await saveTask(ht); healed++; } catch (eH2) {}
+    }
     out.sort(function (a, b) { return (b.created_at || 0) - (a.created_at || 0); });
     _listCache.at = nowMs(); _listCache.data = out;
+    if (healed) { try { console.log("[subagent] 列表自愈 " + healed + " 个卡死任务"); } catch (eL) {} }
     return out;
 }
 

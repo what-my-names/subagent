@@ -596,4 +596,49 @@ A.match('定格后清空 holder 内容', P2, /holder\.innerHTML = '<div class="s
     A.match('面板显示清空失败', P, /err\(r\.message \|\| '不能清空'\)/);
 })();
 
+/* ── 【第一百零三轮】路由参数全局放行 ── */
+(function () {
+    var MAIN = A.src('packages/sb_tool_main.js');
+    A.chk('路由参数放行 detail', MAIN.indexOf('k === "detail"') >= 0);
+    A.chk('路由参数放行 limit', MAIN.indexOf('k === "limit"') >= 0);
+    A.chk('路由参数放行 max_chars', MAIN.indexOf('k === "max_chars"') >= 0);
+    A.chk('路由参数放行 budget', MAIN.indexOf('k === "budget"') >= 0);
+    A.chk('路由参数放行 max_steps', MAIN.indexOf('k === "max_steps"') >= 0);
+    A.chk('路由参数放行 force', MAIN.indexOf('k === "force"') >= 0);
+    A.chk('路由参数放行 path', MAIN.indexOf('k === "path"') >= 0);
+    A.chk('路由参数放行 deep', MAIN.indexOf('k === "deep"') >= 0);
+    A.chk('路由参数放行 model', MAIN.indexOf('k === "model"') >= 0);
+    A.chk('路由参数放行 base', MAIN.indexOf('k === "base"') >= 0);
+    A.chk('路由参数放行 query', MAIN.indexOf('k === "query"') >= 0);
+    A.chk('路由参数放行 depth', MAIN.indexOf('k === "depth"') >= 0);
+    A.chk('路由参数放行 max_files', MAIN.indexOf('k === "max_files"') >= 0);
+    A.chk('路由参数放行 message', MAIN.indexOf('k === "message"') >= 0);
+    A.chk('路由参数放行 confirm', MAIN.indexOf('k === "confirm"') >= 0);
+    A.chk('路由参数放行 rollback', MAIN.indexOf('k === "rollback"') >= 0);
+    A.chk('路由参数放行 drop_product', MAIN.indexOf('k === "drop_product"') >= 0);
+    A.chk('路由参数放行 timeout_ms', MAIN.indexOf('k === "timeout_ms"') >= 0);
+    A.chk('路由参数放行 need', MAIN.indexOf('k === "need"') >= 0);
+    A.chk('路由参数放行 code', MAIN.indexOf('k === "code"') >= 0);
+    A.chk('路由参数放行 chat_id', MAIN.indexOf('k === "chat_id"') >= 0);
+    A.chk('路由参数放行 mask', MAIN.indexOf('k === "mask"') >= 0);
+})();
+
+/* 第一百零三轮补：列表自愈 */
+(function () {
+    var T2 = A.src('packages/sb_task.js');
+    A.chk('列表自愈循环', T2.indexOf('列表自愈') >= 0);
+    A.chk('列表自愈判 running', T2.indexOf('!== "running"') >= 0);
+})();
+
+/* 第一百零四轮：列表精简 */
+(function () {
+    var C = A.src('packages/sb_ctx.js');
+    var M = A.src('packages/sb_tool_main.js');
+    A.chk('slimOf 存在', C.indexOf('function slimOf') >= 0);
+    A.chk('slimOf 导出', C.indexOf('slimOf: slimOf') >= 0);
+    A.chk('main 引入 slimOf', M.indexOf('var slimOf = CTX.slimOf') >= 0);
+    A.chk('列表用 slimOf', M.indexOf('slimOf(shown[i])') >= 0);
+    A.chk('列表限条数', M.indexOf('var capN = 20') >= 0);
+})();
+
 A.finish();

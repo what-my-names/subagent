@@ -36,6 +36,7 @@ var ancestorChatIdsOf = CTX.ancestorChatIdsOf;
 var visibleTasks = CTX.visibleTasks;
 var inboxSuffix = CTX.inboxSuffix;
 var briefOf = CTX.briefOf;
+var slimOf = CTX.slimOf;
 
 module.exports = function install(E, opts) {
     var complete = opts && opts.complete;
@@ -80,9 +81,22 @@ module.exports = function install(E, opts) {
                模型按 schema 传了，但白名单没放行 → 直接被拒「不接受参数：name」，
                use/rm/add 三个动作全废。name 和 step/action 一样是选分支用的，
                属于同一类，不该让每个分支各列一遍。 */
+            /* 【第一百零三轮】路由参数全局放行。
+               踩过：METADATA 里 subagent_get 声明了 detail/limit/max_chars，
+               但 get(列表) 分支的白名单只写 ["all","group"]，
+               于是 `get(all=true, detail=brief)` 直接报「不接受参数 detail」——
+               声明说能用、实际被拒。这类前后端不一致修过多次，每次都是逐分支补，
+               补完下一轮又漏。现在改成：凡是「选分支 / 控输出」的参数一律全局放行，
+               由分支内部自己决定用不用。 */
             if (k === "id" || k === "action" || k === "target" || k === "what"
                 || k === "step" || k === "wait" || k === "ids" || k === "dry_run"
-                || k === "name") continue;
+                || k === "name" || k === "code" || k === "chat_id" || k === "mask"
+                || k === "detail" || k === "limit" || k === "max_chars" || k === "compact"
+                || k === "budget" || k === "max_steps" || k === "steps"
+                || k === "force" || k === "path" || k === "deep" || k === "model"
+                || k === "base" || k === "query" || k === "depth" || k === "max_files"
+                || k === "message" || k === "confirm" || k === "rollback" || k === "drop_product"
+                || k === "timeout_ms" || k === "need") continue;
             /* 【第七十九轮】宿主注入的内部键放行：每次工具调用 Operit 都会自动带上
                __operit_* 系列与 containerPackageName/toolPkgId 等，这些不是模型传的，
                不能拦。以 __operit_ 前缀或已知宿主键名识别。 */
@@ -244,9 +258,27 @@ module.exports = function install(E, opts) {
             if (vis.err) { complete({ success: false, message: vis.err, data: {} }); return; }
             var unreadN = 0;
             try { unreadN = BUS.list(callerChatId()).length; } catch (eU) { unreadN = 0; }
+            /* 【第一百零四轮】agent 侧列表默认精简 + 限制条数。
+               踩过：主人复制 get(all=true, detail=brief) 结果，十几 KB，输入法都复制不完。
+               面板要全字段，agent 不要。这里分流：
+               - 面板（带 all=true 或要求 detail）→ 仍给 briefOf 全字段
+               - agent（默认）→ slimOf 精简集，且最多 20 条
+               要更多就传 limit（最多 100）。 */
+            var isPanel = (params.all === true);
+            var wantFull = isPanel || detail === "brief";
+            var capN = 20;
+            if (params.limit) {
+                var ln = parseInt(params.limit, 10);
+                if (ln > 0) capN = Math.min(ln, 100);
+            }
+            var srcItems = vis.items;
+            var shown = srcItems.slice(0, capN);
             var items = [];
-            for (var i = 0; i < vis.items.length; i++) items.push(briefOf(vis.items[i], unreadN));
-            var msg0 = "共 " + items.length + " 个任务";
+            for (var i = 0; i < shown.length; i++) {
+                items.push(wantFull ? briefOf(shown[i], unreadN) : slimOf(shown[i]));
+            }
+            var msg0 = "共 " + srcItems.length + " 个任务";
+            if (srcItems.length > shown.length) msg0 += "（只列最近 " + shown.length + " 个，要更多传 limit）";
             if (vis.group) msg0 += "（群组 " + String(vis.group.code || "") + (vis.group.readonly ? "，只读" : "") + "）";
             if (vis.groups && vis.groups.length) msg0 += "｜可见群组 " + vis.groups.length + " 个";
             complete({
